@@ -1,0 +1,23 @@
+[package]
+name = "enso-bar"
+description = "Minimal Wayland status bar for Niri"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-sys.workspace = true
+enso-ui.workspace = true
+serde.workspace = true
+lexopt.workspace = true
+niri-ipc.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

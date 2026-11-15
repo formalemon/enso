@@ -1,0 +1,21 @@
+[package]
+name = "enso-notify"
+description = "Pure-Rust Freedesktop notification daemon with gliding toasts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-ui.workspace = true
+serde.workspace = true
+lexopt.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

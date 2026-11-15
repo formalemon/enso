@@ -1,0 +1,20 @@
+[package]
+name = "enso-launch"
+description = "Fast application launcher and fuzzy file search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-ui.workspace = true
+serde.workspace = true
+lexopt.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

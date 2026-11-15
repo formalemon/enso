@@ -1,0 +1,21 @@
+[package]
+name = "enso-ctl"
+description = "Control center GUI and CLI: theming, power, and (soon) Wi-Fi, Bluetooth, audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-sys.workspace = true
+enso-ui.workspace = true
+serde.workspace = true
+lexopt.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

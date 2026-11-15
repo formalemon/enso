@@ -1,0 +1,53 @@
+# enso — example configuration
+#
+# Copy to ~/.config/enso/config.toml and change what you like.
+# Every key is optional; the values below are the defaults.
+
+# Theme used until one is chosen with `enso-ctl theme set <id>`.
+# Built in: rose-pine-moon, rose-pine-main, rose-pine-dawn.
+# Your own themes go in ~/.config/enso/themes/<id>.toml.
+theme = "rose-pine-moon"
+
+[appearance]
+# Palette role used for active indicators and focus:
+# love, gold, rose, pine, foam, or iris.
+accent = "rose"
+# Interface font family ("sans-serif" picks a sensible installed one).
+font = "sans-serif"
+# Base text size in logical pixels.
+font_size = 14.0
+# "auto" draws Nerd Font glyphs when a Nerd Font is installed and plain text
+# otherwise; "glyphs" and "text" force one or the other.
+icons = "auto"
+
+[motion]
+# false makes every transition instant.
+enabled = true
+# Duration multiplier: 2.0 is twice as slow, 0.5 twice as fast.
+speed = 1.0
+
+[bar]
+height = 36
+# "top" or "bottom"
+position = "top"
+# strftime format
+clock = "%a %-d %b  %H:%M"
+
+[launch]
+width = 560
+# Rows shown before the list scrolls.
+max_results = 8
+# Terminal emulator for applications that need one.
+terminal = "alacritty"
+
+[notify]
+width = 360
+# Lifetime of notifications that do not set one, in milliseconds.
+timeout_ms = 5000
+# Toasts shown at once; more wait in a queue.
+max_visible = 5
+# Space between toasts.
+gap = 10
+
+[ctl]
+width = 340

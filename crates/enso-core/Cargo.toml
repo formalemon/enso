@@ -1,0 +1,17 @@
+[package]
+name = "enso-core"
+description = "Shared palette, theming, config, and motion/style tokens for the enso desktop suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+build = "build.rs"
+include = ["src/**", "themes/**", "build.rs", "Cargo.toml"]
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+
+[lints]
+workspace = true

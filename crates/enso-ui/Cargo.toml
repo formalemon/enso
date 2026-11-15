@@ -1,0 +1,24 @@
+[package]
+name = "enso-ui"
+description = "Shared layer-shell runtime, software canvas, and text for the enso desktop suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+smithay-client-toolkit.workspace = true
+calloop.workspace = true
+kbvm.workspace = true
+tiny-skia.workspace = true
+cosmic-text.workspace = true
+rustix.workspace = true
+
+[features]
+# PNG export of offscreen renders, for snapshot tests.
+png = ["tiny-skia/png-format"]
+
+[lints]
+workspace = true

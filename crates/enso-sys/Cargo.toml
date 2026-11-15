@@ -1,0 +1,11 @@
+[package]
+name = "enso-sys"
+description = "Direct, dependency-free readers for the system interfaces the enso suite needs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
