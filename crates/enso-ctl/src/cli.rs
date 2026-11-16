@@ -52,8 +52,11 @@ Hardware:
 Theme:
   theme [list]              List available themes
   theme current             Print the active theme's id
-  theme set <ID>            Switch theme; running enso tools update instantly
+  theme set <ID>            Switch theme: enso at once, and with it Niri,
+                            Alacritty, Neovim, GTK, Qt, and Flatpak
   theme next                Switch to the next theme
+  theme apply               Apply the active theme again, and say how each
+                            of those programs stands
   theme show [ID]           Print a theme's palette
   theme dirs                Print where themes are loaded from
 
@@ -119,6 +122,7 @@ pub enum ThemeCommand {
     Current,
     Set(String),
     Next,
+    Apply,
     Show(Option<String>),
     Dirs,
 }
@@ -215,6 +219,7 @@ pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Comm
             Err("`theme set` needs a theme id (see `enso-ctl theme list`)".to_owned())
         }
         ["theme", "next"] => Ok(Command::Theme(ThemeCommand::Next)),
+        ["theme", "apply"] => Ok(Command::Theme(ThemeCommand::Apply)),
         ["theme", "show"] => Ok(Command::Theme(ThemeCommand::Show(None))),
         ["theme", "show", id] => Ok(Command::Theme(ThemeCommand::Show(Some((*id).to_owned())))),
         ["theme", "dirs"] => Ok(Command::Theme(ThemeCommand::Dirs)),
@@ -371,6 +376,7 @@ mod tests {
             Ok(Command::Theme(Current))
         );
         assert_eq!(parse_words(&["theme", "next"]), Ok(Command::Theme(Next)));
+        assert_eq!(parse_words(&["theme", "apply"]), Ok(Command::Theme(Apply)));
         assert_eq!(
             parse_words(&["theme", "set", "rose-pine-dawn"]),
             Ok(Command::Theme(Set("rose-pine-dawn".into())))

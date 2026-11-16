@@ -49,11 +49,16 @@ use crate::{
 pub struct CtlConfig {
     /// Panel width in logical pixels.
     pub width: u32,
+    /// The programs a theme switch reaches besides enso's own tools.
+    pub theme_targets: Vec<theme::Place>,
 }
 
 impl Default for CtlConfig {
     fn default() -> Self {
-        Self { width: 340 }
+        Self {
+            width: 340,
+            theme_targets: theme::Place::ALL.to_vec(),
+        }
     }
 }
 
@@ -814,7 +819,8 @@ impl Panel {
         let Some(theme) = self.ctx.themes.iter().nth(index).cloned() else {
             return;
         };
-        if let Err(err) = theme::apply(&self.ctx, &theme) {
+        let reports = theme::apply(&self.ctx, &theme, &self.config.theme_targets);
+        if let Some(err) = theme::failure(&reports) {
             self.notice = Some(sentence(&err));
         }
         self.ctx.reload_theme();

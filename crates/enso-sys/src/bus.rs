@@ -94,7 +94,7 @@ fn fdo_name(err: &zbus::fdo::Error) -> String {
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
 
-/// A connection to one service on the system bus.
+/// A connection to one service, on the system bus or the session's.
 #[derive(Clone, Debug)]
 pub(crate) struct Service {
     conn: Connection,
@@ -107,6 +107,14 @@ impl Service {
     pub(crate) fn connect(name: &'static str) -> Result<Self> {
         let conn = zbus::block_on(Connection::system())
             .map_err(|err| Error::new(format!("cannot reach the system bus: {err}")))?;
+        Ok(Self { conn, name })
+    }
+
+    /// Connect to the session bus: the user's own services. As with
+    /// [`connect`](Self::connect), the service need not be running.
+    pub(crate) fn session(name: &'static str) -> Result<Self> {
+        let conn = zbus::block_on(Connection::session())
+            .map_err(|err| Error::new(format!("cannot reach the session bus: {err}")))?;
         Ok(Self { conn, name })
     }
 

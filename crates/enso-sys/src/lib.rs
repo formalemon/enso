@@ -9,6 +9,8 @@
 //! - [`bluetooth`] — Bluetooth through BlueZ (feature `bluez`).
 //! - [`logind`] — setting brightness without root, and shutting down,
 //!   restarting, or suspending the machine (feature `logind`).
+//! - [`dconf`] — desktop settings, the dark-or-light preference among them,
+//!   through dconf's own service (feature `dconf`).
 //! - [`auth`] — checking the user's own password. No dependencies, always
 //!   available.
 //! - [`audio`] — volume of the output and of each application, through
@@ -23,9 +25,18 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod auth;
-#[cfg(any(feature = "iwd", feature = "bluez", feature = "logind"))]
-// logind alone only makes calls; the rest is for the services that are watched.
-#[cfg_attr(not(any(feature = "iwd", feature = "bluez")), allow(dead_code))]
+#[cfg(any(
+    feature = "iwd",
+    feature = "bluez",
+    feature = "logind",
+    feature = "dconf"
+))]
+// logind and dconf only make calls, and only dconf is on the session bus:
+// short of every feature, some of this is unused.
+#[cfg_attr(
+    not(all(any(feature = "iwd", feature = "bluez"), feature = "dconf")),
+    allow(dead_code)
+)]
 mod bus;
 pub mod net;
 pub mod power;
@@ -35,10 +46,17 @@ pub mod audio;
 
 #[cfg(feature = "bluez")]
 pub mod bluetooth;
+#[cfg(feature = "dconf")]
+pub mod dconf;
 #[cfg(feature = "logind")]
 pub mod logind;
 #[cfg(feature = "iwd")]
 pub mod wifi;
 
-#[cfg(any(feature = "iwd", feature = "bluez", feature = "logind"))]
+#[cfg(any(
+    feature = "iwd",
+    feature = "bluez",
+    feature = "logind",
+    feature = "dconf"
+))]
 pub use bus::Error;

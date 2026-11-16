@@ -4,15 +4,14 @@
 //! so the same binary serves keybindings, scripts, and the mouse.
 //!
 //! Wi-Fi goes through iwd, Bluetooth through BlueZ, sound through PipeWire,
-//! brightness through `/sys` or logind, and everything else is read from
-//! `/sys` — always the service or the kernel itself, never another program's
-//! command line.
+//! brightness through `/sys` or logind, the dark-or-light preference through
+//! dconf, and everything else is read from `/sys` — always the service or
+//! the kernel itself, never another program's command line.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod cli;
 mod commands;
-mod niri;
 mod panel;
 mod system;
 mod theme;
@@ -38,9 +37,10 @@ fn main() -> ExitCode {
             writeln!(out, "enso-ctl {}", env!("CARGO_PKG_VERSION")).map_err(|err| err.to_string())
         }
         Command::Theme(command) => {
-            let ctx = Context::load();
+            let mut ctx = Context::load();
+            let config: panel::CtlConfig = ctx.section("ctl");
             ctx.report_warnings("enso-ctl");
-            theme::run(&ctx, &command, &mut out)
+            theme::run(&ctx, &config.theme_targets, &command, &mut out)
         }
         Command::Power => commands::power(&mut out),
         Command::Brightness(light, level) => commands::brightness(light, level, &mut out),

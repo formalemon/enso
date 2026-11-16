@@ -9,7 +9,7 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-enso-sys = { workspace = true, features = ["iwd", "bluez", "logind", "audio"] }
+enso-sys = { workspace = true, features = ["iwd", "bluez", "logind", "audio", "dconf"] }
 enso-ui.workspace = true
 serde.workspace = true
 lexopt.workspace = true

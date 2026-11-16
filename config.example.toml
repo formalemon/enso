@@ -82,6 +82,10 @@ history_size = 50
 
 [ctl]
 width = 340
+# The programs `enso-ctl theme set` takes the palette to, besides enso's own
+# tools. One that is not installed is passed over; drop a name to have enso
+# leave that program alone.
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "qt", "flatpak"]
 
 [wall]
 # How a picture meets a screen of another shape: "cover" fills the screen

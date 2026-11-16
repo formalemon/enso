@@ -1,6 +1,6 @@
 [package]
 name = "enso-sys"
-description = "Direct system interfaces for the enso suite: /sys, iwd, BlueZ, logind, PipeWire"
+description = "Direct system interfaces for the enso suite: /sys, iwd, BlueZ, logind, dconf, PipeWire"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -20,6 +20,8 @@ iwd = ["dep:zbus"]
 bluez = ["dep:zbus"]
 # Screen and keyboard brightness without root, through logind.
 logind = ["dep:zbus"]
+# Desktop settings (the dark-or-light preference), through dconf.
+dconf = ["dep:zbus"]
 # Volume, per output and per application, through PipeWire's PulseAudio socket.
 audio = ["dep:pulseaudio"]
 

@@ -10,7 +10,7 @@ and one way of moving.
 | `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, volume, battery, notification bell | working |
 | `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
-| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, theme | working |
+| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, Qt, Flatpak | working |
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
@@ -28,7 +28,7 @@ cargo build --release -p enso-bar   # or just one tool
 ./target/release/enso-notify &
 ./target/release/enso-launch
 ./target/release/enso-ctl                    # panel
-./target/release/enso-ctl theme set rose-pine-dawn   # running tools recolour instantly
+./target/release/enso-ctl theme set rose-pine-dawn   # enso recolours instantly, and the rest of the desktop with it
 
 ./target/release/enso-wall &
 ./target/release/enso-wall set ~/Pictures/quiet.jpg                       # the default
@@ -75,7 +75,7 @@ crates/
   enso-core/     palette, themes, config, motion + style tokens   (serde, toml)
     themes/      built-in themes; every *.toml here is embedded at build time
   enso-ui/       layer-shell and per-output runtimes, software canvas, text, input
-  enso-sys/      direct system interfaces: /sys, iwd, BlueZ, logind, passwords
+  enso-sys/      direct system interfaces: /sys, iwd, BlueZ, logind, dconf, passwords
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/
   enso-wall/  enso-power/  enso-lock/                             the binaries
 config.example.toml   every config key with its default
@@ -109,6 +109,7 @@ the service itself (`/sys`, sockets, D-Bus), never to a CLI wrapper.
 | `wifi` | iwd (`net.connman.iwd`) | radio, scan, networks, connect with a passphrase agent, forget | `iwd` |
 | `bluetooth` | BlueZ (`org.bluez`) | radio, discovery, pair, connect, battery levels | `bluez` |
 | `logind` | `org.freedesktop.login1` | setting brightness without root; shut down, restart, suspend, end the session | `logind` |
+| `dconf` | `ca.desrt.dconf`, on the session bus | writing desktop settings: the dark-or-light preference | `dconf` |
 | `auth` | `unix_chkpwd`, PAM's own helper | whether a password is the user's | always on, no dependencies |
 | `audio` | PipeWire, over its PulseAudio socket | outputs and microphones (which, level, mute) and each application's volume | `audio` |
 | `net` | `/sys`, `/proc` | online by cable or Wi-Fi, and the signal | always on, no dependencies |
@@ -195,7 +196,8 @@ A row opens a page of its own:
   one slider, with its own mute, for every application that is playing (all
   of a browser's tabs count as one). Then the microphone: an on/off switch,
   its level, and the microphones to choose between.
-- **Theme** is the picker.
+- **Theme** is the picker. Choosing one themes everything `theme set` does:
+  see [Theming](#theming).
 
 Keys: `j`/`k` or arrows move; `Enter` or `l` opens or chooses; `h`, `Esc`, or
 `Backspace` goes back; `h`/`l` adjust a slider; `m` mutes; `Space` flips the
@@ -440,14 +442,77 @@ enso-ctl theme show rose-pine-main
 watch that directory (inotify) and recolour immediately. The active theme is,
 in order: the recorded choice, `theme` in `config.toml`, the default.
 
-Niri follows too. `theme set` writes the palette as a piece of Niri config —
-only colours: the focus ring, shadows, the backdrop — to
-`~/.local/state/enso/niri.kdl`, and Niri reloads when it changes. One line in
-Niri's config opts in, placed after any colours of your own:
+### The rest of the desktop
 
-```kdl
-include optional=true "~/.local/state/enso/niri.kdl"
+The same switch — from the command line or the panel's Theme page — takes
+the palette to every other program that can be told:
+
 ```
+$ enso-ctl theme set rose-pine-dawn
+Rosé Pine Dawn (rose-pine-dawn)
+  enso       running tools recoloured
+  niri       colours updated
+  alacritty  colours updated
+  neovim     colours updated
+  gtk        light colour scheme set
+```
+
+The rule is that enso never edits a config file you write by hand. For each
+program it writes a file of its own, in `~/.local/state/enso/`, and one line
+of yours brings that file in — after which the program follows every switch
+by itself. Until the line is there, `theme set` says which line and where.
+Programs that are not installed are passed over without a word;
+`enso-ctl theme apply` applies the active theme again and lists them all,
+which is the thing to run after installing one, or after adding a line.
+
+| Program | What enso writes | What you add, once | Follows a switch |
+| --- | --- | --- | --- |
+| Niri | `niri.kdl`: ring, border, shadow, backdrop colours | `include optional=true "~/.local/state/enso/niri.kdl"` in `config.kdl`, after any colours of your own | at once |
+| Alacritty | `alacritty.toml`: Rosé Pine's own mapping to the terminal colours | `import = ["~/.local/state/enso/alacritty.toml"]` under `[general]` in `alacritty.toml` | at once |
+| Neovim | `nvim.lua`: the palette, handed to [`rose-pine/neovim`](https://github.com/rose-pine/neovim) | `dofile(vim.fn.expand("~/.local/state/enso/nvim.lua"))` in `init.lua`, after the plugin is loaded | at once, in every running Neovim |
+| GTK, and the system | the dark-or-light preference (dconf's `color-scheme`); `gtk-application-prefer-dark-theme` for GTK 3 | nothing | at once — GTK 3 programs when next started |
+| GTK's palette | `gtk-4.0.css`, `gtk-3.0.css`: the colours libadwaita is built from | `@import url("file:///home/you/.local/state/enso/gtk-4.0.css");` in `~/.config/gtk-4.0/gtk.css` | when a program next starts |
+| Qt | a colour scheme, `colors/enso.conf`, for qt5ct and qt6ct | choose the custom colour scheme `enso` in the tool's Appearance tab | within a few seconds |
+| Flatpak | four read-only entries in the user's global override | nothing | when a program next starts |
+
+Some particulars:
+
+- **Alacritty** keeps what its own config says over what it imports, so
+  colours set there stay yours. It watches only imports that existed when it
+  started: terminals opened before the first `theme set` need a restart.
+- **Neovim** needs the plugin for colours — without it the file only sets
+  `background`. Options you gave `require("rose-pine").setup` are kept; enso
+  adds the palette and the variant. Any theme works, not only the three
+  built-ins: the plugin derives every highlight from the same fifteen roles.
+- **The colour scheme** is the one setting every toolkit asks the desktop
+  portal for, so it is also how Qt 6, Firefox, and Electron programs learn
+  that the desktop went dark or light. It is written through dconf's own
+  service (`xdg-desktop-portal-gtk` passes it on); without dconf there is
+  nothing to keep it, and the step is skipped.
+- **GTK 3** does not ask the portal. enso sets the one key in
+  `~/.config/gtk-3.0/settings.ini` — the exception to the rule above, since
+  that file has no way to include another — and leaves the rest of it alone.
+  GTK 3's stock theme has its colours built in, so `gtk-3.0.css` only does
+  something under a theme made to be recoloured, such as adw-gtk3.
+- **Qt**'s palette needs qt5ct or qt6ct as the platform theme
+  (`QT_QPA_PLATFORMTHEME=qt6ct`). Without one, Qt 6 still follows dark and
+  light.
+- **Flatpak** programs cannot see `~/.config/gtk-4.0` or enso's stylesheets
+  from inside their sandbox. enso lets them, read-only, by adding
+  `xdg-config/gtk-3.0`, `xdg-config/gtk-4.0`, and the two stylesheets to
+  `filesystems` in `~/.local/share/flatpak/overrides/global` — what
+  `flatpak override --user --filesystem=…` would write. Entries you already
+  have, or have denied with a `!`, are left as they are.
+
+To have enso leave a program alone, drop it from the list:
+
+```toml
+[ctl]
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "qt", "flatpak"]
+```
+
+A new target is one file in `crates/enso-ctl/src/theme/` — a function from
+the theme to an outcome — and one more `Place`.
 
 ## Design language
 
@@ -476,10 +541,9 @@ quickest way to see a visual change without restarting anything.
 
 ## Roadmap
 
-- **enso-ctl** — Bluetooth pairing that needs a PIN; forgetting networks and devices from the panel (the command
-  line can); more theme targets: Alacritty, Neovim
-  (`rose-pine/neovim`), GTK/system colour scheme, Qt, Flatpak. `theme set`
-  runs a list of `Target`s; today that is enso itself and Niri.
+- **enso-ctl** — Bluetooth pairing that needs a PIN; forgetting networks and
+  devices from the panel (the command line can); more theme targets (other
+  terminals, a GTK 3 theme of enso's own, Kvantum).
 - **enso-launch** — Git's global excludes file and `.git/info/exclude`;
   searching file contents.
 - **enso-notify** — acting on a notification from its history row; keeping
