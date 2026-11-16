@@ -30,6 +30,38 @@ pub fn load() -> Vec<App> {
     load_from(&application_dirs(), &current_desktops())
 }
 
+/// Hand `ready` the applications as early as possible, then make sure they
+/// are right.
+///
+/// The index saved at `index` by the previous run comes first — one small
+/// file rather than every desktop entry. The real scan follows, and only if
+/// something was installed, removed, or edited since is `ready` called a
+/// second time and the index rewritten. So the index is never trusted for
+/// longer than one scan takes, and needs no invalidation rules.
+pub fn load_indexed(index: &Path, ready: impl FnMut(Vec<App>)) {
+    load_indexed_from(index, &application_dirs(), &current_desktops(), ready);
+}
+
+fn load_indexed_from(
+    index: &Path,
+    dirs: &[PathBuf],
+    desktops: &[String],
+    mut ready: impl FnMut(Vec<App>),
+) {
+    let saved = crate::index::read(index);
+    if let Some(apps) = &saved {
+        ready(apps.clone());
+    }
+    let apps = load_from(dirs, desktops);
+    if saved.as_ref() != Some(&apps) {
+        // Without an index the next launch scans first; nothing else is lost.
+        if let Err(err) = crate::index::write(index, &apps) {
+            eprintln!("enso-launch: cannot save the application index: {err}");
+        }
+        ready(apps);
+    }
+}
+
 fn load_from(dirs: &[PathBuf], desktops: &[String]) -> Vec<App> {
     let mut seen = HashSet::new();
     let mut apps = Vec::new();
@@ -336,6 +368,50 @@ Exec=/usr/lib/firefox/firefox --new-window %u
         let names: Vec<&str> = apps.iter().map(|app| app.name.as_str()).collect();
         assert_eq!(names, ["alpha tool", "User App", "Zed"]);
         assert_eq!(apps[0].id, "nested-tool");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_index_answers_first_and_is_corrected_when_stale() {
+        let root = env::temp_dir().join(format!("enso-launch-indexed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dirs = [root.join("applications")];
+        let index = root.join("cache/apps");
+        fs::create_dir_all(&dirs[0]).unwrap();
+        let entry =
+            |name: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec=run\n");
+        fs::write(dirs[0].join("one.desktop"), entry("One")).unwrap();
+
+        let deliveries = || {
+            let mut seen: Vec<Vec<String>> = Vec::new();
+            load_indexed_from(&index, &dirs, &[], |apps| {
+                seen.push(apps.into_iter().map(|app| app.name).collect());
+            });
+            seen
+        };
+
+        // No index yet: one delivery, from the scan, which also saves it.
+        assert_eq!(deliveries(), [["One"]]);
+        assert!(index.exists());
+        // An up-to-date index: one delivery, and the file is left alone.
+        let saved = fs::metadata(&index).unwrap().modified().unwrap();
+        assert_eq!(deliveries(), [["One"]]);
+        assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), saved);
+
+        // Something was installed: the index answers, then the scan corrects it…
+        fs::write(dirs[0].join("two.desktop"), entry("Two")).unwrap();
+        assert_eq!(deliveries(), [vec!["One"], vec!["One", "Two"]]);
+        // …so the next launch is right from the start.
+        assert_eq!(deliveries(), [["One", "Two"]]);
+
+        // An entry edited in place is caught the same way.
+        fs::write(dirs[0].join("one.desktop"), entry("Uno")).unwrap();
+        assert_eq!(deliveries(), [vec!["One", "Two"], vec!["Two", "Uno"]]);
+
+        // A damaged index is ignored and replaced.
+        fs::write(&index, "not an index").unwrap();
+        assert_eq!(deliveries(), [["Two", "Uno"]]);
+        assert_eq!(deliveries(), [["Two", "Uno"]]);
         fs::remove_dir_all(root).unwrap();
     }
 }

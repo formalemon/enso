@@ -1,17 +1,20 @@
 //! `enso-launch` — a keyboard-first application launcher.
 //!
-//! Opens focused, filters as you type, and gets out of the way: `Enter`
-//! launches, `Esc` or a click outside dismisses, arrows or `Ctrl+n`/`Ctrl+p`
-//! move the selection.
+//! Opens focused as a bare search field, lists matches as you type, and gets
+//! out of the way: `Enter` launches, `Esc` or a click outside dismisses,
+//! arrows or `Ctrl+n`/`Ctrl+p` move the selection.
 //!
-//! Applications come straight from `.desktop` entries. Fuzzy file search is
-//! the next source to add; the list and ranking code are already independent
-//! of where entries come from.
+//! Applications come straight from `.desktop` entries, gathered on a
+//! background thread and remembered in a small index
+//! (`~/.cache/enso/apps`) so the next launch has them at once. Fuzzy file
+//! search is the next source to add; the list and ranking code are already
+//! independent of where entries come from.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod apps;
 mod fuzzy;
+mod index;
 mod launcher;
 
 use std::process::ExitCode;
@@ -28,8 +31,10 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
+Nothing is listed until you start typing.
+
 Keys:
-  type             filter               Enter        launch
+  type             search               Enter        launch
   Up / Ctrl+p      previous             Esc          close
   Down / Ctrl+n    next                 Ctrl+u / w   clear / delete word
 
@@ -50,9 +55,8 @@ fn main() -> ExitCode {
         Err(code) => return code,
     };
 
-    let apps = apps::load();
     if let Mode::List = mode {
-        for app in &apps {
+        for app in apps::load() {
             println!("{}\t{}", app.id, app.name);
         }
         return ExitCode::SUCCESS;
@@ -63,7 +67,7 @@ fn main() -> ExitCode {
     ctx.report_warnings("enso-launch");
     let appearance = ctx.config.appearance.clone();
 
-    match enso_ui::run(launcher::Launcher::new(ctx, config, apps), &appearance) {
+    match enso_ui::run(launcher::Launcher::new(ctx, config), &appearance) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("enso-launch: {err}");

@@ -28,7 +28,7 @@ use smithay_client_toolkit::{
     reexports::{
         calloop_wayland_source::WaylandSource,
         client::{
-            Connection, QueueHandle, WEnum,
+            Connection, Proxy as _, QueueHandle, WEnum,
             globals::registry_queue_init,
             protocol::{
                 wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
@@ -53,7 +53,7 @@ use smithay_client_toolkit::{
         WaylandSurface,
         wlr_layer::{
             self, KeyboardInteractivity, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
+            LayerSurfaceConfigure, SurfaceKind,
         },
     },
     shm::{Shm, ShmHandler, slot::SlotPool},
@@ -76,6 +76,17 @@ pub enum Layer {
     Top,
     /// Above everything, including fullscreen windows. Launchers and toasts.
     Overlay,
+}
+
+impl From<Layer> for wlr_layer::Layer {
+    fn from(layer: Layer) -> Self {
+        match layer {
+            Layer::Background => Self::Background,
+            Layer::Bottom => Self::Bottom,
+            Layer::Top => Self::Top,
+            Layer::Overlay => Self::Overlay,
+        }
+    }
 }
 
 /// Screen edges a surface is attached to. Combine with `|`.
@@ -367,12 +378,7 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
     let layer = layer_shell.create_layer_surface(
         &qh,
         compositor.create_surface(&qh),
-        match spec.layer {
-            Layer::Background => wlr_layer::Layer::Background,
-            Layer::Bottom => wlr_layer::Layer::Bottom,
-            Layer::Top => wlr_layer::Layer::Top,
-            Layer::Overlay => wlr_layer::Layer::Overlay,
-        },
+        spec.layer.into(),
         Some(spec.namespace.clone()),
         None,
     );
@@ -507,6 +513,15 @@ impl<A: App> Runtime<A> {
             // (Re)mapping starts with a bufferless commit carrying the full
             // layer state; the compositor answers with a configure.
             let spec = &self.spec;
+            // Unmapping resets a layer surface, and Niri then forgets the
+            // layer it was created on and falls back to the background one —
+            // a re-shown toast would sit behind every window. So the layer is
+            // stated again on each map (possible since layer-shell version 2).
+            if let SurfaceKind::Wlr(surface) = self.layer.kind()
+                && surface.version() >= 2
+            {
+                self.layer.set_layer(spec.layer.into());
+            }
             self.layer
                 .set_anchor(wlr_layer::Anchor::from_bits_truncate(spec.anchor.0));
             self.layer.set_size(spec.width, spec.height);

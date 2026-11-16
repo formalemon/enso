@@ -14,6 +14,9 @@ pub struct Paths {
     pub config_dir: PathBuf,
     /// `$XDG_STATE_HOME/enso` — state written by the tools (active theme).
     pub state_dir: PathBuf,
+    /// `$XDG_CACHE_HOME/enso` — things that can be rebuilt (the launcher's
+    /// application index).
+    pub cache_dir: PathBuf,
     /// `<dir>/enso` for each of `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`, most specific first.
     pub data_dirs: Vec<PathBuf>,
 }
@@ -45,6 +48,7 @@ impl Paths {
         Self {
             config_dir: dir("XDG_CONFIG_HOME", ".config").join(APP),
             state_dir: dir("XDG_STATE_HOME", ".local/state").join(APP),
+            cache_dir: dir("XDG_CACHE_HOME", ".cache").join(APP),
             data_dirs,
         }
     }
@@ -55,6 +59,7 @@ impl Paths {
         Self {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
+            cache_dir: root.join("cache"),
             data_dirs: vec![root.join("data")],
         }
     }

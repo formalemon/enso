@@ -1,8 +1,9 @@
 //! `enso-bar` — a minimal status bar for Niri.
 //!
-//! Three floating islands on a transparent strip: workspaces (from Niri's IPC
-//! socket), the clock, and battery (from `/sys`). Works with no config file
-//! and follows `enso-ctl theme set` live.
+//! Three floating islands on a transparent strip: the windows of the current
+//! workspace — opening out to every workspace under the pointer — (from
+//! Niri's IPC socket), the clock, and battery (from `/sys`). Works with no
+//! config file and follows `enso-ctl theme set` live.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -22,6 +23,10 @@ Usage: enso-bar [OPTIONS]
 Options:
   -h, --help       Print this help
   -V, --version    Print the version
+
+The left island shows a dot for each window on the current workspace. Hover
+it to see every workspace; click a dot to focus that window, or a group of
+dots to switch to that workspace.
 
 Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   height   = 36                    bar height in pixels

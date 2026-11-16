@@ -1,6 +1,11 @@
-//! The launcher overlay: a search field over a ranked list.
+//! The launcher overlay: a search field, and a ranked list once you type.
+//!
+//! It opens as a bare field. Nothing is listed until the query has something
+//! in it, so the first frame has almost nothing to draw, and the applications
+//! themselves are gathered on a background thread while the field is already
+//! on screen.
 
-use std::time::Instant;
+use std::{thread, time::Instant};
 
 use enso_core::{
     Context, Rgba, Role, Transition, Tween,
@@ -8,11 +13,14 @@ use enso_core::{
 };
 use enso_ui::{
     Align, App as UiApp, Button, Canvas, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent,
-    Presence, Rect, SurfaceSpec, Text,
+    Presence, Proxy, Rect, SurfaceSpec, Text,
 };
 use serde::Deserialize;
 
-use crate::{apps::App, fuzzy};
+use crate::{
+    apps::{self, App},
+    fuzzy,
+};
 
 /// The `[launch]` table of `config.toml`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -39,6 +47,15 @@ impl Default for LaunchConfig {
 const SEARCH_HEIGHT: f32 = 56.0;
 const ROW_HEIGHT: f32 = 44.0;
 const CHIP: f32 = 28.0;
+/// File name of the application index inside the cache directory.
+const INDEX: &str = "apps";
+
+/// Messages from the loading thread.
+#[derive(Debug)]
+pub enum Message {
+    /// The applications, from the saved index or from a fresh scan.
+    Apps(Vec<App>),
+}
 
 #[derive(Debug)]
 pub struct Launcher {
@@ -46,6 +63,9 @@ pub struct Launcher {
     config: LaunchConfig,
     presence: Presence,
     apps: Vec<App>,
+    /// Whether `apps` has arrived; until then an empty result is not "no
+    /// matches", just not known yet.
+    loaded: bool,
     query: String,
     /// Indices into `apps`, best match first.
     results: Vec<usize>,
@@ -62,12 +82,13 @@ pub struct Launcher {
 }
 
 impl Launcher {
-    pub fn new(ctx: Context, config: LaunchConfig, apps: Vec<App>) -> Self {
-        let mut launcher = Self {
+    pub fn new(ctx: Context, config: LaunchConfig) -> Self {
+        Self {
             presence: Presence::new(&ctx.motion),
             ctx,
             config,
-            apps,
+            apps: Vec::new(),
+            loaded: false,
             query: String::new(),
             results: Vec::new(),
             selected: 0,
@@ -76,11 +97,34 @@ impl Launcher {
             list_height: Tween::new(0.0),
             card: Rect::default(),
             rows: Vec::new(),
-        };
-        launcher.search();
-        // The list starts at its full height instead of growing in.
-        launcher.list_height.jump(launcher.list_target());
-        launcher
+        }
+    }
+
+    /// Take the applications to search, keeping the query and — where the
+    /// same application is still a result — the selection.
+    pub fn set_apps(&mut self, apps: Vec<App>) {
+        let selected = self.selected_app().map(|app| app.id.clone());
+        self.apps = apps;
+        self.loaded = true;
+        self.search();
+        let kept = selected.and_then(|id| {
+            self.results
+                .iter()
+                .position(|index| self.apps[*index].id == id)
+        });
+        if let Some(index) = kept {
+            self.select(index);
+        }
+    }
+
+    /// Nothing has been typed yet (spaces alone do not count).
+    fn is_idle(&self) -> bool {
+        self.query.trim().is_empty()
+    }
+
+    /// The query matched nothing, and that is final.
+    fn has_no_matches(&self) -> bool {
+        self.loaded && !self.is_idle() && self.results.is_empty()
     }
 
     fn visible_rows(&self) -> usize {
@@ -90,17 +134,21 @@ impl Launcher {
     fn list_target(&self) -> f32 {
         match self.visible_rows() {
             // Room for the "no matches" line.
-            0 => ROW_HEIGHT + space::SM,
+            0 if self.has_no_matches() => ROW_HEIGHT + space::SM,
+            // Just the search field.
+            0 => 0.0,
             rows => rows as f32 * ROW_HEIGHT + space::SM,
         }
     }
 
     /// Re-rank applications for the current query and reset the selection.
+    /// An empty query lists nothing.
     fn search(&mut self) {
         let mut ranked: Vec<(i32, usize)> = self
             .apps
             .iter()
             .enumerate()
+            .filter(|_| !self.is_idle())
             .filter_map(|(index, app)| rank(&self.query, app).map(|score| (score, index)))
             .collect();
         // Stable sort: ties keep the alphabetical order of `apps`.
@@ -216,15 +264,37 @@ fn chip_role(name: &str) -> Role {
 }
 
 impl UiApp for Launcher {
-    type Message = ();
+    type Message = Message;
 
     fn surface(&self) -> SurfaceSpec {
         SurfaceSpec::overlay("enso-launch")
     }
 
-    fn event(&mut self, event: Event<()>, cx: &mut Cx<'_>) {
+    fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
+        // Gathering applications never holds up the first frame: nothing is
+        // listed before a key is pressed, and that is ages away.
+        let index = self.ctx.paths.cache_dir.join(INDEX);
+        let load = move || {
+            apps::load_indexed(&index, |apps| {
+                proxy.send(Message::Apps(apps));
+            });
+        };
+        if let Err(err) = thread::Builder::new()
+            .name("enso-apps".to_owned())
+            .spawn(load)
+        {
+            eprintln!("enso-launch: cannot load applications in the background: {err}");
+            self.set_apps(apps::load());
+        }
+    }
+
+    fn event(&mut self, event: Event<Message>, cx: &mut Cx<'_>) {
         match event {
             Event::Wake if self.presence.is_closing() => cx.exit(),
+            Event::Message(Message::Apps(apps)) => {
+                self.set_apps(apps);
+                cx.redraw();
+            }
             Event::Key(key) => {
                 if let Some(nav) = key.nav(false) {
                     self.move_selection(nav);
@@ -271,7 +341,10 @@ impl UiApp for Launcher {
         let bounds = canvas.bounds();
 
         // Dim what is behind so the card is the only thing asking for attention.
-        canvas.fill(bounds, 0.0, colors.base.alpha(opacity::SCRIM * presence));
+        // The scrim covers the whole screen, so it is written straight over
+        // the empty canvas rather than blended in: on every frame of the
+        // reveal that is most of the pixels there are.
+        canvas.clear(colors.base.alpha(opacity::SCRIM * presence));
 
         let list_height = self.list_height.get(now);
         let width = (self.config.width as f32).min(bounds.w - 2.0 * space::LG);
@@ -333,16 +406,20 @@ impl UiApp for Launcher {
         );
         canvas.fill(caret, 1.0, accent);
 
-        canvas.fill(
-            Rect::new(
-                card.x + space::LG,
-                card.y + SEARCH_HEIGHT - 0.5,
-                card.w - 2.0 * space::LG,
-                stroke::HAIRLINE,
-            ),
-            0.0,
-            colors.highlight_med,
-        );
+        // The rule under the field belongs to the list: it fades in with it.
+        let list_open = (list_height / ROW_HEIGHT).min(1.0);
+        if list_open > 0.0 {
+            canvas.fill(
+                Rect::new(
+                    card.x + space::LG,
+                    card.y + SEARCH_HEIGHT - 0.5,
+                    card.w - 2.0 * space::LG,
+                    stroke::HAIRLINE,
+                ),
+                0.0,
+                colors.highlight_med.alpha(list_open),
+            );
+        }
 
         // Results.
         let list = Rect::new(
@@ -354,11 +431,14 @@ impl UiApp for Launcher {
         self.rows.clear();
         if self.results.is_empty() {
             let row = list.row(0, ROW_HEIGHT, 0.0).inset_xy(space::SM, 0.0);
-            canvas.text_in(
-                &Text::new("No matches", base_size, colors.muted),
-                row,
-                Align::Start,
-            );
+            // Like the rows, the line waits until the card has grown past it.
+            if self.has_no_matches() && row.bottom() <= card.bottom() {
+                canvas.text_in(
+                    &Text::new("No matches", base_size, colors.muted),
+                    row,
+                    Align::Start,
+                );
+            }
         } else {
             let highlight = list
                 .row(0, ROW_HEIGHT, 0.0)
@@ -478,6 +558,13 @@ mod tests {
             app("Videos", "Media Player"),
             app("Zathura", "Document Viewer"),
         ];
+        let mut launcher = unloaded();
+        launcher.set_apps(apps);
+        launcher
+    }
+
+    /// A launcher whose applications have not arrived yet.
+    fn unloaded() -> Launcher {
         let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-launch-test"));
         Launcher::new(
             ctx,
@@ -485,8 +572,28 @@ mod tests {
                 max_results: 6,
                 ..LaunchConfig::default()
             },
-            apps,
         )
+    }
+
+    /// Draw the launcher at rest and return the frame.
+    fn settled(launcher: &mut Launcher) -> Offscreen {
+        let later = Instant::now() + Duration::from_secs(2);
+        let mut text = TextEngine::new(&launcher.ctx.config.appearance);
+        // Draw once to start the reveal, then again at rest.
+        Offscreen::render(&mut text, (800, 520), 2, |canvas| {
+            assert_eq!(launcher.draw(canvas, Instant::now()), Paint::Animating);
+            canvas.clear(Rgba::TRANSPARENT);
+            assert_eq!(launcher.draw(canvas, later), Paint::Idle);
+        })
+    }
+
+    fn snapshot(frame: &Offscreen, name: &str) {
+        frame
+            .save_png(format!(
+                "{}/../../target/snapshots/{name}.png",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
     }
 
     fn key(key: Key, ctrl: bool) -> KeyEvent {
@@ -515,11 +622,71 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_lists_everything_alphabetically() {
-        let launcher = launcher();
-        assert_eq!(launcher.results.len(), 10);
-        assert_eq!(names(&launcher)[..3], ["Alacritty", "Calculator", "Files"]);
-        assert_eq!(launcher.selected_app().unwrap().name, "Alacritty");
+    fn nothing_is_listed_until_typing_starts() {
+        let mut launcher = launcher();
+        assert!(launcher.results.is_empty());
+        assert!(launcher.selected_app().is_none());
+        assert_eq!(launcher.list_target(), 0.0);
+
+        // The card is just the search field: no rows, no "no matches".
+        let frame = settled(&mut launcher);
+        assert!(launcher.rows.is_empty());
+        assert_eq!(launcher.card.h, SEARCH_HEIGHT);
+        snapshot(&frame, "launch-empty");
+
+        // A space is not a query.
+        type_text(&mut launcher, " ");
+        assert!(launcher.results.is_empty());
+        assert_eq!(launcher.list_target(), 0.0);
+
+        type_text(&mut launcher, "f");
+        assert_eq!(names(&launcher)[..2], ["Files", "Firefox"]);
+        assert!(launcher.list_target() > 0.0);
+
+        // Clearing the query folds the list away again.
+        launcher.edit(&key(Key::Char('u'), true));
+        assert!(launcher.results.is_empty());
+        assert_eq!(launcher.list_target(), 0.0);
+    }
+
+    #[test]
+    fn typing_before_the_applications_arrive_is_kept() {
+        let mut launcher = unloaded();
+        type_text(&mut launcher, "fire");
+        // Not "no matches" — the answer is simply not in yet.
+        assert!(launcher.results.is_empty());
+        assert!(!launcher.has_no_matches());
+        assert_eq!(launcher.list_target(), 0.0);
+
+        launcher.set_apps(vec![app("Files", ""), app("Firefox", "Web Browser")]);
+        assert_eq!(launcher.query, "fire");
+        assert_eq!(names(&launcher), ["Firefox"]);
+
+        type_text(&mut launcher, "zzz");
+        assert!(launcher.has_no_matches());
+        assert_eq!(launcher.list_target(), ROW_HEIGHT + space::SM);
+    }
+
+    #[test]
+    fn a_corrected_application_list_keeps_the_selection() {
+        let mut launcher = launcher();
+        type_text(&mut launcher, "fi");
+        launcher.move_selection(Nav::Down);
+        assert_eq!(launcher.selected_app().unwrap().name, "Firefox");
+
+        // The fresh scan found something the saved index did not have.
+        launcher.set_apps(vec![
+            app("Files", ""),
+            app("Filelight", ""),
+            app("Firefox", "Web Browser"),
+        ]);
+        assert_eq!(launcher.query, "fi");
+        assert_eq!(launcher.results.len(), 3);
+        assert_eq!(launcher.selected_app().unwrap().name, "Firefox");
+
+        // If the selected application is gone, the best match is selected.
+        launcher.set_apps(vec![app("Files", "")]);
+        assert_eq!(launcher.selected_app().unwrap().name, "Files");
     }
 
     #[test]
@@ -556,6 +723,9 @@ mod tests {
     #[test]
     fn selection_wraps_and_scrolls() {
         let mut launcher = launcher();
+        // Nine of the ten match "e", by name or description; six fit.
+        type_text(&mut launcher, "e");
+        assert_eq!(launcher.results.len(), 9);
         assert_eq!(key(Key::Char('n'), true).nav(false), Some(Nav::Down));
         for _ in 0..6 {
             launcher.move_selection(Nav::Down);
@@ -565,7 +735,7 @@ mod tests {
         assert_eq!((launcher.selected, launcher.offset), (5, 1));
         launcher.select(0);
         launcher.move_selection(Nav::Up);
-        assert_eq!((launcher.selected, launcher.offset), (9, 4));
+        assert_eq!((launcher.selected, launcher.offset), (8, 3));
         launcher.move_selection(Nav::Down);
         assert_eq!((launcher.selected, launcher.offset), (0, 0));
     }
@@ -575,14 +745,7 @@ mod tests {
         let mut launcher = launcher();
         type_text(&mut launcher, "e");
         launcher.move_selection(Nav::Down);
-        let settled = Instant::now() + Duration::from_secs(2);
-        let mut text = TextEngine::new(&launcher.ctx.config.appearance);
-        // Draw once to start the reveal, then again at rest.
-        let frame = Offscreen::render(&mut text, (800, 520), 2, |canvas| {
-            assert_eq!(launcher.draw(canvas, Instant::now()), Paint::Animating);
-            canvas.clear(Rgba::TRANSPARENT);
-            assert_eq!(launcher.draw(canvas, settled), Paint::Idle);
-        });
+        let frame = settled(&mut launcher);
 
         assert_eq!(launcher.rows.len(), 6);
         assert!(
@@ -602,11 +765,16 @@ mod tests {
             frame.pixel(x as u32, y as u32),
             [surface.r, surface.g, surface.b, 255]
         );
-        frame
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/launch.png"
-            ))
-            .unwrap();
+        snapshot(&frame, "launch");
+    }
+
+    #[test]
+    fn says_so_when_nothing_matches() {
+        let mut launcher = launcher();
+        type_text(&mut launcher, "qqq");
+        let frame = settled(&mut launcher);
+        assert!(launcher.rows.is_empty());
+        assert_eq!(launcher.card.h, SEARCH_HEIGHT + ROW_HEIGHT + space::SM);
+        snapshot(&frame, "launch-no-matches");
     }
 }

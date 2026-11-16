@@ -6,8 +6,8 @@ daemon that share one palette and one way of moving.
 
 | Tool | What it is | State |
 | --- | --- | --- |
-| `enso-bar` | Status bar: workspaces (Niri IPC), clock, battery | working |
-| `enso-launch` | Keyboard-first application launcher | apps working; file search planned |
+| `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, battery | working |
+| `enso-launch` | Keyboard-first application launcher: a bare search field until you type | apps working; file search planned |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts | working (text notifications) |
 | `enso-ctl` | Control center panel + CLI | theming and power readout working; Wi-Fi, Bluetooth, audio planned |
 
@@ -82,6 +82,28 @@ the service itself (`/sys`, sockets, D-Bus), never to a CLI wrapper.
 - **Lean per-tool dependencies.** `zbus` is only in `enso-notify`, `niri-ipc`
   and `jiff` only in `enso-bar`. CLI parsing is `lexopt`.
 - **`unsafe` is forbidden** across the workspace.
+
+## The tools up close
+
+**`enso-bar`** — the left island is about where you are. At rest it shows one
+dot per window on the current workspace, the focused one stretched into a
+pill. Rest the pointer on it (anywhere from the screen corner) and it opens
+out to every workspace: each a group of dots, one per window — a count, not
+titles — with a soft capsule behind the current one. An empty workspace keeps
+a single quiet dot. Click a dot to focus that window, or a group to switch to
+that workspace.
+
+**`enso-launch`** — opens as a search field and nothing else; matches appear
+once you type. Applications are read on a background thread, so the field is
+on screen before the first `.desktop` file is opened, and the result is kept
+in `~/.cache/enso/apps`. The next launch answers from that one small file and
+rescans behind it, correcting itself (and the file) if something was
+installed, removed, or edited — so there are no invalidation rules to get
+wrong, and deleting the file is always safe.
+
+**`enso-notify`** — toasts live on the overlay layer, above every window
+including fullscreen ones, and the surface exists only while something is
+showing.
 
 ## Theming
 
