@@ -17,8 +17,9 @@
 //!   @import url("file:///home/me/.local/state/enso/gtk-4.0.css");
 //!   ```
 //!
-//!   GTK 3's stock theme has its colours built in; the GTK 3 stylesheet is
-//!   for themes made to be recoloured, such as adw-gtk3.
+//!   GTK 3's stock theme has its colours built in, so its stylesheet also
+//!   recolours the stock widgets one by one — enough for a file chooser or
+//!   a settings dialog to belong to the desktop.
 
 use std::{fs, path::Path};
 
@@ -29,6 +30,9 @@ use super::{Job, Outcome, files, keyfile, mentions, replace};
 /// The generated stylesheets, inside the state directory.
 pub const CSS_3: &str = "gtk-3.0.css";
 pub const CSS_4: &str = "gtk-4.0.css";
+
+/// Rules that recolour GTK 3's stock widgets from the names above.
+const WIDGETS_3: &str = include_str!("gtk3.css");
 
 /// The preference in dconf, as GSettings' `org.gnome.desktop.interface` has it.
 const COLOR_SCHEME: &str = "/org/gnome/desktop/interface/color-scheme";
@@ -89,7 +93,7 @@ fn prefer_dark(file: &Path, dark: bool) -> Result<(), String> {
 }
 
 /// A path as a `file://` URL, which is what a stylesheet imports.
-fn file_url(path: &Path) -> String {
+pub fn file_url(path: &Path) -> String {
     let mut url = String::from("file://");
     for byte in path.to_string_lossy().bytes() {
         match byte {
@@ -217,8 +221,21 @@ pub fn render_3(job: &Job<'_>) -> String {
         ("borders", highlight_med),
         ("unfocused_borders", highlight_med),
     ];
+    // Every role under its own name, for the widget rules and for a
+    // `gtk.css` of the user's own.
+    let mut roles: Vec<(String, Rgba)> = job
+        .colors()
+        .iter()
+        .map(|(role, color)| (format!("enso_{}", role.name().replace('-', "_")), color))
+        .collect();
+    roles.push(("enso_accent".to_owned(), accent));
+    let roles: String = roles
+        .iter()
+        .map(|(name, color)| format!("@define-color {name} {color};\n"))
+        .collect();
     format!(
-        "/* {banner} */\n\n{legacy}\n/* libadwaita's names, for themes that follow it. */\n{named}",
+        "/* {banner} */\n\n{roles}\n{legacy}\n/* libadwaita's names, for themes that follow \
+         it. */\n{named}{WIDGETS_3}",
         banner = job.banner(),
         legacy = define(&legacy),
         named = define(&interface(job)),
@@ -256,6 +273,20 @@ mod tests {
         assert!(dawn.contains("@define-color window_bg_color #faf4ed;\n"));
         // GTK 3 knows no CSS variables.
         assert!(!dawn.contains("--"), "{dawn}");
+        // The roles by name, and widget rules that use only names defined.
+        assert!(dawn.contains("@define-color enso_highlight_med #dfdad9;\n"));
+        assert!(dawn.contains("@define-color enso_accent #d7827e;\n"));
+        for used in dawn
+            .split('@')
+            .skip(1)
+            .filter(|rest| rest.starts_with("enso_"))
+        {
+            let name: String = used
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            assert!(dawn.contains(&format!("@define-color {name} ")), "{name}");
+        }
         // No name is defined twice.
         let mut names: Vec<&str> = dawn
             .lines()

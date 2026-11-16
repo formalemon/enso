@@ -10,6 +10,8 @@
 //! - **GTK** is told dark or light through dconf, which is also what the
 //!   settings portal hands to Qt 6, Firefox, and Electron; its palette is a
 //!   generated stylesheet to import.
+//! - **Firefox** gets a stylesheet for its own interface, to import from a
+//!   profile's `userChrome.css`.
 //! - **Qt** gets a colour scheme for qt5ct and qt6ct to pick.
 //! - **Flatpak** is let read what GTK was given.
 //!
@@ -18,6 +20,7 @@
 //! installed is passed over.
 
 mod alacritty;
+mod firefox;
 mod flatpak;
 mod gtk;
 mod keyfile;
@@ -45,6 +48,7 @@ pub enum Place {
     Alacritty,
     Neovim,
     Gtk,
+    Firefox,
     Qt,
     Flatpak,
 }
@@ -52,11 +56,12 @@ pub enum Place {
 impl Place {
     /// Every place, in the order they are applied: Flatpak passes on what
     /// GTK was given, so it comes after.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Niri,
         Self::Alacritty,
         Self::Neovim,
         Self::Gtk,
+        Self::Firefox,
         Self::Qt,
         Self::Flatpak,
     ];
@@ -68,6 +73,7 @@ impl Place {
             Self::Alacritty => "alacritty",
             Self::Neovim => "neovim",
             Self::Gtk => "gtk",
+            Self::Firefox => "firefox",
             Self::Qt => "qt",
             Self::Flatpak => "flatpak",
         }
@@ -79,6 +85,7 @@ impl Place {
             Self::Alacritty => alacritty::apply(job),
             Self::Neovim => neovim::apply(job),
             Self::Gtk => gtk::apply(job),
+            Self::Firefox => firefox::apply(job),
             Self::Qt => qt::apply(job),
             Self::Flatpak => flatpak::apply(job),
         }
@@ -668,7 +675,13 @@ mod tests {
             out,
             "Rosé Pine Dawn (rose-pine-dawn)\n  enso       running tools recoloured\n"
         );
-        for file in ["theme", "niri.kdl", "alacritty.toml", "nvim.lua"] {
+        for file in [
+            "theme",
+            "niri.kdl",
+            "alacritty.toml",
+            "nvim.lua",
+            "firefox.css",
+        ] {
             assert!(
                 sandbox.ctx.paths.state_dir.join(file).is_file(),
                 "{file} was not written"

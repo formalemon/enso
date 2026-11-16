@@ -79,13 +79,16 @@ gap = 10
 # notifications shown at once — the rest scroll — and how many are remembered.
 history_rows = 5
 history_size = 50
+# Keep the history across restarts and logins (its words, in
+# ~/.local/state/enso/notify/history.toml). false forgets it with the session.
+history_keep = true
 
 [ctl]
 width = 340
 # The programs `enso-ctl theme set` takes the palette to, besides enso's own
 # tools. One that is not installed is passed over; drop a name to have enso
 # leave that program alone.
-theme_targets = ["niri", "alacritty", "neovim", "gtk", "qt", "flatpak"]
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "firefox", "qt", "flatpak"]
 
 [wall]
 # How a picture meets a screen of another shape: "cover" fills the screen
@@ -127,3 +130,9 @@ suspend_after = 0
 # the same permission as `enso-ctl profile` (contrib/90-enso-power-profile.rules);
 # without it this does nothing.
 power_saver = true
+# `enso-lock watch`, started with the session, locks without being asked:
+# after this many seconds without a key or the pointer (0 never; time a film
+# or a call keeps the screen awake does not count) …
+idle_after = 300
+# … and just before the machine sleeps, so it never wakes unlocked.
+before_sleep = true

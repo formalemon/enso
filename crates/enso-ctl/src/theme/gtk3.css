@@ -1,0 +1,104 @@
+
+/* GTK 3's stock theme, recoloured widget by widget: its colours are built
+   in, so naming them is not enough. */
+window, dialog, .background, box.vertical.dialog-vbox {
+  background-color: @enso_base;
+  color: @enso_text;
+}
+.view, iconview, textview text, treeview.view, list, .content-view {
+  background-color: @enso_surface;
+  color: @enso_text;
+}
+headerbar, .titlebar, toolbar, actionbar, searchbar, .primary-toolbar,
+placessidebar, placessidebar list, .sidebar, .sidebar list, stacksidebar list {
+  background-image: none;
+  background-color: @enso_base;
+  color: @enso_text;
+  border-color: @enso_highlight_med;
+  box-shadow: none;
+}
+label, image { text-shadow: none; -gtk-icon-shadow: none; }
+label:disabled, .dim-label { color: @enso_muted; }
+
+button {
+  background-image: none;
+  background-color: @enso_overlay;
+  color: @enso_text;
+  border-color: @enso_highlight_med;
+  box-shadow: none;
+  text-shadow: none;
+  -gtk-icon-shadow: none;
+}
+button:hover { background-color: @enso_highlight_med; }
+button:active, button:checked { background-color: @enso_highlight_high; }
+button:disabled { background-color: @enso_surface; color: @enso_muted; }
+button.flat { background-color: transparent; border-color: transparent; }
+button.flat:hover { background-color: @enso_highlight_med; }
+button.suggested-action { background-color: @enso_accent; color: @enso_base; border-color: @enso_accent; }
+button.destructive-action { background-color: @enso_love; color: @enso_base; border-color: @enso_love; }
+
+entry, spinbutton, combobox button.combo {
+  background-image: none;
+  background-color: @enso_surface;
+  color: @enso_text;
+  border-color: @enso_highlight_med;
+  box-shadow: none;
+  caret-color: @enso_text;
+}
+entry:focus { border-color: @enso_accent; box-shadow: inset 0 0 0 1px @enso_accent; }
+entry:disabled { color: @enso_muted; }
+
+*:selected, selection, row:selected, .view:selected, treeview.view:selected,
+placessidebar row:selected, textview text selection {
+  background-color: @enso_accent;
+  color: @enso_base;
+}
+row:hover, treeview.view:hover { background-color: @enso_highlight_low; }
+row:selected:hover { background-color: @enso_accent; }
+treeview.view header button {
+  background-color: @enso_surface;
+  color: @enso_subtle;
+  border-color: @enso_highlight_med;
+}
+
+menu, .menu, .context-menu, popover, popover.background, menubar, tooltip, tooltip.background {
+  background-image: none;
+  background-color: @enso_overlay;
+  color: @enso_text;
+  border-color: @enso_highlight_med;
+  box-shadow: none;
+}
+tooltip label { color: @enso_text; }
+menuitem:hover, modelbutton:hover, menubar > menuitem:hover {
+  background-color: @enso_highlight_med;
+  color: @enso_text;
+}
+
+check, radio {
+  background-image: none;
+  background-color: @enso_surface;
+  border-color: @enso_highlight_high;
+  color: @enso_text;
+  box-shadow: none;
+}
+check:checked, radio:checked { background-color: @enso_accent; border-color: @enso_accent; color: @enso_base; }
+switch { background-image: none; background-color: @enso_highlight_med; border-color: @enso_highlight_med; color: transparent; }
+switch:checked { background-color: @enso_accent; border-color: @enso_accent; }
+switch slider { background-image: none; background-color: @enso_text; border-color: transparent; box-shadow: none; }
+
+scrollbar { background-color: transparent; border-color: transparent; }
+scrollbar slider { background-color: @enso_highlight_high; }
+scrollbar slider:hover { background-color: @enso_muted; }
+scale trough, progressbar trough, levelbar trough { background-image: none; background-color: @enso_highlight_med; border-color: transparent; }
+scale highlight, progressbar progress, levelbar block.filled { background-image: none; background-color: @enso_accent; border-color: transparent; }
+scale slider { background-image: none; background-color: @enso_text; border-color: transparent; box-shadow: none; }
+
+separator, paned > separator { background-image: none; background-color: @enso_highlight_med; }
+notebook > header { background-color: @enso_base; border-color: @enso_highlight_med; }
+notebook > header tab { color: @enso_subtle; }
+notebook > header tab:checked { color: @enso_text; box-shadow: inset 0 -2px @enso_accent; }
+notebook > stack { background-color: @enso_surface; }
+frame > border, scrolledwindow, .frame { border-color: @enso_highlight_med; }
+infobar, infobar > revealer > box { background-color: @enso_overlay; color: @enso_text; }
+*:link, button.link { color: @enso_iris; }
+*:link:visited { color: @enso_subtle; }

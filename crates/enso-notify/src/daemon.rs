@@ -25,7 +25,7 @@ use enso_ui::{
 use serde::Deserialize;
 
 use crate::{
-    center::{Center, Click, Look},
+    center::{Center, Click, Look, Saved},
     dbus,
     stack::{CloseReason, DEFAULT_ACTION, Notification, Stack, StackOptions, Toast, Urgency},
 };
@@ -46,6 +46,8 @@ pub struct NotifyConfig {
     pub history_rows: usize,
     /// Notifications the history remembers.
     pub history_size: usize,
+    /// Keep the history across restarts.
+    pub history_keep: bool,
 }
 
 impl Default for NotifyConfig {
@@ -57,6 +59,7 @@ impl Default for NotifyConfig {
             gap: 10,
             history_rows: 5,
             history_size: 50,
+            history_keep: true,
         }
     }
 }
@@ -167,6 +170,49 @@ fn listen(proxy: Proxy<Message>) {
     }
 }
 
+/// Seconds since the Unix epoch, by the wall clock.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// The kept history's file: in a directory of its own, so that writing it
+/// does not wake the tools that watch the state directory.
+fn history_file(paths: &enso_core::Paths) -> PathBuf {
+    paths.state_dir.join("notify/history.toml")
+}
+
+#[derive(Default, serde::Serialize, Deserialize)]
+struct History {
+    #[serde(default)]
+    note: Vec<Saved>,
+}
+
+/// The history as last kept; none, or an unreadable one, is an empty one.
+fn read_history(paths: &enso_core::Paths) -> Vec<Saved> {
+    std::fs::read_to_string(history_file(paths))
+        .ok()
+        .and_then(|text| toml::from_str::<History>(&text).ok())
+        .map(|history| history.note)
+        .unwrap_or_default()
+}
+
+fn write_history(paths: &enso_core::Paths, note: Vec<Saved>) -> Result<(), String> {
+    let file = history_file(paths);
+    let text = toml::to_string(&History { note }).map_err(|err| err.to_string())?;
+    let dir = file.parent().unwrap_or(&file);
+    std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+    // Other people's words: readable by their owner alone.
+    let tmp = dir.join(".history.toml.tmp");
+    std::fs::write(&tmp, text).map_err(|err| err.to_string())?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp, &file).map_err(|err| err.to_string())
+}
+
 #[derive(Debug)]
 pub struct Daemon {
     ctx: Context,
@@ -192,8 +238,12 @@ impl Daemon {
             max_visible: config.max_visible,
             default_timeout: Duration::from_millis(config.timeout_ms),
         };
+        let mut center = Center::new(config.history_rows, config.history_size, ctx.motion);
+        if config.history_keep {
+            center.restore(read_history(&ctx.paths), Instant::now(), unix_now());
+        }
         Self {
-            center: Center::new(config.history_rows, config.history_size, ctx.motion),
+            center,
             told: None,
             stack: Stack::new(options, ctx.motion),
             ctx,
@@ -330,8 +380,15 @@ impl Daemon {
         }
     }
 
-    /// Keep the state file — the bar's bell — in step.
+    /// Keep the state file — the bar's bell — in step, and the history's
+    /// own file with it.
     fn tell(&mut self) {
+        if self.config.history_keep
+            && let Some(saved) = self.center.save(Instant::now(), unix_now())
+            && let Err(err) = write_history(&self.ctx.paths, saved)
+        {
+            eprintln!("enso-notify: cannot keep the history: {err}");
+        }
         let notices = Notices {
             unseen: self.center.unseen(),
             open: self.center.is_open(),
@@ -385,6 +442,7 @@ impl Daemon {
     fn dismiss(&mut self, id: u32, cx: &mut Cx<'_>) {
         if self.stack.close(id, Instant::now()) {
             self.closed(id, CloseReason::Dismissed);
+            self.center.settle(id);
             self.sync(cx);
         }
     }
@@ -547,11 +605,16 @@ impl App for Daemon {
                 cx.exit();
             }
             Event::Message(Message::Notify(note)) => {
-                self.center.record(note.clone(), now);
+                for dropped in self.center.record(note.clone(), now) {
+                    self.closed(dropped, CloseReason::Expired);
+                }
                 if self.center.is_showing() {
                     // It appears in the history, in front of the reader;
-                    // a toast as well would say it twice.
-                    self.closed(note.id, CloseReason::Dismissed);
+                    // a toast as well would say it twice. One that can be
+                    // opened stays open, there.
+                    if !self.center.is_live(note.id) {
+                        self.closed(note.id, CloseReason::Dismissed);
+                    }
                 } else {
                     let height = self.toast_height(&note, cx);
                     self.stack.push(note, height, now);
@@ -560,9 +623,10 @@ impl App for Daemon {
             }
             Event::Message(Message::Close(id)) => {
                 // Withdrawn by its sender: no longer news.
+                let live = self.center.is_live(id);
                 let forgotten = self.center.forget(id, now);
                 let closed = self.stack.close(id, now);
-                if closed {
+                if closed || live {
                     self.closed(id, CloseReason::Closed);
                 }
                 if forgotten || closed {
@@ -584,7 +648,12 @@ impl App for Daemon {
             }
             Event::Wake => {
                 for id in self.stack.tick(now) {
-                    self.closed(id, CloseReason::Expired);
+                    // A notification that offers something to open is not
+                    // over when its toast leaves: it waits in the history,
+                    // and its sender hears when it leaves that.
+                    if !self.center.is_live(id) {
+                        self.closed(id, CloseReason::Expired);
+                    }
                     self.center.missed();
                 }
                 if self.center.tick(now) {
@@ -615,12 +684,27 @@ impl App for Daemon {
                         cx.redraw();
                     }
                 }
-                PointerEvent::Press { x, y, .. } if self.center.is_open() => {
+                PointerEvent::Press { x, y, button } if self.center.is_open() => {
                     match self.center.on_press(x, y) {
                         Click::Remove(id) => {
                             self.center.forget(id, now);
                         }
-                        Click::Clear => self.center.clear(now),
+                        // The left button opens it, as on the toast; any
+                        // other only takes it off the list.
+                        Click::Open(id) => {
+                            if button == Button::Left
+                                && let Some(connection) = &self.connection
+                            {
+                                dbus::emit_action(connection, id, DEFAULT_ACTION);
+                            }
+                            self.closed(id, CloseReason::Dismissed);
+                            self.center.forget(id, now);
+                        }
+                        Click::Clear => {
+                            for id in self.center.clear(now) {
+                                self.closed(id, CloseReason::Dismissed);
+                            }
+                        }
                         Click::Nothing => return,
                     }
                     self.sync(cx);

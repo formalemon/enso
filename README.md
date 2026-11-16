@@ -10,7 +10,7 @@ and one way of moving.
 | `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, volume, battery, notification bell | working |
 | `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
-| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, Qt, Flatpak | working |
+| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, Firefox, Qt, Flatpak | working |
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
@@ -331,8 +331,18 @@ showing.
   edge has more beyond it. Rows follow the card in one after another; click
   one to remove it and the rest close ranks, or `Clear` them all. `Esc`, a
   second `history`, or moving the pointer away closes it. While it is open
-  new notifications arrive in the list rather than as toasts. The history
-  lives in the daemon's memory, so it starts empty with each session.
+  new notifications arrive in the list rather than as toasts.
+
+  A notification that offers something to open — a message, a finished
+  download — is not over when its toast leaves: its row says `Open` under
+  the pointer, and a left click does what clicking the toast would have
+  (any other button only removes it). Its sender is told it is closed when
+  it leaves the list, not before.
+
+  The history is kept across restarts and logins (`history_keep`): the
+  words and the time, in `~/.local/state/enso/notify/history.toml`, readable
+  by you alone. Pictures and actions belong to the session that sent them
+  and are not kept.
 
 The daemon also keeps a two-line file, `~/.local/state/enso/notifications`
 (the unattended count, and whether the history is open). That is all the bar
@@ -406,8 +416,25 @@ A locked machine is one nobody is looking at, so it is made a quiet one:
 
 Nothing in the session is stopped — music keeps playing, a build keeps
 building, only slower — so unlocking returns to exactly what was left, with
-no windows to wake. To lock on idle or before sleep, have an idle daemon run
-it, e.g. `swayidle -w timeout 300 enso-lock before-sleep enso-lock`.
+no windows to wake.
+
+**Locking without being asked** is `enso-lock watch`: started with the
+session, it draws nothing and runs the lock screen at the two moments nobody
+presses the key.
+
+- **When the machine is left alone** for `idle_after` seconds (300; `0`
+  never). The compositor does the counting (`ext-idle-notify`), and does not
+  count time a film or a call keeps the screen awake.
+- **Just before it sleeps** (`before_sleep`) — a closed lid, the power menu,
+  `systemctl suspend` — so it never wakes unlocked. logind is asked to wait
+  for the lock screen, and does.
+
+```kdl
+spawn-at-startup "enso-lock" "watch"
+```
+
+Only one lock screen runs at a time: a second, from the key while the first
+is up, steps aside.
 
 ## Theming
 
@@ -471,7 +498,8 @@ which is the thing to run after installing one, or after adding a line.
 | Alacritty | `alacritty.toml`: Rosé Pine's own mapping to the terminal colours | `import = ["~/.local/state/enso/alacritty.toml"]` under `[general]` in `alacritty.toml` | at once |
 | Neovim | `nvim.lua`: the palette, handed to [`rose-pine/neovim`](https://github.com/rose-pine/neovim) | `dofile(vim.fn.expand("~/.local/state/enso/nvim.lua"))` in `init.lua`, after the plugin is loaded | at once, in every running Neovim |
 | GTK, and the system | the dark-or-light preference (dconf's `color-scheme`); `gtk-application-prefer-dark-theme` for GTK 3 | nothing | at once — GTK 3 programs when next started |
-| GTK's palette | `gtk-4.0.css`, `gtk-3.0.css`: the colours libadwaita is built from | `@import url("file:///home/you/.local/state/enso/gtk-4.0.css");` in `~/.config/gtk-4.0/gtk.css` | when a program next starts |
+| GTK's palette | `gtk-4.0.css`: the colours libadwaita is built from; `gtk-3.0.css`: the same, and GTK 3's stock widgets recoloured | `@import url("file:///home/you/.local/state/enso/gtk-4.0.css");` in `~/.config/gtk-4.0/gtk.css`, and likewise for `gtk-3.0` | when a program next starts |
+| Firefox | `firefox.css`: tabs, toolbars, address bar, menus | the same kind of `@import` in a profile's `chrome/userChrome.css`, with `toolkit.legacyUserProfileCustomizations.stylesheets` on in `about:config` | when Firefox next starts |
 | Qt | a colour scheme, `colors/enso.conf`, for qt5ct and qt6ct | choose the custom colour scheme `enso` in the tool's Appearance tab | within a few seconds |
 | Flatpak | four read-only entries in the user's global override | nothing | when a program next starts |
 
@@ -492,8 +520,12 @@ Some particulars:
 - **GTK 3** does not ask the portal. enso sets the one key in
   `~/.config/gtk-3.0/settings.ini` — the exception to the rule above, since
   that file has no way to include another — and leaves the rest of it alone.
-  GTK 3's stock theme has its colours built in, so `gtk-3.0.css` only does
-  something under a theme made to be recoloured, such as adw-gtk3.
+  GTK 3's stock theme has its colours built in, so `gtk-3.0.css` restyles
+  the stock widgets themselves: a file chooser or a settings dialog then
+  belongs to the desktop. It also defines every role as `@enso_base`,
+  `@enso_accent`, … for a `gtk.css` of your own.
+- **Firefox** already follows dark and light. The stylesheet colours its own
+  interface; pages are left to the web.
 - **Qt**'s palette needs qt5ct or qt6ct as the platform theme
   (`QT_QPA_PLATFORMTHEME=qt6ct`). Without one, Qt 6 still follows dark and
   light.
@@ -508,7 +540,7 @@ To have enso leave a program alone, drop it from the list:
 
 ```toml
 [ctl]
-theme_targets = ["niri", "alacritty", "neovim", "gtk", "qt", "flatpak"]
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "firefox", "qt", "flatpak"]
 ```
 
 A new target is one file in `crates/enso-ctl/src/theme/` — a function from
@@ -543,17 +575,16 @@ quickest way to see a visual change without restarting anything.
 
 - **enso-ctl** — Bluetooth pairing that needs a PIN; forgetting networks and
   devices from the panel (the command line can); more theme targets (other
-  terminals, a GTK 3 theme of enso's own, Kvantum).
+  terminals, Kvantum).
 - **enso-launch** — Git's global excludes file and `.git/info/exclude`;
   searching file contents.
-- **enso-notify** — acting on a notification from its history row; keeping
-  the history across restarts; pictures in formats other than PNG; styled
-  (bold, italic) body text.
+- **enso-notify** — pictures in formats other than PNG; keeping pictures in
+  the saved history; styled (bold, italic) body text.
 - **enso-bar** — one bar per output.
 - **enso-wall** — a picture per output; picture formats beyond PNG and JPEG;
   honouring a photograph's EXIF rotation.
-- **enso-lock** — locking on idle and before sleep without an idle daemon;
-  authentication beyond the password (fingerprint), which means PAM.
+- **enso-lock** — authentication beyond the password (fingerprint), which
+  means PAM.
 - **enso-power** — a tile in the control center.
 - **enso-ui** — fractional scaling for the single-surface runtime (the
   per-output one has it), a shaped-text cache.

@@ -62,6 +62,9 @@ pub enum Click {
     Nothing,
     /// Remove this notification from the history.
     Remove(u32),
+    /// A notification whose sender is still waiting to hear: open it —
+    /// what a click on its toast would have done — or just remove it.
+    Open(u32),
     /// Empty the history.
     Clear,
 }
@@ -72,6 +75,12 @@ struct Item {
     /// The body on one line.
     body: String,
     received: Instant,
+    /// How old it already was when received: the age a notification from
+    /// before a restart came back with.
+    before: Duration,
+    /// Its sender has not been told it is over, and offers something to
+    /// open: clicking the row can still do what clicking the toast did.
+    live: bool,
     /// Position in the list, in rows; glides when the list changes.
     slot: Tween<f32>,
     /// When the row starts arriving.
@@ -107,6 +116,24 @@ pub struct Center {
     card: Rect,
     hot_rows: Vec<(Rect, u32)>,
     hot_clear: Option<Rect>,
+    /// The list changed since it was last saved.
+    dirty: bool,
+}
+
+/// A notification as the history keeps it across restarts: its words and
+/// its age. Pictures and actions belong to the session that sent them.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Saved {
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub urgency: Urgency,
+    /// When it was received, in seconds since the Unix epoch.
+    pub at: u64,
 }
 
 impl Center {
@@ -128,18 +155,24 @@ impl Center {
             card: Rect::default(),
             hot_rows: Vec::new(),
             hot_clear: None,
+            dirty: false,
         }
     }
 
     /// Remember a notification. One with the id of an entry already there
-    /// updates it in place.
-    pub fn record(&mut self, note: Notification, now: Instant) {
+    /// updates it in place. Returns the ids of live notifications pushed
+    /// out of a full history: their senders are owed a word.
+    pub fn record(&mut self, note: Notification, now: Instant) -> Vec<u32> {
         let body = note.body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let live = note.has_default_action();
+        self.dirty = true;
         if let Some(item) = self.items.iter_mut().find(|item| item.note.id == note.id) {
             item.note = note;
             item.body = body;
             item.received = now;
-            return;
+            item.before = Duration::ZERO;
+            item.live = live;
+            return Vec::new();
         }
         self.items.insert(
             0,
@@ -147,12 +180,37 @@ impl Center {
                 note,
                 body,
                 received: now,
+                before: Duration::ZERO,
+                live,
                 slot: Tween::new(0.0),
                 arrives: now,
             },
         );
-        self.items.truncate(self.capacity);
+        let dropped = self
+            .items
+            .drain(self.capacity.min(self.items.len())..)
+            .filter(|item| item.live)
+            .map(|item| item.note.id)
+            .collect();
         self.reflow(now);
+        dropped
+    }
+
+    /// Whether this notification's sender is still waiting to hear of it.
+    pub fn is_live(&self, id: u32) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.note.id == id && item.live)
+    }
+
+    /// The sender has been told this notification is over: its row stays,
+    /// as something to read.
+    pub fn settle(&mut self, id: u32) {
+        for item in &mut self.items {
+            if item.note.id == id {
+                item.live = false;
+            }
+        }
     }
 
     /// Forget one notification. Returns whether it was there.
@@ -161,14 +219,70 @@ impl Center {
         self.items.retain(|item| item.note.id != id);
         let removed = self.items.len() != before;
         if removed {
+            self.dirty = true;
             self.reflow(now);
         }
         removed
     }
 
-    pub fn clear(&mut self, now: Instant) {
-        self.items.clear();
+    /// Empty the history. Returns the ids of the live notifications in it.
+    pub fn clear(&mut self, now: Instant) -> Vec<u32> {
+        let live = self
+            .items
+            .drain(..)
+            .filter(|item| item.live)
+            .map(|item| item.note.id)
+            .collect();
+        self.dirty = true;
         self.reflow(now);
+        live
+    }
+
+    /// The history as it is to be kept, if it changed since last asked.
+    /// `unix_now` is the wall clock at `now`.
+    pub fn save(&mut self, now: Instant, unix_now: u64) -> Option<Vec<Saved>> {
+        if !std::mem::take(&mut self.dirty) {
+            return None;
+        }
+        Some(
+            self.items
+                .iter()
+                .map(|item| Saved {
+                    app: item.note.app_name.clone(),
+                    summary: item.note.summary.clone(),
+                    body: item.note.body.clone(),
+                    urgency: item.note.urgency,
+                    at: unix_now.saturating_sub(item.age(now).as_secs()),
+                })
+                .collect(),
+        )
+    }
+
+    /// Bring back a kept history, newest first. Ids are taken from the top
+    /// of the range, where no sender's notification will be for a long time.
+    pub fn restore(&mut self, saved: Vec<Saved>, now: Instant, unix_now: u64) {
+        self.items = saved
+            .into_iter()
+            .take(self.capacity)
+            .enumerate()
+            .map(|(index, saved)| Item {
+                body: saved.body.split_whitespace().collect::<Vec<_>>().join(" "),
+                note: Notification {
+                    id: u32::MAX - index as u32,
+                    app_name: saved.app,
+                    summary: saved.summary,
+                    body: saved.body,
+                    urgency: saved.urgency,
+                    ..Notification::default()
+                },
+                received: now,
+                before: Duration::from_secs(unix_now.saturating_sub(saved.at)),
+                live: false,
+                slot: Tween::new(index as f32),
+                arrives: now,
+            })
+            .collect();
+        self.viewport.jump(self.viewport_target());
     }
 
     /// Note that a notification went by without being attended to.
@@ -337,7 +451,13 @@ impl Center {
         self.hot_rows
             .iter()
             .find(|(rect, _)| rect.contains(x, y))
-            .map_or(Click::Nothing, |(_, id)| Click::Remove(*id))
+            .map_or(Click::Nothing, |(_, id)| {
+                if self.is_live(*id) {
+                    Click::Open(*id)
+                } else {
+                    Click::Remove(*id)
+                }
+            })
     }
 
     /// How far a row that started arriving at `arrives` has come: `0..=1`.
@@ -471,6 +591,12 @@ impl Center {
     }
 }
 
+impl Item {
+    fn age(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.received) + self.before
+    }
+}
+
 fn draw_row(
     canvas: &mut Canvas<'_>,
     item: &Item,
@@ -511,7 +637,12 @@ fn draw_row(
 
     // First line: who it is from, and how long ago.
     let line = caption.line_height();
-    let age = ago(now.saturating_duration_since(item.received));
+    // A row that can still be opened says so under the pointer.
+    let age = if hovered && item.live {
+        "Open".to_owned()
+    } else {
+        ago(item.age(now))
+    };
     let age_width = canvas
         .text_in(
             &Text::new(&age, small, colors.muted),
@@ -571,6 +702,78 @@ mod tests {
 
     fn secs(secs: u64) -> Duration {
         Duration::from_secs(secs)
+    }
+
+    fn openable(id: u32) -> Notification {
+        Notification {
+            actions: vec![crate::stack::Action {
+                key: crate::stack::DEFAULT_ACTION.into(),
+                label: "Open".into(),
+            }],
+            ..note(id)
+        }
+    }
+
+    /// A notification that offers something to open stays live in the
+    /// history until its sender has been told it is over.
+    #[test]
+    fn rows_that_can_be_opened_are_live() {
+        let now = Instant::now();
+        let mut center = Center::new(3, 2, Motion::default());
+        assert!(center.record(openable(1), now).is_empty());
+        assert!(center.record(note(2), now).is_empty());
+        assert!(center.is_live(1));
+        assert!(!center.is_live(2));
+        // Pushed out of a full history: its sender is owed a word.
+        assert_eq!(center.record(openable(3), now), [1]);
+        // Dismissed as a toast: the row stays, only to be read.
+        center.settle(3);
+        assert!(!center.is_live(3));
+        center.record(openable(4), now);
+        assert_eq!(center.clear(now), [4]);
+        assert!(ids(&center).is_empty());
+    }
+
+    #[test]
+    fn the_history_survives_a_restart() {
+        let now = Instant::now();
+        let unix = 1_800_000_000;
+        let mut center = center(3);
+        center.record(note(1), now - secs(7200));
+        center.record(openable(2), now - secs(60));
+        let saved = center.save(now, unix).unwrap();
+        assert_eq!(saved.len(), 2);
+        assert_eq!((saved[0].at, saved[1].at), (unix - 60, unix - 7200));
+        assert_eq!(saved[1].summary, "note 1");
+        // Unchanged since: nothing to write.
+        assert_eq!(center.save(now, unix), None);
+
+        // Through the file format and into a new daemon, ten minutes on.
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct File {
+            note: Vec<Saved>,
+        }
+        let text = toml::to_string(&File { note: saved }).unwrap();
+        let saved = toml::from_str::<File>(&text).unwrap().note;
+        let later = Instant::now();
+        let mut restored = center_of(3);
+        restored.restore(saved, later, unix + 600);
+        let ages: Vec<String> = restored
+            .items
+            .iter()
+            .map(|item| ago(item.age(later)))
+            .collect();
+        assert_eq!(ages, ["11m", "2h"]);
+        assert_eq!(restored.items[0].note.summary, "note 2");
+        // Whoever sent them is gone: nothing to open, and no id a new
+        // notification will be given.
+        assert!(ids(&restored).iter().all(|id| *id > u32::MAX - 10));
+        assert!(!restored.is_live(ids(&restored)[0]));
+        assert_eq!(restored.save(later, unix + 600), None);
+    }
+
+    fn center_of(rows: usize) -> Center {
+        center(rows)
     }
 
     #[test]

@@ -45,6 +45,11 @@ pub struct LockConfig {
     pub suspend_after: u64,
     /// Hold the machine in its low-power profile while it is locked.
     pub power_saver: bool,
+    /// For `enso-lock watch`: seconds without a key or the pointer before
+    /// the screen is locked. `0` never locks on idle.
+    pub idle_after: u64,
+    /// For `enso-lock watch`: lock just before the machine sleeps.
+    pub before_sleep: bool,
 }
 
 pub const DEFAULT_CLOCK: &str = "%H:%M";
@@ -58,6 +63,8 @@ impl Default for LockConfig {
             screen_off_after: 30,
             suspend_after: 0,
             power_saver: true,
+            idle_after: 300,
+            before_sleep: true,
         }
     }
 }

@@ -16,6 +16,7 @@
 
 pub mod canvas;
 pub mod geom;
+pub mod idle;
 pub mod image;
 pub mod input;
 mod keymap;

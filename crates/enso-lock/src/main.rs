@@ -17,6 +17,7 @@
 
 mod lock;
 mod saver;
+mod watch;
 
 use std::process::ExitCode;
 
@@ -28,6 +29,11 @@ const HELP: &str = "\
 enso-lock — lock the screen
 
 Usage: enso-lock [OPTIONS]
+       enso-lock watch
+
+With `watch` it locks nothing now: it stays with the session and locks when
+the machine has been left alone, and just before it sleeps. Start it with
+the compositor.
 
 Options:
   -h, --help       Print this help
@@ -46,14 +52,18 @@ Configuration is optional: the [lock] table of ~/.config/enso/config.toml.
   suspend_after    = 0              seconds alone before the machine is
                                     suspended; 0 never
   power_saver      = true           hold the low-power profile while locked
+  idle_after       = 300            for `watch`: seconds alone before
+                                    locking; 0 never
+  before_sleep     = true           for `watch`: lock before the machine sleeps
 
 The wallpaper is the one enso-wall shows: see `enso-wall --help`.
 ";
 
 fn main() -> ExitCode {
-    if let Err(code) = parse_args(lexopt::Parser::from_env()) {
-        return code;
-    }
+    let watch = match parse_args(lexopt::Parser::from_env()) {
+        Ok(watch) => watch,
+        Err(code) => return code,
+    };
 
     // A lock that cannot check a password is a trap. Find out first.
     if let Err(err) = auth::available() {
@@ -66,6 +76,23 @@ fn main() -> ExitCode {
     ctx.report_warnings("enso-lock");
     let appearance = ctx.config.appearance.clone();
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
+
+    if watch {
+        return match watch::run(&config) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("enso-lock: {err}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // One lock screen at a time: a second would find the session locked
+    // already, and would undo the first one's power saving on its way out.
+    let _only = match only(runtime_dir.as_deref()) {
+        Ok(guard) => guard,
+        Err(()) => return ExitCode::SUCCESS,
+    };
 
     let saver = config
         .power_saver
@@ -87,13 +114,31 @@ fn main() -> ExitCode {
     }
 }
 
-/// Parse flags; `Err` carries the exit code to stop with. There are no
-/// flags that lock, so the first argument already decides.
-fn parse_args(mut parser: lexopt::Parser) -> Result<(), ExitCode> {
+/// Hold the file that marks a lock screen as running, for as long as the
+/// returned guard lives. `Err` means another lock screen holds it. Where
+/// there is nowhere to keep such a file, nothing is held and nothing stops.
+fn only(runtime_dir: Option<&std::path::Path>) -> Result<Option<std::fs::File>, ()> {
+    let Some(dir) = runtime_dir else {
+        return Ok(None);
+    };
+    let Ok(file) = std::fs::File::create(dir.join("enso-lock.lock")) else {
+        return Ok(None);
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Err(()),
+        Err(std::fs::TryLockError::Error(_)) => Ok(None),
+    }
+}
+
+/// Parse the arguments: whether to watch rather than lock. `Err` carries
+/// the exit code to stop with.
+fn parse_args(mut parser: lexopt::Parser) -> Result<bool, ExitCode> {
     use lexopt::prelude::*;
 
     match parser.next() {
-        Ok(None) => Ok(()),
+        Ok(None) => Ok(false),
+        Ok(Some(Value(word))) if word == "watch" => Ok(true),
         Ok(Some(Short('h') | Long("help"))) => {
             print!("{HELP}");
             Err(ExitCode::SUCCESS)

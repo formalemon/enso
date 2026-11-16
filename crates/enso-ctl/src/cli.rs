@@ -53,7 +53,7 @@ Theme:
   theme [list]              List available themes
   theme current             Print the active theme's id
   theme set <ID>            Switch theme: enso at once, and with it Niri,
-                            Alacritty, Neovim, GTK, Qt, and Flatpak
+                            Alacritty, Neovim, GTK, Firefox, Qt, and Flatpak
   theme next                Switch to the next theme
   theme apply               Apply the active theme again, and say how each
                             of those programs stands

@@ -72,3 +72,54 @@ pub fn machine(action: Machine) -> Result<()> {
 pub fn end_session() -> Result<()> {
     Service::connect("org.freedesktop.login1")?.run(OWN_SESSION, SESSION, "Terminate", &())
 }
+
+/// Block, calling `before` each time the machine is about to sleep — a lid
+/// closed, `systemctl suspend`, the menu — and only letting it sleep once
+/// `before` has returned.
+///
+/// logind grants that pause to whoever holds a *delay* inhibitor: a file
+/// descriptor that says "wait for me". It is held while awake, let go when
+/// `before` is done, and taken again on waking. logind waits a few seconds
+/// at most, so `before` has to be quick.
+pub fn before_sleep(mut before: impl FnMut()) -> Result<()> {
+    use std::{future::poll_fn, pin::Pin};
+
+    use zbus::{MatchRule, MessageStream, export::futures_core::Stream, message::Type};
+
+    let service = Service::connect("org.freedesktop.login1")?;
+    let hold = || -> Result<zbus::OwnedFd> {
+        service.call(
+            MANAGER_PATH,
+            MANAGER,
+            "Inhibit",
+            &("sleep", "enso-lock", "Locking the screen first", "delay"),
+        )
+    };
+    let mut signals = zbus::block_on(async {
+        let rule = MatchRule::builder()
+            .msg_type(Type::Signal)
+            .sender("org.freedesktop.login1")
+            .interface(MANAGER)
+            .member("PrepareForSleep")
+            .build()?;
+        MessageStream::for_match_rule(rule, service.connection(), None).await
+    })?;
+
+    let mut held = Some(hold()?);
+    loop {
+        let message = zbus::block_on(poll_fn(|cx| Pin::new(&mut signals).poll_next(cx)))
+            .ok_or_else(|| crate::Error::new("the system bus connection closed"))??;
+        let Ok(going_down) = message.body().deserialize::<bool>() else {
+            continue;
+        };
+        if going_down {
+            before();
+            // Closing the descriptor is what lets the machine go.
+            held = None;
+        } else if held.is_none() {
+            // Awake again. Without logind's leave the next sleep is simply
+            // not waited for, so failing here is not the end.
+            held = hold().ok();
+        }
+    }
+}

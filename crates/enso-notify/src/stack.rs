@@ -15,7 +15,8 @@ use enso_core::{Motion, Transition, Tween};
 use enso_ui::Image;
 
 /// How urgent the sender says a notification is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Urgency {
     Low,
     #[default]
