@@ -1,0 +1,20 @@
+[package]
+name = "enso-wall"
+description = "Wallpaper for Niri: one picture per theme, with a default to fall back on"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+# Picture: decoding the PNG and JPEG files that wallpapers are.
+enso-ui = { workspace = true, features = ["picture"] }
+lexopt.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["picture", "png"] }
+
+[lints]
+workspace = true

@@ -22,6 +22,7 @@ pub mod palette;
 pub mod paths;
 pub mod style;
 pub mod theme;
+pub mod wallpaper;
 
 use std::{fmt, io, path::Path, path::PathBuf};
 

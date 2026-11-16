@@ -7,7 +7,10 @@
 //!   levels, read from `/sys`. No dependencies, always available.
 //! - [`wifi`] — Wi-Fi through iwd (feature `iwd`).
 //! - [`bluetooth`] — Bluetooth through BlueZ (feature `bluez`).
-//! - [`logind`] — setting brightness without root (feature `logind`).
+//! - [`logind`] — setting brightness without root, and shutting down,
+//!   restarting, or suspending the machine (feature `logind`).
+//! - [`auth`] — checking the user's own password. No dependencies, always
+//!   available.
 //! - [`audio`] — volume of the output and of each application, through
 //!   PipeWire (feature `audio`).
 //! - [`net`] — whether the machine is online and how, read from `/sys` and
@@ -19,7 +22,10 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod auth;
 #[cfg(any(feature = "iwd", feature = "bluez", feature = "logind"))]
+// logind alone only makes calls; the rest is for the services that are watched.
+#[cfg_attr(not(any(feature = "iwd", feature = "bluez")), allow(dead_code))]
 mod bus;
 pub mod net;
 pub mod power;

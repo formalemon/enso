@@ -79,6 +79,9 @@ impl Transition {
     pub const REVEAL: Self = Self::new(220, Easing::OutQuint);
     /// Panels, cards, and toasts leaving.
     pub const DISMISS: Self = Self::new(250, Easing::InOutCubic);
+    /// The whole screen changing: one wallpaper giving way to another. Longer
+    /// than interface motion, because it is scenery rather than an answer.
+    pub const SCENE: Self = Self::new(420, Easing::InOutCubic);
 }
 
 /// The user's motion preferences applied to transition tokens.

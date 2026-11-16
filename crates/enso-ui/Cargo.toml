@@ -15,10 +15,13 @@ kbvm.workspace = true
 tiny-skia.workspace = true
 cosmic-text.workspace = true
 rustix.workspace = true
+zune-jpeg = { workspace = true, optional = true }
 
 [features]
 # PNG export of offscreen renders, for snapshot tests.
 png = ["tiny-skia/png-format"]
+# Reading wallpapers: PNG and JPEG files, decoded in pure Rust.
+picture = ["tiny-skia/png-format", "dep:zune-jpeg"]
 
 [lints]
 workspace = true

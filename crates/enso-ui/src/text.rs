@@ -1,5 +1,7 @@
 //! Text shaping and rasterisation (cosmic-text), including Nerd Font icons.
 
+use std::cell::OnceCell;
+
 use cosmic_text::{
     Attrs, Buffer, Color, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics, Shaping,
     SwashCache, Weight as FontWeight, Wrap,
@@ -104,31 +106,30 @@ impl<'a> Text<'a> {
 }
 
 /// Owns the font database and glyph cache. One per process.
+///
+/// The system's fonts are only looked at when text is first measured or
+/// drawn, so an interface with no words in it — a wallpaper — never pays
+/// for them.
 pub struct TextEngine {
+    family: String,
+    icons: IconMode,
+    loaded: OnceCell<Loaded>,
+}
+
+/// The fonts, once something needed them.
+struct Loaded {
     fonts: FontSystem,
     cache: SwashCache,
-    family: String,
     icon_family: Option<String>,
     glyphs: bool,
 }
 
-impl std::fmt::Debug for TextEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TextEngine")
-            .field("family", &self.family)
-            .field("icon_family", &self.icon_family)
-            .field("glyphs", &self.glyphs)
-            .finish_non_exhaustive()
-    }
-}
-
-impl TextEngine {
-    /// Load system fonts and resolve the configured interface font and icon mode.
-    pub fn new(appearance: &Appearance) -> Self {
+impl Loaded {
+    fn new(icons: IconMode) -> Self {
         let mut fonts = FontSystem::new();
         resolve_generic_families(&mut fonts);
         let icon_family = find_nerd_font(&fonts);
-        let glyphs = match appearance.icons {
+        let glyphs = match icons {
             IconMode::Auto => icon_family.is_some(),
             IconMode::Glyphs => true,
             IconMode::Text => false,
@@ -136,20 +137,54 @@ impl TextEngine {
         Self {
             fonts,
             cache: SwashCache::new(),
-            family: appearance.font.clone(),
             icon_family,
             glyphs,
         }
     }
+}
+
+impl std::fmt::Debug for TextEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextEngine")
+            .field("family", &self.family)
+            .field("loaded", &self.loaded.get().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl TextEngine {
+    /// Resolve the configured interface font and icon mode against the
+    /// system's fonts — on first use.
+    pub fn new(appearance: &Appearance) -> Self {
+        Self {
+            family: appearance.font.clone(),
+            icons: appearance.icons,
+            loaded: OnceCell::new(),
+        }
+    }
+
+    fn loaded(&self) -> &Loaded {
+        self.loaded.get_or_init(|| Loaded::new(self.icons))
+    }
+
+    /// The fonts, for shaping, alongside the configured family.
+    fn parts(&mut self) -> (&mut Loaded, &str) {
+        self.loaded();
+        let loaded = self
+            .loaded
+            .get_mut()
+            .expect("the fonts were loaded on the line above");
+        (loaded, &self.family)
+    }
 
     /// Whether icons render as Nerd Font glyphs (as opposed to text stand-ins).
     pub fn glyphs(&self) -> bool {
-        self.glyphs
+        self.loaded().glyphs
     }
 
     /// Family name of the Nerd Font used for icons, if one is installed.
     pub fn icon_family(&self) -> Option<&str> {
-        self.icon_family.as_deref()
+        self.loaded().icon_family.as_deref()
     }
 
     /// Size the text would occupy, in logical pixels.
@@ -185,7 +220,8 @@ impl TextEngine {
         ellipsize: bool,
     ) -> Buffer {
         let metrics = Metrics::new(text.size * scale, text.line_height() * scale);
-        let mut buffer = Buffer::new(&mut self.fonts, metrics);
+        let (loaded, ui_family) = self.parts();
+        let mut buffer = Buffer::new(&mut loaded.fonts, metrics);
         buffer.set_wrap(if width.is_some() && text.max_lines > 1 {
             Wrap::WordOrGlyph
         } else {
@@ -197,9 +233,9 @@ impl TextEngine {
         buffer.set_size(width, None);
 
         let family = match text.font {
-            Font::Ui => family_of(&self.family),
+            Font::Ui => family_of(ui_family),
             Font::Mono => Family::Monospace,
-            Font::Icon => self
+            Font::Icon => loaded
                 .icon_family
                 .as_deref()
                 .map_or(Family::SansSerif, Family::Name),
@@ -211,7 +247,7 @@ impl TextEngine {
         };
         let attrs = Attrs::new().family(family).weight(weight);
         buffer.set_text(text.text, &attrs, Shaping::Advanced, None);
-        buffer.shape_until_scroll(&mut self.fonts, false);
+        buffer.shape_until_scroll(&mut loaded.fonts, false);
         buffer
     }
 
@@ -226,9 +262,10 @@ impl TextEngine {
     ) -> Size {
         let mut buffer = self.layout(text, scale);
         let Rgba { r, g, b, a } = text.color;
+        let (loaded, _) = self.parts();
         buffer.draw(
-            &mut self.fonts,
-            &mut self.cache,
+            &mut loaded.fonts,
+            &mut loaded.cache,
             Color::rgba(r, g, b, a),
             |gx, gy, w, h, color| {
                 let color = Rgba::new(color.r(), color.g(), color.b(), color.a());

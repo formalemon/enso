@@ -29,6 +29,8 @@ pub struct Mods {
     pub alt: bool,
     pub shift: bool,
     pub logo: bool,
+    /// Caps Lock is on. Not a shortcut modifier: it only changes letters.
+    pub caps_lock: bool,
 }
 
 impl Mods {

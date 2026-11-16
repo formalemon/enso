@@ -1,8 +1,9 @@
 # enso
 
 A small, pure-Rust desktop suite for the [Niri](https://github.com/YaLTeR/niri)
-Wayland compositor: a bar, a control center, a launcher, and a notification
-daemon that share one palette and one way of moving.
+Wayland compositor: a bar, a control center, a launcher, a notification
+daemon, a wallpaper, a power menu, and a lock screen that share one palette
+and one way of moving.
 
 | Tool | What it is | State |
 | --- | --- | --- |
@@ -10,6 +11,9 @@ daemon that share one palette and one way of moving.
 | `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
 | `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, theme | working |
+| `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
+| `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
+| `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
 
 This is the initial scaffold: the architecture, shared libraries, and a thin
 working slice of every tool. See [Roadmap](#roadmap) for what is not built yet.
@@ -25,6 +29,12 @@ cargo build --release -p enso-bar   # or just one tool
 ./target/release/enso-launch
 ./target/release/enso-ctl                    # panel
 ./target/release/enso-ctl theme set rose-pine-dawn   # running tools recolour instantly
+
+./target/release/enso-wall &
+./target/release/enso-wall set ~/Pictures/quiet.jpg                       # the default
+./target/release/enso-wall set ~/Pictures/dawn.png --theme rose-pine-dawn # one theme's own
+./target/release/enso-power                  # menu; `enso-power lock` acts at once
+./target/release/enso-lock
 ```
 
 Each tool is standalone: no config file, theme file, or other enso tool needs
@@ -35,10 +45,13 @@ Hooking them into Niri (`~/.config/niri/config.kdl`):
 ```kdl
 spawn-at-startup "enso-bar"
 spawn-at-startup "enso-notify"
+spawn-at-startup "enso-wall"
 
 binds {
     Mod+D { spawn "enso-launch"; }   // press again to close
     Mod+C { spawn "enso-ctl"; }
+    Mod+Escape { spawn "enso-power"; }   // then l, e, r, or s
+    Super+Alt+L { spawn "enso-lock"; }
 
     XF86MonBrightnessUp   allow-when-locked=true { spawn "enso-ctl" "brightness" "up"; }
     XF86MonBrightnessDown allow-when-locked=true { spawn "enso-ctl" "brightness" "down"; }
@@ -61,9 +74,10 @@ to short text labels; on Arch, `ttf-nerd-fonts-symbols` is enough.
 crates/
   enso-core/     palette, themes, config, motion + style tokens   (serde, toml)
     themes/      built-in themes; every *.toml here is embedded at build time
-  enso-ui/       layer-shell runtime, software canvas, text, input
-  enso-sys/      direct system interfaces: /sys, iwd, BlueZ, logind
-  enso-bar/  enso-ctl/  enso-launch/  enso-notify/               the four binaries
+  enso-ui/       layer-shell and per-output runtimes, software canvas, text, input
+  enso-sys/      direct system interfaces: /sys, iwd, BlueZ, logind, passwords
+  enso-bar/  enso-ctl/  enso-launch/  enso-notify/
+  enso-wall/  enso-power/  enso-lock/                             the binaries
 config.example.toml   every config key with its default
 ```
 
@@ -78,6 +92,14 @@ pacing; it redraws only when asked and paces animations with frame callbacks,
 so an idle surface costs nothing. `Offscreen::render` draws any app without a
 compositor, which is how the interfaces are snapshot-tested.
 
+Two tools are not one surface but one per screen, and have a sibling runtime:
+implement `Screens` (`role`, `event`, `draw`) and call `run_screens`. A
+`Role::Wallpaper` sits behind everything and takes no input; a `Role::Lock`
+is the session lock (`ext-session-lock`), which the compositor enforces and
+keeps even if the client dies. The runtime follows monitors coming and going,
+and sizes buffers in the output's real pixels — fractional scales included —
+so a `Picture` fitted to a screen is shown exactly as fitted.
+
 **`enso-sys`** is where system backends live. The rule: talk to the kernel or
 the service itself (`/sys`, sockets, D-Bus), never to a CLI wrapper.
 
@@ -86,7 +108,8 @@ the service itself (`/sys`, sockets, D-Bus), never to a CLI wrapper.
 | `power` | `/sys` | battery, power profile, temperature, fans, backlight levels | always on, no dependencies |
 | `wifi` | iwd (`net.connman.iwd`) | radio, scan, networks, connect with a passphrase agent, forget | `iwd` |
 | `bluetooth` | BlueZ (`org.bluez`) | radio, discovery, pair, connect, battery levels | `bluez` |
-| `logind` | `org.freedesktop.login1` | setting brightness without root | `logind` |
+| `logind` | `org.freedesktop.login1` | setting brightness without root; shut down, restart, suspend, end the session | `logind` |
+| `auth` | `unix_chkpwd`, PAM's own helper | whether a password is the user's | always on, no dependencies |
 | `audio` | PipeWire, over its PulseAudio socket | outputs and microphones (which, level, mute) and each application's volume | `audio` |
 | `net` | `/sys`, `/proc` | online by cable or Wi-Fi, and the signal | always on, no dependencies |
 
@@ -111,9 +134,15 @@ loads C plugins, which this suite does not do.
   only libc.
 - **CPU rendering.** The surfaces are small and mostly static; a software
   canvas keeps the dependency tree and memory use far below a GPU toolkit.
-- **Lean per-tool dependencies.** `zbus` is only in `enso-notify` and
-  `enso-ctl`, `niri-ipc` and `jiff` only in `enso-bar`. CLI parsing is
-  `lexopt`.
+- **Lean per-tool dependencies.** `zbus` is only in the tools that talk to a
+  service (`enso-notify`, `enso-ctl`, and — for logind — `enso-power` and
+  `enso-lock`), `niri-ipc` only in those that talk to Niri, the JPEG decoder
+  only in the two that show a wallpaper. `enso-wall` links no D-Bus, no
+  text shaping it ever runs, and no IPC at all. CLI parsing is `lexopt`.
+- **Passwords without PAM.** Linking PAM would be the suite's first C
+  library. `enso-lock` instead asks `unix_chkpwd`, the setuid helper PAM
+  itself uses to check a password when it is not root. The cost is that
+  only the password counts: no fingerprint reader, no `pam_faillock`.
 - **`unsafe` is forbidden** across the workspace.
 
 ## The tools up close
@@ -307,6 +336,77 @@ The daemon also keeps a two-line file, `~/.local/state/enso/notifications`
 (the unattended count, and whether the history is open). That is all the bar
 knows about it — the two share no process and neither needs the other.
 
+**`enso-wall`** — a picture behind everything, on every screen, chosen by
+theme. Each theme can have its own; the rest share a default; and with
+neither, the theme's base colour is the wallpaper, so it works from the
+first run.
+
+```sh
+enso-wall set ~/Pictures/quiet.jpg                        # the default
+enso-wall set ~/Pictures/morning.png --theme rose-pine-dawn
+enso-wall set ~/Pictures/night.jpg --current              # the active theme
+enso-wall unset --theme rose-pine-dawn                    # back to the default
+enso-wall list                                            # who gets what, and why
+```
+
+Pictures are PNG or JPEG. `set` records the choice in
+`~/.local/state/enso/wallpapers.toml`; the same slots can be declared under
+`[wall]` in `config.toml`, and a recorded choice wins over a declared one. A
+running `enso-wall` follows both `set` and `enso-ctl theme set` at once,
+fading from the old picture to the new (420 ms). A picture that has gone
+missing falls through to the default rather than leaving a hole.
+
+It costs what a picture costs and no more. A frame is fitted to the screen's
+real pixels (averaging on the way down, so a large photograph does not
+shimmer), handed to the compositor, and let go: at rest the process holds no
+pixels at all — about 5 MB — and wakes for nothing but a theme, a wallpaper,
+or a monitor changing.
+
+**`enso-power`** — a row of four: Lock, Log out, Restart, Shut down. Each has
+a key (`l`, `e`, `r`, `s`), so leaving is the binding that opens the menu and
+one letter. The three that end the session ask for the letter (or `Enter`)
+a second time — the tile warms and a line says what a second press does —
+and `Esc` takes the question back before it closes the menu. Arrows, `Tab`,
+`j`/`k`, and `Ctrl+n`/`Ctrl+p` move; a click chooses; a click outside or a
+second `enso-power` closes. `confirm = false` under `[power]` makes every
+choice immediate, and `actions` picks and orders the tiles (`"suspend"` adds
+Sleep, on `z`).
+
+`enso-power lock` (or `suspend`, `logout`, `restart`, `shutdown`) skips the
+menu and acts, for key bindings. Shutting down, restarting, and sleeping go
+through logind, which lets the person at the keyboard do them without root;
+logging out asks Niri to quit over its socket; locking runs `enso-lock`
+(`lock_command`), found next to `enso-power` or on `PATH`.
+
+**`enso-lock`** — a clock, the date, and a field that fills with dots, over
+the theme's wallpaper blurred into colour and light (or the base colour
+alone). `Enter` checks the password; `Esc` or `Ctrl+u` clears the field; a
+wrong one shakes it. After three misses each further one costs a wait,
+doubling to half a minute.
+
+The lock is Niri's own (`ext-session-lock`): once granted, nothing else is
+shown or given input, and if `enso-lock` dies the session *stays* locked —
+from a console (`Ctrl+Alt+F3`), `WAYLAND_DISPLAY=wayland-1 enso-lock` starts
+another, which takes the lock over. It refuses to lock at all if it could not check a password afterwards.
+
+A locked machine is one nobody is looking at, so it is made a quiet one:
+
+- **Nothing is drawn** unless a key is pressed or the minute turns.
+- **After 30 seconds alone the screens power off** (`screen_off_after`), and
+  from then on not even the minute is followed: the process has nothing
+  scheduled and sleeps until a key or the pointer, which brings the screens
+  back.
+- **The low-power profile is held** while locked and the previous one put
+  back on unlock (`power_saver`). This is the same dial as `enso-ctl
+  profile`, so it needs the same udev rule; without it, nothing happens.
+- **Optionally, suspend** after a longer while (`suspend_after`, off by
+  default).
+
+Nothing in the session is stopped — music keeps playing, a build keeps
+building, only slower — so unlocking returns to exactly what was left, with
+no windows to wake. To lock on idle or before sleep, have an idle daemon run
+it, e.g. `swayidle -w timeout 300 enso-lock before-sleep enso-lock`.
+
 ## Theming
 
 A theme is a name, a variant, and fifteen colour roles:
@@ -347,7 +447,8 @@ All of it lives in `enso-core` as tokens, so tools never hard-code a look:
 - `style` — radii (14 px cards, 12 px panels, pills), spacing scale, type
   scale, shadows, and the icon vocabulary.
 - `motion` — easing curves, named transitions (`SELECT` 180 ms, `TOGGLE`
-  200 ms, `REVEAL` 220 ms, `DISMISS` 250 ms), and `Tween`, a value that glides
+  200 ms, `REVEAL` 220 ms, `DISMISS` 250 ms, and `SCENE` 420 ms for a
+  whole screen changing), and `Tween`, a value that glides
   to each new target and retargets smoothly mid-flight.
 - `input` (in `enso-ui`) — the shared navigation keys: arrows,
   `Ctrl+n`/`Ctrl+p`, and `j`/`k` where no text field has focus. Overlays
@@ -377,4 +478,10 @@ quickest way to see a visual change without restarting anything.
   the history across restarts; pictures in formats other than PNG; styled
   (bold, italic) body text.
 - **enso-bar** — one bar per output.
-- **enso-ui** — fractional scaling, a shaped-text cache.
+- **enso-wall** — a picture per output; picture formats beyond PNG and JPEG;
+  honouring a photograph's EXIF rotation.
+- **enso-lock** — locking on idle and before sleep without an idle daemon;
+  authentication beyond the password (fingerprint), which means PAM.
+- **enso-power** — a tile in the control center.
+- **enso-ui** — fractional scaling for the single-surface runtime (the
+  per-output one has it), a shaped-text cache.

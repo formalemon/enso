@@ -142,4 +142,9 @@ pub mod icon {
     pub const WIFI_2: Icon = Icon::new("\u{f0922}", "wifi"); // wifi-strength-2
     pub const WIFI_3: Icon = Icon::new("\u{f0925}", "wifi"); // wifi-strength-3
     pub const WIFI_4: Icon = Icon::new("\u{f0928}", "wifi"); // wifi-strength-4
+    pub const POWER: Icon = Icon::new("\u{f0425}", "off"); // power
+    pub const RESTART: Icon = Icon::new("\u{f0709}", "re"); // restart
+    pub const LOGOUT: Icon = Icon::new("\u{f0343}", "exit"); // logout
+    pub const SLEEP: Icon = Icon::new("\u{f04b2}", "zz"); // sleep
+    pub const CAPS_LOCK: Icon = Icon::new("\u{f0a9b}", "caps"); // keyboard-caps
 }

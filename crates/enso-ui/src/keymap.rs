@@ -7,7 +7,97 @@ use kbvm::{
     xkb::{Context, diagnostic::Diagnostic},
 };
 
-use crate::input::{Key, Mods};
+use std::{
+    os::{fd::OwnedFd, unix::fs::FileExt},
+    time::Duration,
+};
+
+use crate::input::{Key, KeyEvent, Mods};
+
+/// Everything `wl_keyboard` tells a client, kept between events: the layout,
+/// which modifiers are down, and how held keys repeat. Each runtime feeds it
+/// from its own keyboard and asks it what a key code means.
+#[derive(Default)]
+pub(crate) struct Keys {
+    keymap: Option<Keymap>,
+    mods: ModifierMask,
+    group: GroupIndex,
+    /// Repeats per second and initial delay in milliseconds.
+    repeat: Option<(u32, u32)>,
+}
+
+impl Keys {
+    /// Take the keymap sent with `wl_keyboard.keymap`.
+    pub fn load(&mut self, fd: OwnedFd, size: u32) {
+        let mut bytes = vec![0; size as usize];
+        // The compositor may share one file description between clients, so
+        // read at an explicit offset rather than from the current position.
+        if std::fs::File::from(fd)
+            .read_exact_at(&mut bytes, 0)
+            .is_err()
+        {
+            return;
+        }
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        self.keymap = Keymap::from_xkb(&bytes);
+    }
+
+    /// Take `wl_keyboard.modifiers`. Returns whether Caps Lock changed.
+    pub fn set_modifiers(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) -> bool {
+        let before = self.mods.contains(ModifierMask::LOCK);
+        self.mods = ModifierMask(depressed | latched | locked);
+        self.group = GroupIndex(group);
+        before != self.mods.contains(ModifierMask::LOCK)
+    }
+
+    /// Take `wl_keyboard.repeat_info`.
+    pub fn set_repeat(&mut self, rate: i32, delay: i32) {
+        self.repeat = (rate > 0).then_some((rate.unsigned_abs(), delay.unsigned_abs()));
+    }
+
+    /// The modifiers held right now.
+    pub fn mods(&self) -> Mods {
+        mods_of(self.mods)
+    }
+
+    /// What pressing the evdev key `keycode` means right now. `None` if the
+    /// key produces nothing, or no keymap has arrived.
+    pub fn translate(&self, keycode: u32, repeat: bool) -> Option<KeyEvent> {
+        let (key, mods) = self
+            .keymap
+            .as_ref()?
+            .translate(keycode, self.mods, self.group)?;
+        Some(KeyEvent { key, mods, repeat })
+    }
+
+    /// If holding `keycode` repeats: the delay before the first repeat and
+    /// the interval between the following ones.
+    pub fn repeat_timing(&self, keycode: u32) -> Option<(Duration, Duration)> {
+        let (rate, delay) = self.repeat?;
+        let repeats = self
+            .keymap
+            .as_ref()
+            .is_some_and(|keymap| keymap.repeats(keycode));
+        (rate > 0 && repeats).then(|| {
+            (
+                Duration::from_millis(u64::from(delay)),
+                Duration::from_millis(u64::from(1000 / rate).max(1)),
+            )
+        })
+    }
+}
+
+fn mods_of(mods: ModifierMask) -> Mods {
+    Mods {
+        ctrl: mods.contains(ModifierMask::CONTROL),
+        alt: mods.contains(ModifierMask::ALT),
+        shift: mods.contains(ModifierMask::SHIFT),
+        logo: mods.contains(ModifierMask::SUPER),
+        caps_lock: mods.contains(ModifierMask::LOCK),
+    }
+}
 
 /// The compositor's keymap, ready to translate key codes.
 pub(crate) struct Keymap {
@@ -69,13 +159,7 @@ impl Keymap {
                 Some(c) if !c.is_control() => Key::Char(c),
                 _ => Key::Other,
             });
-        let mods = Mods {
-            ctrl: mods.contains(ModifierMask::CONTROL),
-            alt: mods.contains(ModifierMask::ALT),
-            shift: mods.contains(ModifierMask::SHIFT),
-            logo: mods.contains(ModifierMask::SUPER),
-        };
-        Some((key, mods))
+        Some((key, mods_of(mods)))
     }
 
     /// Whether holding the key should auto-repeat.

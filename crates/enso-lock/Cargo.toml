@@ -1,0 +1,26 @@
+[package]
+name = "enso-lock"
+description = "Screen lock for Niri: a quiet clock, a password, and nothing running that need not be"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+# logind: suspending after a long while locked.
+enso-sys = { workspace = true, features = ["logind"] }
+# Picture: the wallpaper, blurred, behind the clock.
+enso-ui = { workspace = true, features = ["picture"] }
+serde.workspace = true
+lexopt.workspace = true
+# Powering the screens off while nobody is looking.
+niri-ipc.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["picture", "png"] }
+
+[lints]
+workspace = true

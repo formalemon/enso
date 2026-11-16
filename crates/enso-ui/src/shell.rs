@@ -9,7 +9,6 @@
 
 use std::{
     fmt,
-    os::unix::fs::FileExt,
     time::{Duration, Instant},
 };
 
@@ -19,7 +18,6 @@ use calloop::{
     timer::{TimeoutAction, Timer},
 };
 use enso_core::config::Appearance;
-use kbvm::{GroupIndex, ModifierMask};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     delegate_dispatch2, delegate_registry,
@@ -63,7 +61,7 @@ use crate::{
     canvas::Canvas,
     geom::{Rect, Size},
     input::{Button, KeyEvent, PointerEvent},
-    keymap::Keymap,
+    keymap::Keys,
     text::{Text, TextEngine},
 };
 
@@ -239,10 +237,10 @@ impl Paint {
 
 /// What an app asked for while handling an event.
 #[derive(Debug, Default)]
-struct Requests {
-    redraw: bool,
-    exit: bool,
-    wake: Option<Duration>,
+pub(crate) struct Requests {
+    pub(crate) redraw: bool,
+    pub(crate) exit: bool,
+    pub(crate) wake: Option<Duration>,
     resize: Option<(u32, u32)>,
     visible: Option<bool>,
     input_region: Option<Option<Rect>>,
@@ -255,11 +253,11 @@ struct Requests {
 pub struct Cx<'a> {
     size: (u32, u32),
     text: &'a mut TextEngine,
-    requests: Requests,
+    pub(crate) requests: Requests,
 }
 
 impl<'a> Cx<'a> {
-    fn new(size: (u32, u32), text: &'a mut TextEngine) -> Self {
+    pub(crate) fn new(size: (u32, u32), text: &'a mut TextEngine) -> Self {
         Self {
             size,
             text,
@@ -320,7 +318,7 @@ impl<'a> Cx<'a> {
 }
 
 /// Sends messages into the app from other threads (D-Bus, IPC, file watchers).
-pub struct Proxy<M>(Sender<M>);
+pub struct Proxy<M>(pub(crate) Sender<M>);
 
 impl<M> Proxy<M> {
     /// Queue a message. Returns `false` if the app has exited.
@@ -365,7 +363,7 @@ pub trait App: 'static {
 pub struct Error(String);
 
 impl Error {
-    fn new(context: &str, cause: impl fmt::Display) -> Self {
+    pub(crate) fn new(context: &str, cause: impl fmt::Display) -> Self {
         Self(format!("{context}: {cause}"))
     }
 }
@@ -444,6 +442,7 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         wake: None,
         keyboard: None,
         keys: Keys::default(),
+        repeating: None,
         pointer: None,
         spec,
     };
@@ -461,18 +460,6 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         runtime.flush();
     }
     runtime.failure.map_or(Ok(()), Err)
-}
-
-/// Keyboard layout state, fed by `wl_keyboard` events.
-#[derive(Default)]
-struct Keys {
-    keymap: Option<Keymap>,
-    mods: ModifierMask,
-    group: GroupIndex,
-    /// Repeats per second and initial delay in milliseconds.
-    repeat: Option<(u32, u32)>,
-    /// The key currently auto-repeating and its timer.
-    repeating: Option<(u32, RegistrationToken)>,
 }
 
 struct Runtime<A: App> {
@@ -502,6 +489,8 @@ struct Runtime<A: App> {
     wake: Option<RegistrationToken>,
     keyboard: Option<WlKeyboard>,
     keys: Keys,
+    /// The key currently auto-repeating and its timer.
+    repeating: Option<(u32, RegistrationToken)>,
     pointer: Option<ThemedPointer>,
 }
 
@@ -681,59 +670,29 @@ impl<A: App> Runtime<A> {
         self.layer.wl_surface() == surface
     }
 
-    fn load_keymap(&mut self, fd: std::os::fd::OwnedFd, size: u32) {
-        let mut bytes = vec![0; size as usize];
-        // The compositor may share one file description between clients, so
-        // read at an explicit offset rather than from the current position.
-        if std::fs::File::from(fd)
-            .read_exact_at(&mut bytes, 0)
-            .is_err()
-        {
-            return;
-        }
-        while bytes.last() == Some(&0) {
-            bytes.pop();
-        }
-        self.keys.keymap = Keymap::from_xkb(&bytes);
-    }
-
     fn press(&mut self, keycode: u32, repeat: bool) {
-        let translated = self
-            .keys
-            .keymap
-            .as_ref()
-            .and_then(|keymap| keymap.translate(keycode, self.keys.mods, self.keys.group));
-        if let Some((key, mods)) = translated {
-            self.deliver(Event::Key(KeyEvent { key, mods, repeat }));
+        if let Some(event) = self.keys.translate(keycode, repeat) {
+            self.deliver(Event::Key(event));
         }
     }
 
     fn start_repeat(&mut self, keycode: u32) {
         self.stop_repeat();
-        let Some((rate, delay)) = self.keys.repeat else {
+        let Some((delay, interval)) = self.keys.repeat_timing(keycode) else {
             return;
         };
-        let repeats = self
-            .keys
-            .keymap
-            .as_ref()
-            .is_some_and(|keymap| keymap.repeats(keycode));
-        if rate == 0 || !repeats {
-            return;
-        }
-        let interval = Duration::from_millis(u64::from(1000 / rate).max(1));
-        let timer = Timer::from_duration(Duration::from_millis(u64::from(delay)));
-        let token = self
-            .handle
-            .insert_source(timer, move |_, (), runtime: &mut Self| {
+        let token = self.handle.insert_source(
+            Timer::from_duration(delay),
+            move |_, (), runtime: &mut Self| {
                 runtime.press(keycode, true);
                 TimeoutAction::ToDuration(interval)
-            });
-        self.keys.repeating = token.ok().map(|token| (keycode, token));
+            },
+        );
+        self.repeating = token.ok().map(|token| (keycode, token));
     }
 
     fn stop_repeat(&mut self) {
-        if let Some((_, token)) = self.keys.repeating.take() {
+        if let Some((_, token)) = self.repeating.take() {
             self.handle.remove(token);
         }
     }
@@ -757,7 +716,7 @@ impl<A: App> Dispatch2<WlKeyboard, Runtime<A>> for KeyboardData {
                 fd,
                 size,
             } => {
-                runtime.load_keymap(fd, size);
+                runtime.keys.load(fd, size);
             }
             wl_keyboard::Event::Enter { surface, .. } if runtime.is_own(&surface) => {
                 runtime.deliver(Event::Focus(true));
@@ -773,8 +732,9 @@ impl<A: App> Dispatch2<WlKeyboard, Runtime<A>> for KeyboardData {
                 group,
                 ..
             } => {
-                runtime.keys.mods = ModifierMask(mods_depressed | mods_latched | mods_locked);
-                runtime.keys.group = GroupIndex(group);
+                runtime
+                    .keys
+                    .set_modifiers(mods_depressed, mods_latched, mods_locked, group);
             }
             wl_keyboard::Event::Key {
                 key,
@@ -787,7 +747,6 @@ impl<A: App> Dispatch2<WlKeyboard, Runtime<A>> for KeyboardData {
                 }
                 KeyState::Released
                     if runtime
-                        .keys
                         .repeating
                         .as_ref()
                         .is_some_and(|(code, _)| *code == key) =>
@@ -797,8 +756,7 @@ impl<A: App> Dispatch2<WlKeyboard, Runtime<A>> for KeyboardData {
                 _ => {}
             },
             wl_keyboard::Event::RepeatInfo { rate, delay } => {
-                runtime.keys.repeat =
-                    (rate > 0).then_some((rate.unsigned_abs(), delay.unsigned_abs()));
+                runtime.keys.set_repeat(rate, delay);
             }
             _ => {}
         }

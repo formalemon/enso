@@ -90,4 +90,9 @@ impl Paths {
     pub fn active_theme_file(&self) -> PathBuf {
         self.state_dir.join("theme")
     }
+
+    /// File holding the wallpapers chosen with `enso-wall set`.
+    pub fn wallpapers_file(&self) -> PathBuf {
+        self.state_dir.join("wallpapers.toml")
+    }
 }

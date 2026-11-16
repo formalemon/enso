@@ -31,6 +31,8 @@ kbvm = "0.2"
 
 # Software rendering + text shaping, both pure Rust.
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
+# JPEG decoding for wallpapers, pure Rust.
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
 
 # System interfaces.

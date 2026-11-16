@@ -1,0 +1,24 @@
+[package]
+name = "enso-power"
+description = "Power menu for Niri: lock, log out, restart, shut down"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+# logind: shutting down, restarting, and suspending without root.
+enso-sys = { workspace = true, features = ["logind"] }
+enso-ui.workspace = true
+serde.workspace = true
+lexopt.workspace = true
+# Logging out is asking Niri to quit.
+niri-ipc.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

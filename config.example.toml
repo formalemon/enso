@@ -82,3 +82,44 @@ history_size = 50
 
 [ctl]
 width = 340
+
+[wall]
+# How a picture meets a screen of another shape: "cover" fills the screen
+# and crops what does not fit; "contain" shows all of it on the theme's
+# base colour.
+fit = "cover"
+# The picture for themes that have none of their own, and one per theme id.
+# A picture chosen with `enso-wall set` wins over the one written here.
+# With neither, the theme's base colour is the wallpaper.
+# default = "~/Pictures/walls/quiet.jpg"
+#
+# [wall.themes]
+# rose-pine-dawn = "~/Pictures/walls/morning.png"
+
+[power]
+# What the menu offers, left to right: "lock", "suspend", "logout" (leave
+# Niri), "restart", "shutdown".
+actions = ["lock", "logout", "restart", "shutdown"]
+# Ask for a second press before logging out, restarting, or shutting down.
+confirm = true
+# What "lock" runs, with its arguments.
+lock_command = ["enso-lock"]
+
+[lock]
+# The large clock, and the line under it ("" for none). strftime formats.
+clock = "%H:%M"
+date = "%A, %-d %B"
+# Show the theme's wallpaper — the one `enso-wall` shows — blurred behind the
+# clock. false is the theme's base colour alone.
+wallpaper = true
+# Seconds without a key or the pointer before the screens are powered off.
+# Any input brings them back. 0 leaves them on.
+screen_off_after = 30
+# Seconds without a key or the pointer before the machine is suspended.
+# 0 never suspends.
+suspend_after = 0
+# Hold the machine in its low-power platform profile while it is locked, and
+# put the previous one back on unlock. Programs keep running, slower. Needs
+# the same permission as `enso-ctl profile` (contrib/90-enso-power-profile.rules);
+# without it this does nothing.
+power_saver = true

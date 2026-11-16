@@ -13,6 +13,7 @@ use tiny_skia::{
 use crate::{
     geom::{Align, Rect, Size},
     image::Image,
+    picture::Picture,
     text::{Font, Text, TextEngine},
 };
 
@@ -299,6 +300,53 @@ impl<'a> Canvas<'a> {
         let (pixmap, mask) = self.target();
         if let Some(mut pixmap) = pixmap {
             pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+        }
+    }
+
+    /// Copy `picture` onto the canvas pixel for pixel — its pixels are the
+    /// output's, not logical ones — centred, and cropped where it is larger.
+    /// At full opacity that is a plain copy; below it the picture is mixed
+    /// over what is there, which is how one wallpaper fades into the next.
+    /// Like [`Canvas::clear`], it ignores the clip.
+    pub fn picture(&mut self, picture: &Picture) {
+        let (cw, ch) = (self.width as usize, self.height as usize);
+        let (pw, ph) = (picture.width as usize, picture.height as usize);
+        let (w, h) = (cw.min(pw), ch.min(ph));
+        let (cx, cy) = ((cw - w) / 2, (ch - h) / 2);
+        let (px, py) = ((pw - w) / 2, (ph - h) / 2);
+        let mix = (self.opacity * 256.0).round() as u32;
+        if mix == 0 {
+            return;
+        }
+        let swap = self.bgra;
+        for row in 0..h {
+            let to = ((cy + row) * cw + cx) * 4;
+            let from = ((py + row) * pw + px) * 4;
+            let target = &mut self.pixels[to..to + w * 4];
+            let source = &picture.rgba[from..from + w * 4];
+            if mix >= 256 && !swap {
+                target.copy_from_slice(source);
+                continue;
+            }
+            let pairs = target
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(source.as_chunks::<4>().0);
+            for (dst, src) in pairs {
+                let src = if swap {
+                    [src[2], src[1], src[0], src[3]]
+                } else {
+                    *src
+                };
+                if mix >= 256 {
+                    *dst = src;
+                } else {
+                    for (d, s) in dst.iter_mut().zip(src) {
+                        *d = ((u32::from(*d) * (256 - mix) + u32::from(s) * mix) >> 8) as u8;
+                    }
+                }
+            }
         }
     }
 
