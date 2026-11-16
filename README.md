@@ -440,6 +440,15 @@ enso-ctl theme show rose-pine-main
 watch that directory (inotify) and recolour immediately. The active theme is,
 in order: the recorded choice, `theme` in `config.toml`, the default.
 
+Niri follows too. `theme set` writes the palette as a piece of Niri config —
+only colours: the focus ring, shadows, the backdrop — to
+`~/.local/state/enso/niri.kdl`, and Niri reloads when it changes. One line in
+Niri's config opts in, placed after any colours of your own:
+
+```kdl
+include optional=true "~/.local/state/enso/niri.kdl"
+```
+
 ## Design language
 
 All of it lives in `enso-core` as tokens, so tools never hard-code a look:
@@ -468,10 +477,9 @@ quickest way to see a visual change without restarting anything.
 ## Roadmap
 
 - **enso-ctl** — Bluetooth pairing that needs a PIN; forgetting networks and devices from the panel (the command
-  line can); theme targets beyond enso itself: Niri,
-  Alacritty, Neovim (`rose-pine/neovim`), GTK/system colour scheme, Qt,
-  Flatpak. `theme set` already runs a list of `Target`s; today the list has
-  one entry.
+  line can); more theme targets: Alacritty, Neovim
+  (`rose-pine/neovim`), GTK/system colour scheme, Qt, Flatpak. `theme set`
+  runs a list of `Target`s; today that is enso itself and Niri.
 - **enso-launch** — Git's global excludes file and `.git/info/exclude`;
   searching file contents.
 - **enso-notify** — acting on a notification from its history row; keeping

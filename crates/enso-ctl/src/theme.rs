@@ -1,9 +1,9 @@
 //! `enso-ctl theme …` and the theme-application pipeline.
 //!
 //! Switching theme means applying one palette to several places. Each place
-//! is a [`Target`]. The scaffold ships the first one — enso's own tools,
-//! which follow a state file live — and lists the rest as planned so the
-//! extension point is explicit.
+//! is a [`Target`]: enso's own tools, which follow a state file live, and
+//! Niri, which follows a generated piece of config. The rest are listed as
+//! planned so the extension point is explicit.
 
 use std::io::{IsTerminal, Write};
 
@@ -34,11 +34,11 @@ impl Target for EnsoTools {
 
 /// Targets that are implemented.
 fn targets() -> Vec<Box<dyn Target>> {
-    vec![Box::new(EnsoTools)]
+    vec![Box::new(EnsoTools), Box::new(crate::niri::Niri)]
 }
 
 /// Targets on the roadmap, in the order they will be built.
-pub const PLANNED_TARGETS: &[&str] = &["niri", "alacritty", "neovim", "gtk", "qt", "flatpak"];
+pub const PLANNED_TARGETS: &[&str] = &["alacritty", "neovim", "gtk", "qt", "flatpak"];
 
 /// Apply a theme everywhere it can go. Returns one line per target.
 pub fn apply(ctx: &Context, theme: &Theme) -> Result<Vec<String>, String> {

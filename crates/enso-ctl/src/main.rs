@@ -12,6 +12,7 @@
 
 mod cli;
 mod commands;
+mod niri;
 mod panel;
 mod system;
 mod theme;
