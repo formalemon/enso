@@ -2,18 +2,24 @@
 //!
 //! With no arguments it opens the panel; with a command it acts and exits,
 //! so the same binary serves keybindings, scripts, and the mouse.
+//!
+//! Wi-Fi goes through iwd, Bluetooth through BlueZ, sound through PipeWire,
+//! brightness through `/sys` or logind, and everything else is read from
+//! `/sys` — always the service or the kernel itself, never another program's
+//! command line.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod cli;
+mod commands;
 mod panel;
+mod system;
 mod theme;
 
 use std::{io::Write, process::ExitCode};
 
 use cli::Command;
 use enso_core::Context;
-use enso_sys::power::{BatteryStatus, Sysfs};
 
 fn main() -> ExitCode {
     let command = match cli::parse(std::env::args_os().skip(1)) {
@@ -24,7 +30,6 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut ctx = Context::load();
     let mut out = std::io::stdout().lock();
     let result = match command {
         Command::Help => write!(out, "{}", cli::HELP).map_err(|err| err.to_string()),
@@ -32,20 +37,23 @@ fn main() -> ExitCode {
             writeln!(out, "enso-ctl {}", env!("CARGO_PKG_VERSION")).map_err(|err| err.to_string())
         }
         Command::Theme(command) => {
+            let ctx = Context::load();
             ctx.report_warnings("enso-ctl");
             theme::run(&ctx, &command, &mut out)
         }
-        Command::Power => power(&mut out).map_err(|err| err.to_string()),
-        Command::Planned(domain) => {
-            eprintln!("enso-ctl: `{domain}` is planned but not implemented yet");
-            return ExitCode::from(2);
+        Command::Power => commands::power(&mut out),
+        Command::Brightness(light, level) => commands::brightness(light, level, &mut out),
+        Command::Profile(command) => commands::profile(&command, &mut out),
+        Command::Wifi(command) => commands::wifi(&command, &mut out),
+        Command::Bluetooth(command) => commands::bluetooth(&command, &mut out),
+        Command::Volume(app, change) => commands::volume(app.as_deref(), change, &mut out),
+        Command::Mic(change) => commands::mic(change, &mut out),
+        Command::SoundDevice { input, name } => {
+            commands::sound_device(input, name.as_deref(), &mut out)
         }
-        Command::Panel => {
+        Command::Panel(mode) => {
             drop(out);
-            let config = ctx.section("ctl");
-            ctx.report_warnings("enso-ctl");
-            let appearance = ctx.config.appearance.clone();
-            enso_ui::run(panel::Panel::new(ctx, config), &appearance).map_err(|err| err.to_string())
+            open_panel(mode)
         }
     };
 
@@ -58,35 +66,10 @@ fn main() -> ExitCode {
     }
 }
 
-/// `enso-ctl power`: a plain-text summary read from `/sys`.
-fn power(out: &mut impl Write) -> std::io::Result<()> {
-    let sysfs = Sysfs::system();
-    match sysfs.battery() {
-        Some(battery) => {
-            let status = match battery.status {
-                BatteryStatus::Charging => "charging",
-                BatteryStatus::Discharging => "discharging",
-                BatteryStatus::Full => "full",
-                BatteryStatus::NotCharging => "plugged in, not charging",
-                BatteryStatus::Unknown => "unknown",
-            };
-            writeln!(out, "battery      {}% ({status})", battery.percent)?;
-        }
-        None => writeln!(out, "battery      none")?,
-    }
-    if let Some(profile) = sysfs.platform_profile() {
-        writeln!(
-            out,
-            "profile      {} (of: {})",
-            profile.current,
-            profile.choices.join(", ")
-        )?;
-    }
-    if let Some(temperature) = sysfs.cpu_temperature() {
-        writeln!(out, "temperature  {temperature:.0}°C")?;
-    }
-    if let Some(backlight) = sysfs.backlight() {
-        writeln!(out, "backlight    {backlight}%")?;
-    }
-    Ok(())
+fn open_panel(mode: cli::PanelMode) -> Result<(), String> {
+    let mut ctx = Context::load();
+    let config = ctx.section("ctl");
+    ctx.report_warnings("enso-ctl");
+    let appearance = ctx.config.appearance.clone();
+    enso_ui::run(panel::Panel::new(ctx, config, mode), &appearance).map_err(|err| err.to_string())
 }

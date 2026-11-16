@@ -1,6 +1,6 @@
 [package]
 name = "enso-ctl"
-description = "Control center GUI and CLI: theming, power, and (soon) Wi-Fi, Bluetooth, audio"
+description = "Control center GUI and CLI: Wi-Fi, Bluetooth, sound, brightness, power, and theming"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,12 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-enso-sys.workspace = true
+enso-sys = { workspace = true, features = ["iwd", "bluez", "logind", "audio"] }
 enso-ui.workspace = true
 serde.workspace = true
 lexopt.workspace = true
+# Reading a Wi-Fi passphrase from the terminal without echoing it.
+rustix = { workspace = true, features = ["termios"] }
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

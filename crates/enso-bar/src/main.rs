@@ -2,14 +2,19 @@
 //!
 //! Three floating islands on a transparent strip: the windows of the current
 //! workspace — opening out to every workspace under the pointer — (from
-//! Niri's IPC socket), the clock, and battery (from `/sys`). Works with no
-//! config file and follows `enso-ctl theme set` live.
+//! Niri's IPC socket), the clock, and a status cluster: network (from `/sys`
+//! and `/proc`), volume (from PipeWire), and battery (from `/sys`). Resting
+//! the pointer on the status island opens the control center, when
+//! `enso-ctl` is installed. Works with no config file and follows
+//! `enso-ctl theme set` live.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bar;
 mod config;
+mod dropdown;
 mod niri;
+mod sound;
 
 use std::process::ExitCode;
 
@@ -26,12 +31,15 @@ Options:
 
 The left island shows a dot for each window on the current workspace. Hover
 it to see every workspace; click a dot to focus that window, or a group of
-dots to switch to that workspace.
+dots to switch to that workspace. The right island shows network, volume,
+and battery; resting the pointer on it opens the control center, if enso-ctl
+is installed.
 
 Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   height   = 36                    bar height in pixels
   position = \"top\"                 \"top\" or \"bottom\"
   clock    = \"%a %-d %b  %H:%M\"    strftime format
+  control_center = true            open enso-ctl from the status island
 ";
 
 fn main() -> ExitCode {

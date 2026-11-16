@@ -1,5 +1,9 @@
 //! The bar itself: three floating islands — windows, clock, status.
 //!
+//! The right island is a small cluster of glyphs — network, volume, battery —
+//! that warms a shade under the pointer, because resting there opens the
+//! control center.
+//!
 //! The left island is workspace-centric. At rest it shows one dot per window
 //! on the current workspace, the focused one stretched into a pill. Resting
 //! the pointer on it opens it out to every workspace, each a group of dots,
@@ -11,10 +15,13 @@ use std::{
 };
 
 use enso_core::{
-    Context, Rgba, Transition, Tween,
+    Context, Icon, Rgba, Transition, Tween,
     style::{icon, space, type_scale},
 };
-use enso_sys::power::{Battery, Sysfs};
+use enso_sys::{
+    net::{self, Link},
+    power::{Battery, Sysfs},
+};
 use enso_ui::{
     Align, Anchor, App, Button, Canvas, Cx, Event, Layer, Paint, PointerEvent, Proxy, Rect,
     SurfaceSpec, Text, watch::watch_dir,
@@ -22,7 +29,9 @@ use enso_ui::{
 
 use crate::{
     config::{BarConfig, DEFAULT_CLOCK, Position},
+    dropdown::Dropdown,
     niri::{self, Workspace},
+    sound::{self, Level},
 };
 
 /// Gap between the islands and the screen edges.
@@ -43,11 +52,18 @@ const GROUP_PAD: f32 = space::SM;
 const ISLAND_PAD: f32 = space::MD - GROUP_PAD;
 /// Extra space between two workspaces' groups.
 const GROUP_GAP: f32 = space::XS;
+/// How long the pointer rests on the status island before the control
+/// center opens: long enough that passing over it opens nothing.
+const HOVER_INTENT: Duration = Duration::from_millis(150);
+/// How often the readings nothing announces (network, battery) are looked at.
+const POLL: Duration = Duration::from_secs(5);
 
 /// Messages from background threads.
 #[derive(Debug)]
 pub enum Message {
     Workspaces(Vec<Workspace>),
+    /// The output's volume changed (`None`: no output).
+    Sound(Option<Level>),
     ThemeChanged,
 }
 
@@ -110,6 +126,24 @@ pub struct Bar {
     output: Option<String>,
     clock: String,
     battery: Option<Battery>,
+    /// How the machine is online, if it has the hardware to be.
+    link: Option<Link>,
+    /// The output's volume, if there is an output.
+    sound: Option<Level>,
+    /// When the clock next needs redrawing.
+    clock_due: Instant,
+    /// When to look at the network and battery again.
+    poll_due: Instant,
+    /// How much the status island is lit by the pointer (`0..=1`).
+    status_glow: Tween<f32>,
+    /// The status island, from the last frame, if there is one.
+    status: Option<Rect>,
+    /// The pointer is resting on the status island.
+    status_hovered: bool,
+    /// When the pointer will have rested there long enough to mean it.
+    intent_due: Option<Instant>,
+    /// The control center, opened from the status island.
+    dropdown: Dropdown,
 }
 
 impl Bar {
@@ -130,23 +164,85 @@ impl Bar {
             output: None,
             clock: String::new(),
             battery: None,
+            link: None,
+            sound: None,
+            clock_due: Instant::now(),
+            poll_due: Instant::now(),
+            status_glow: Tween::new(0.0),
+            status: None,
+            status_hovered: false,
+            intent_due: None,
+            dropdown: Dropdown::new(),
         };
-        bar.refresh_status();
+        bar.refresh_clock();
+        bar.poll();
         bar
     }
 
-    /// Re-read the clock and battery. Returns the delay until the next minute.
-    fn refresh_status(&mut self) -> Duration {
+    /// Re-read the network and battery. Returns whether either changed.
+    fn poll(&mut self) -> bool {
+        let (battery, link) = (self.sysfs.battery(), net::link());
+        let changed = battery != self.battery || link != self.link;
+        self.battery = battery;
+        self.link = link;
+        self.poll_due = Instant::now() + POLL;
+        changed
+    }
+
+    /// Re-read the clock, and note when the minute turns next.
+    fn refresh_clock(&mut self) {
         let now = jiff::Zoned::now();
         self.clock = jiff::fmt::strtime::format(&self.config.clock, &now)
             .or_else(|_| jiff::fmt::strtime::format(DEFAULT_CLOCK, &now))
             .unwrap_or_default();
-        self.battery = self.sysfs.battery();
         let into_minute = Duration::new(
             now.second().unsigned_abs().into(),
             now.subsec_nanosecond().unsigned_abs(),
         );
-        Duration::from_secs(60).saturating_sub(into_minute) + Duration::from_millis(20)
+        let next_minute =
+            Duration::from_secs(60).saturating_sub(into_minute) + Duration::from_millis(20);
+        self.clock_due = Instant::now() + next_minute;
+    }
+
+    /// Ask to be woken for whichever comes first: the minute turning, the
+    /// next look at the network and battery, or the pointer having rested on
+    /// the status island long enough.
+    fn arm(&self, cx: &mut Cx<'_>) {
+        let due = self.clock_due.min(self.poll_due);
+        let due = self.intent_due.map_or(due, |intent| intent.min(due));
+        cx.wake_in(due.saturating_duration_since(Instant::now()));
+    }
+
+    /// Track the pointer against the status island. Everything from the
+    /// island's near end to the screen corner counts. Returns the new state
+    /// when it changes.
+    fn status_hover(&mut self, pointer: Option<(f32, f32)>) -> Option<bool> {
+        let hovered = self.config.control_center
+            && pointer.is_some_and(|(x, _)| self.status.is_some_and(|island| x >= island.x));
+        (hovered != self.status_hovered).then(|| {
+            self.status_hovered = hovered;
+            self.status_glow.set(
+                if hovered { 1.0 } else { 0.0 },
+                self.ctx.motion.apply(Transition::HOVER),
+                Instant::now(),
+            );
+            hovered
+        })
+    }
+
+    /// Follow the pointer for the control center's sake: keep an open panel
+    /// informed, and start (or abandon) the wait before opening one.
+    fn follow_status(&mut self, pointer: Option<(f32, f32)>, cx: &mut Cx<'_>) {
+        if let Some(hovering) = self.status_hover(pointer) {
+            self.dropdown.tell(hovering);
+            cx.redraw();
+        }
+        if !self.status_hovered {
+            self.intent_due = None;
+        } else if self.intent_due.is_none() && !self.dropdown.is_open() {
+            self.intent_due = Some(Instant::now() + HOVER_INTENT);
+        }
+        self.arm(cx);
     }
 
     fn set_workspaces(&mut self, workspaces: Vec<Workspace>) {
@@ -359,35 +455,102 @@ impl Bar {
         canvas.text_in(&text, island, Align::Center);
     }
 
-    fn draw_status(&self, canvas: &mut Canvas<'_>, bar: Rect, size: f32) {
-        let Some(battery) = &self.battery else { return };
+    /// The glyphs of the status island, left to right, each with its tint.
+    fn status_glyphs(&self) -> Vec<(Icon, Rgba)> {
         let colors = &self.ctx.theme.colors;
-        let (icon, tint) = match (battery.is_plugged_in(), battery.percent) {
-            (true, _) => (icon::BATTERY_CHARGING, colors.foam),
-            (false, ..=15) => (icon::BATTERY, colors.love),
-            (false, ..=30) => (icon::BATTERY, colors.gold),
-            (false, _) => (icon::BATTERY, colors.subtle),
+        let mut glyphs = Vec::new();
+        if let Some(link) = self.link {
+            glyphs.push(match link {
+                Link::Wired => (icon::ETHERNET, colors.subtle),
+                Link::Offline => (icon::WIFI_OFF, colors.muted),
+                Link::Wifi { bars: 0 | 1 } => (icon::WIFI_1, colors.subtle),
+                Link::Wifi { bars: 2 } => (icon::WIFI_2, colors.subtle),
+                Link::Wifi { bars: 3 } => (icon::WIFI_3, colors.subtle),
+                Link::Wifi { .. } => (icon::WIFI_4, colors.subtle),
+            });
+        }
+        if let Some(sound) = self.sound {
+            glyphs.push(match sound {
+                Level { muted: true, .. } | Level { volume: 0, .. } => {
+                    (icon::VOLUME_MUTED, colors.muted)
+                }
+                Level { volume: ..34, .. } => (icon::VOLUME_LOW, colors.subtle),
+                Level { volume: ..67, .. } => (icon::VOLUME_MEDIUM, colors.subtle),
+                Level { .. } => (icon::VOLUME, colors.subtle),
+            });
+        }
+        if let Some(battery) = &self.battery {
+            glyphs.push(match (battery.is_plugged_in(), battery.percent) {
+                (true, _) => (icon::BATTERY_CHARGING, colors.foam),
+                (false, ..=15) => (icon::BATTERY, colors.love),
+                (false, ..=30) => (icon::BATTERY, colors.gold),
+                (false, _) => (icon::BATTERY, colors.subtle),
+            });
+        }
+        glyphs
+    }
+
+    /// The status island: a glyph each for network, volume, and battery, and
+    /// the battery's charge in figures. Returns whether it is still animating.
+    fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32, now: Instant) -> bool {
+        self.status = None;
+        let colors = &self.ctx.theme.colors;
+        let mut glyphs = self.status_glyphs();
+        // Without a glyph font a row of words would crowd the bar: the
+        // battery alone speaks, as text.
+        if !canvas.glyphs() {
+            glyphs.drain(
+                ..glyphs
+                    .len()
+                    .saturating_sub(usize::from(self.battery.is_some())),
+            );
+        }
+        let label = self
+            .battery
+            .as_ref()
+            .map(|battery| format!("{}%", battery.percent));
+        if glyphs.is_empty() {
+            return false;
+        }
+
+        let text = label
+            .as_deref()
+            .map(|label| Text::new(label, size, colors.text).medium());
+        let text_width = match &text {
+            Some(text) => canvas.measure(text).w + space::SM,
+            None => 0.0,
         };
-        let label = format!("{}%", battery.percent);
-        let text = Text::new(&label, size, colors.text).medium();
-        let icon_width = if canvas.glyphs() {
+        let slot = if canvas.glyphs() {
             size + space::XS
         } else {
             size * 1.9
         };
-        let width = icon_width + space::SM + canvas.measure(&text).w + 2.0 * space::MD;
+        let gap = space::SM + 2.0;
+        let width = glyphs.len() as f32 * slot
+            + (glyphs.len() - 1) as f32 * gap
+            + text_width
+            + 2.0 * space::MD;
         let island = Rect::new(bar.right() - width, bar.y, width, bar.h);
-        canvas.pill(island, colors.base);
+        self.status = Some(island);
+        // It warms a shade under the pointer: there is something behind it.
+        let glow = self.status_glow.get(now);
+        canvas.pill(island, colors.base.mix(colors.overlay, glow));
 
         let inner = island.inset_xy(space::MD, 0.0);
-        canvas.icon(
-            icon,
-            size + 2.0,
-            tint,
-            Rect::new(inner.x, inner.y, icon_width, inner.h),
-            Align::Start,
-        );
-        canvas.text_in(&text, inner, Align::End);
+        for (i, (glyph, tint)) in glyphs.into_iter().enumerate() {
+            let x = inner.x + i as f32 * (slot + gap);
+            canvas.icon(
+                glyph,
+                size + 2.0,
+                tint.mix(colors.text, glow * 0.5),
+                Rect::new(x, inner.y, slot, inner.h),
+                Align::Center,
+            );
+        }
+        if let Some(text) = &text {
+            canvas.text_in(text, inner, Align::End);
+        }
+        self.status_glow.is_animating(now)
     }
 }
 
@@ -409,13 +572,16 @@ impl App for Bar {
     fn start(&mut self, proxy: Proxy<Message>, cx: &mut Cx<'_>) {
         let workspaces = proxy.clone();
         niri::watch(move |snapshot| workspaces.send(Message::Workspaces(snapshot)));
+        let volume = proxy.clone();
+        sound::watch(move |level| volume.send(Message::Sound(level)));
 
         if let Err(err) = watch_dir(&self.ctx.paths.state_dir, move || {
             proxy.send(Message::ThemeChanged)
         }) {
             eprintln!("enso-bar: live theme switching unavailable: {err}");
         }
-        cx.wake_in(self.refresh_status());
+        self.refresh_clock();
+        self.arm(cx);
     }
 
     fn event(&mut self, event: Event<Message>, cx: &mut Cx<'_>) {
@@ -424,14 +590,36 @@ impl App for Bar {
                 self.set_workspaces(workspaces);
                 cx.redraw();
             }
+            Event::Message(Message::Sound(level)) => {
+                self.sound = level;
+                cx.redraw();
+            }
             Event::Message(Message::ThemeChanged) => {
                 if self.ctx.reload_theme() {
                     cx.redraw();
                 }
             }
             Event::Wake => {
-                cx.wake_in(self.refresh_status());
-                cx.redraw();
+                let now = Instant::now();
+                if now >= self.clock_due {
+                    self.refresh_clock();
+                    cx.redraw();
+                }
+                if now >= self.poll_due {
+                    if self.poll() {
+                        cx.redraw();
+                    }
+                    // A control center that has closed is cleaned up after
+                    // here, rather than left until the next hover.
+                    self.dropdown.is_open();
+                }
+                if self.intent_due.is_some_and(|due| now >= due) {
+                    self.intent_due = None;
+                    if self.status_hovered {
+                        self.dropdown.open(self.config.position);
+                    }
+                }
+                self.arm(cx);
             }
             Event::Output(name) => {
                 self.output = Some(name);
@@ -441,17 +629,25 @@ impl App for Bar {
                 if self.hover(Some((x, y))) {
                     cx.redraw();
                 }
+                self.follow_status(Some((x, y)), cx);
             }
             Event::Pointer(PointerEvent::Leave) => {
                 if self.hover(None) {
                     cx.redraw();
                 }
+                self.follow_status(None, cx);
             }
             Event::Pointer(PointerEvent::Press {
                 x,
                 y,
                 button: Button::Left,
             }) => {
+                // A click on the status island opens the control center
+                // without the wait.
+                if self.status_hovered {
+                    self.intent_due = None;
+                    self.dropdown.open(self.config.position);
+                }
                 let target = self.hits.iter().find(|(rect, _)| rect.contains(x, y));
                 let focused = match target {
                     Some((_, Target::Window(id))) => niri::focus_window(*id),
@@ -472,8 +668,8 @@ impl App for Bar {
 
         let animating = self.draw_workspaces(canvas, strip, now);
         self.draw_clock(canvas, strip, size);
-        self.draw_status(canvas, strip, size);
-        Paint::when(animating)
+        let glowing = self.draw_status(canvas, strip, size, now);
+        Paint::when(animating || glowing)
     }
 }
 
@@ -548,6 +744,13 @@ mod tests {
             name: "BAT1".into(),
             percent: 82,
             status: BatteryStatus::Discharging,
+            power_mw: None,
+            minutes_left: None,
+        });
+        bar.link = Some(Link::Wifi { bars: 3 });
+        bar.sound = Some(Level {
+            volume: 60,
+            muted: false,
         });
         bar.set_workspaces(desktop(2, 22));
         bar
@@ -754,6 +957,94 @@ mod tests {
         assert_eq!((bar.current.len(), bar.activity.len()), (4, 6));
         bar.set_workspaces(vec![workspace(2, true, &[22], 22)]);
         assert_eq!((bar.current.len(), bar.activity.len()), (1, 1));
+    }
+
+    #[test]
+    fn the_status_island_is_hovered_from_its_near_end_to_the_corner() {
+        let mut bar = sample("rose-pine-moon");
+        // Nothing to hover before the island has been drawn.
+        assert_eq!(bar.status_hover(Some((890.0, 18.0))), None);
+        frame(&mut bar, Instant::now());
+        let island = bar.status.expect("a status island");
+        assert!(island.right() <= 900.0 - EDGE + 0.5);
+
+        assert_eq!(bar.status_hover(Some((island.x - 1.0, 18.0))), None);
+        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
+        // Still on it: no news. The corner past its end counts too.
+        assert_eq!(bar.status_hover(Some((899.0, 0.0))), None);
+        assert_eq!(bar.status_hover(Some((450.0, 18.0))), Some(false));
+        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
+        assert_eq!(bar.status_hover(None), Some(false));
+
+        // Switched off in the config, the island is just a readout.
+        bar.config.control_center = false;
+        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), None);
+
+        // A desktop has no battery, but still an island to rest on…
+        bar.config.control_center = true;
+        bar.battery = None;
+        frame(&mut bar, Instant::now());
+        let island = bar.status.expect("an island without a battery");
+        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
+        // …unless there is nothing at all to show.
+        bar.link = None;
+        bar.sound = None;
+        frame(&mut bar, later());
+        assert_eq!(bar.status, None);
+        assert_eq!(bar.status_hover(Some((890.0, 18.0))), Some(false));
+    }
+
+    #[test]
+    fn the_status_island_shows_network_volume_and_battery() {
+        let mut bar = sample("rose-pine-moon");
+        let colors = bar.ctx.theme.colors.clone();
+        let glyphs = |bar: &Bar| -> Vec<Icon> {
+            bar.status_glyphs()
+                .into_iter()
+                .map(|(icon, _)| icon)
+                .collect()
+        };
+        assert_eq!(
+            glyphs(&bar),
+            [icon::WIFI_3, icon::VOLUME_MEDIUM, icon::BATTERY]
+        );
+
+        bar.link = Some(Link::Offline);
+        bar.sound = Some(Level {
+            volume: 60,
+            muted: true,
+        });
+        bar.battery.as_mut().unwrap().percent = 12;
+        assert_eq!(
+            bar.status_glyphs(),
+            [
+                (icon::WIFI_OFF, colors.muted),
+                (icon::VOLUME_MUTED, colors.muted),
+                (icon::BATTERY, colors.love),
+            ]
+        );
+
+        bar.link = Some(Link::Wired);
+        bar.sound = Some(Level {
+            volume: 90,
+            muted: false,
+        });
+        bar.battery = None;
+        assert_eq!(glyphs(&bar), [icon::ETHERNET, icon::VOLUME]);
+
+        // Under the pointer the island warms, then settles lit.
+        frame(&mut bar, Instant::now());
+        let island = bar.status.unwrap();
+        assert_eq!(bar.status_hover(Some((island.x + 2.0, 18.0))), Some(true));
+        assert_eq!(frame(&mut bar, Instant::now()).1, Paint::Animating);
+        let (lit, paint) = frame(&mut bar, later());
+        assert_eq!(paint, Paint::Idle);
+        let (x, y) = ((island.x + 5.0) * 2.0, 36.0);
+        assert_eq!(
+            lit.pixel(x as u32, y as u32),
+            [colors.overlay.r, colors.overlay.g, colors.overlay.b, 255]
+        );
+        snapshot(&lit, "bar-status-hovered");
     }
 
     #[test]

@@ -125,4 +125,20 @@ pub mod icon {
     pub const POWER_PROFILE: Icon = Icon::new("\u{f0241}", "mode"); // flash
     pub const THERMOMETER: Icon = Icon::new("\u{f050f}", "temp"); // thermometer
     pub const BRIGHTNESS: Icon = Icon::new("\u{f00df}", "lum"); // brightness-6
+    pub const KEYBOARD: Icon = Icon::new("\u{f030c}", "keys"); // keyboard
+    pub const LOCK: Icon = Icon::new("\u{f033e}", ""); // lock
+    pub const CHEVRON_LEFT: Icon = Icon::new("\u{f0141}", "<"); // chevron-left
+    pub const CHEVRON_RIGHT: Icon = Icon::new("\u{f0142}", ">"); // chevron-right
+    pub const CHEVRON_DOWN: Icon = Icon::new("\u{f0140}", "v"); // chevron-down
+    pub const CHEVRON_UP: Icon = Icon::new("\u{f0143}", "^"); // chevron-up
+    pub const VOLUME_LOW: Icon = Icon::new("\u{f057f}", "vol"); // volume-low
+    pub const VOLUME_MEDIUM: Icon = Icon::new("\u{f0580}", "vol"); // volume-medium
+    pub const MICROPHONE: Icon = Icon::new("\u{f036c}", "mic"); // microphone
+    pub const MICROPHONE_OFF: Icon = Icon::new("\u{f036d}", "mic"); // microphone-off
+    pub const ETHERNET: Icon = Icon::new("\u{f0200}", "net"); // ethernet
+    pub const WIFI_OFF: Icon = Icon::new("\u{f05aa}", "off"); // wifi-off
+    pub const WIFI_1: Icon = Icon::new("\u{f091f}", "wifi"); // wifi-strength-1
+    pub const WIFI_2: Icon = Icon::new("\u{f0922}", "wifi"); // wifi-strength-2
+    pub const WIFI_3: Icon = Icon::new("\u{f0925}", "wifi"); // wifi-strength-3
+    pub const WIFI_4: Icon = Icon::new("\u{f0928}", "wifi"); // wifi-strength-4
 }

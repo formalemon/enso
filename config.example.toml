@@ -32,6 +32,9 @@ height = 36
 position = "top"
 # strftime format
 clock = "%a %-d %b  %H:%M"
+# Open the control center (enso-ctl, when installed) under the status island
+# while the pointer rests on it.
+control_center = true
 
 [launch]
 width = 560

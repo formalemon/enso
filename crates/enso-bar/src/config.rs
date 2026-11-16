@@ -20,6 +20,9 @@ pub struct BarConfig {
     pub position: Position,
     /// `strftime`-style clock format.
     pub clock: String,
+    /// Open the control center (`enso-ctl`, when installed) under the status
+    /// island while the pointer rests on it.
+    pub control_center: bool,
 }
 
 impl Default for BarConfig {
@@ -28,6 +31,7 @@ impl Default for BarConfig {
             height: 36,
             position: Position::Top,
             clock: DEFAULT_CLOCK.to_owned(),
+            control_center: true,
         }
     }
 }

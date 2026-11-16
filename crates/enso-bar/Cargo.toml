@@ -9,7 +9,8 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-enso-sys.workspace = true
+# Audio: the status island shows the volume, and follows it live.
+enso-sys = { workspace = true, features = ["audio"] }
 enso-ui.workspace = true
 serde.workspace = true
 lexopt.workspace = true

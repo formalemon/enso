@@ -21,7 +21,7 @@ use calloop::{
 use enso_core::config::Appearance;
 use kbvm::{GroupIndex, ModifierMask};
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, FrameCallbackData},
+    compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     delegate_dispatch2, delegate_registry,
     dispatch2::Dispatch2,
     output::{OutputHandler, OutputState},
@@ -61,7 +61,7 @@ use smithay_client_toolkit::{
 
 use crate::{
     canvas::Canvas,
-    geom::Size,
+    geom::{Rect, Size},
     input::{Button, KeyEvent, PointerEvent},
     keymap::Keymap,
     text::{Text, TextEngine},
@@ -120,6 +120,16 @@ pub enum Keyboard {
     OnDemand,
     /// Grabs the keyboard as soon as it appears (launchers, modal panels).
     Exclusive,
+}
+
+impl From<Keyboard> for KeyboardInteractivity {
+    fn from(keyboard: Keyboard) -> Self {
+        match keyboard {
+            Keyboard::None => Self::None,
+            Keyboard::OnDemand => Self::OnDemand,
+            Keyboard::Exclusive => Self::Exclusive,
+        }
+    }
 }
 
 /// Gap between the surface and the edges it is anchored to.
@@ -235,6 +245,8 @@ struct Requests {
     wake: Option<Duration>,
     resize: Option<(u32, u32)>,
     visible: Option<bool>,
+    input_region: Option<Option<Rect>>,
+    keyboard: Option<Keyboard>,
 }
 
 /// Handed to an app while it handles an event: lets it measure text and ask
@@ -288,6 +300,22 @@ impl<'a> Cx<'a> {
     /// Show or hide the surface. A hidden surface is unmapped entirely.
     pub fn set_visible(&mut self, visible: bool) {
         self.requests.visible = Some(visible);
+    }
+
+    /// Limit pointer input to `region` (in logical pixels); elsewhere the
+    /// surface is click-through and the pointer counts as having left it.
+    /// `None` makes the whole surface take input again, which is the default.
+    ///
+    /// For surfaces that keep room around what they draw — for a shadow, or
+    /// for a card that changes size — without that room getting in the way.
+    pub fn set_input_region(&mut self, region: Option<Rect>) {
+        self.requests.input_region = Some(region);
+    }
+
+    /// Change how the surface receives keyboard focus, e.g. to take the
+    /// keyboard only while a text field is being typed into.
+    pub fn set_keyboard(&mut self, keyboard: Keyboard) {
+        self.requests.keyboard = Some(keyboard);
     }
 }
 
@@ -407,6 +435,7 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         size: (spec.width.max(1), spec.height.max(1)),
         scale: 1,
         visible: false,
+        input_region: None,
         configured: false,
         frame_pending: false,
         dirty: false,
@@ -463,6 +492,8 @@ struct Runtime<A: App> {
     size: (u32, u32),
     scale: i32,
     visible: bool,
+    /// Where the surface takes pointer input; `None` is all of it.
+    input_region: Option<Rect>,
     configured: bool,
     frame_pending: bool,
     dirty: bool,
@@ -498,10 +529,48 @@ impl<A: App> Runtime<A> {
                 self.layer.commit();
             }
         }
+        if let Some(region) = requests.input_region
+            && region != self.input_region
+        {
+            self.input_region = region;
+            if self.visible {
+                self.send_input_region();
+                // Surface state only takes effect with a commit.
+                self.layer.commit();
+            }
+        }
+        if let Some(keyboard) = requests.keyboard
+            && keyboard != self.spec.keyboard
+        {
+            self.spec.keyboard = keyboard;
+            if self.visible {
+                self.layer.set_keyboard_interactivity(keyboard.into());
+                self.layer.commit();
+            }
+        }
         if let Some(visible) = requests.visible
             && visible != self.visible
         {
             self.set_visible(visible);
+        }
+    }
+
+    /// Queue the current input region on the surface (applied on commit).
+    fn send_input_region(&self) {
+        let surface = self.layer.wl_surface();
+        let Some(rect) = self.input_region else {
+            return surface.set_input_region(None);
+        };
+        // Without a region object the input region stays as it was: a wider
+        // target than asked for, never a dead one.
+        if let Ok(region) = Region::new(&self.compositor) {
+            region.add(
+                rect.x.floor() as i32,
+                rect.y.floor() as i32,
+                rect.w.ceil() as i32,
+                rect.h.ceil() as i32,
+            );
+            surface.set_input_region(Some(region.wl_region()));
         }
     }
 
@@ -533,11 +602,8 @@ impl<A: App> Runtime<A> {
                 left,
             } = spec.margin;
             self.layer.set_margin(top, right, bottom, left);
-            self.layer.set_keyboard_interactivity(match spec.keyboard {
-                Keyboard::None => KeyboardInteractivity::None,
-                Keyboard::OnDemand => KeyboardInteractivity::OnDemand,
-                Keyboard::Exclusive => KeyboardInteractivity::Exclusive,
-            });
+            self.layer.set_keyboard_interactivity(spec.keyboard.into());
+            self.send_input_region();
             self.layer.commit();
         } else {
             self.stop_repeat();

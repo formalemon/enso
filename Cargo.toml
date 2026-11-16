@@ -36,6 +36,8 @@ cosmic-text = { version = "0.19", default-features = false, features = ["std", "
 # System interfaces.
 niri-ipc = "26.4"
 zbus = { version = "6", default-features = false, features = ["default-rt", "service"] }
+# PulseAudio wire protocol in pure Rust; PipeWire serves it (pipewire-pulse).
+pulseaudio = "0.3"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 rustix = { version = "1", features = ["fs", "process"] }
 

@@ -1,0 +1,18 @@
+# Let members of the `wheel` group switch the ACPI platform profile
+# (quiet / balanced / performance), so `enso-ctl profile` and the control
+# center's Profile tile work without root and without a daemon.
+#
+# The kernel leaves the profile writable by root alone. This rule widens that
+# to one group each time the firmware's profile device appears (at boot).
+#
+# Install:
+#   sudo install -m 644 contrib/90-enso-power-profile.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --subsystem-match=platform-profile --action=add
+#
+# Check:  ls -l /sys/firmware/acpi/platform_profile   (group wheel, rw-rw-r--)
+# Use another group by changing `wheel` below.
+
+ACTION=="add", SUBSYSTEM=="platform-profile", \
+  RUN+="/usr/bin/chgrp wheel /sys/firmware/acpi/platform_profile", \
+  RUN+="/usr/bin/chmod g+w /sys/firmware/acpi/platform_profile"
