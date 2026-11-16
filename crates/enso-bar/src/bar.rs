@@ -1,8 +1,10 @@
 //! The bar itself: three floating islands — windows, clock, status.
 //!
-//! The right island is a small cluster of glyphs — network, volume, battery —
-//! that warms a shade under the pointer, because resting there opens the
-//! control center.
+//! The right island is a small cluster of glyphs — network, volume, battery
+//! where there is one, and a bell — that warms a shade under the pointer,
+//! because resting there opens the control center and clicking it opens the
+//! notification history. The bell is always there, so a desktop with no
+//! battery and no Wi-Fi still has an island to rest on.
 //!
 //! The left island is workspace-centric. At rest it shows one dot per window
 //! on the current workspace, the focused one stretched into a pill. Resting
@@ -15,7 +17,7 @@ use std::{
 };
 
 use enso_core::{
-    Context, Icon, Rgba, Transition, Tween,
+    Context, Icon, Notices, Rgba, Transition, Tween,
     style::{icon, space, type_scale},
 };
 use enso_sys::{
@@ -29,7 +31,7 @@ use enso_ui::{
 
 use crate::{
     config::{BarConfig, DEFAULT_CLOCK, Position},
-    dropdown::Dropdown,
+    dropdown::{Dropdown, History},
     niri::{self, Workspace},
     sound::{self, Level},
 };
@@ -130,6 +132,8 @@ pub struct Bar {
     link: Option<Link>,
     /// The output's volume, if there is an output.
     sound: Option<Level>,
+    /// Scrolling on the status island, on its way to a volume step.
+    scroll: sound::Scroll,
     /// When the clock next needs redrawing.
     clock_due: Instant,
     /// When to look at the network and battery again.
@@ -144,6 +148,13 @@ pub struct Bar {
     intent_due: Option<Instant>,
     /// The control center, opened from the status island.
     dropdown: Dropdown,
+    /// The notification history, opened by clicking the island.
+    history: History,
+    /// What the notification daemon last reported.
+    notices: Notices,
+    /// The island was clicked: resting on it opens nothing more until the
+    /// pointer has left and come back.
+    clicked: bool,
 }
 
 impl Bar {
@@ -166,6 +177,7 @@ impl Bar {
             battery: None,
             link: None,
             sound: None,
+            scroll: sound::Scroll::default(),
             clock_due: Instant::now(),
             poll_due: Instant::now(),
             status_glow: Tween::new(0.0),
@@ -173,7 +185,11 @@ impl Bar {
             status_hovered: false,
             intent_due: None,
             dropdown: Dropdown::new(),
+            history: History::new(),
+            notices: Notices::default(),
+            clicked: false,
         };
+        bar.notices = Notices::read(&bar.ctx.paths);
         bar.refresh_clock();
         bar.poll();
         bar
@@ -217,8 +233,7 @@ impl Bar {
     /// island's near end to the screen corner counts. Returns the new state
     /// when it changes.
     fn status_hover(&mut self, pointer: Option<(f32, f32)>) -> Option<bool> {
-        let hovered = self.config.control_center
-            && pointer.is_some_and(|(x, _)| self.status.is_some_and(|island| x >= island.x));
+        let hovered = pointer.is_some_and(|(x, _)| self.status.is_some_and(|island| x >= island.x));
         (hovered != self.status_hovered).then(|| {
             self.status_hovered = hovered;
             self.status_glow.set(
@@ -239,10 +254,27 @@ impl Bar {
         }
         if !self.status_hovered {
             self.intent_due = None;
-        } else if self.intent_due.is_none() && !self.dropdown.is_open() {
+            self.clicked = false;
+        } else if self.intent_due.is_none() && self.may_open_on_hover() && !self.dropdown.is_open()
+        {
             self.intent_due = Some(Instant::now() + HOVER_INTENT);
         }
         self.arm(cx);
+    }
+
+    /// Whether resting on the island opens the control center: not when
+    /// that is switched off, and not on top of the notification history.
+    fn may_open_on_hover(&self) -> bool {
+        self.config.control_center && !self.clicked && !self.notices.open
+    }
+
+    /// A click on the island: the notification history takes the control
+    /// center's place (or closes, if it was open).
+    fn click_status(&mut self) {
+        self.intent_due = None;
+        self.clicked = true;
+        self.dropdown.close();
+        self.history.toggle();
     }
 
     fn set_workspaces(&mut self, workspaces: Vec<Workspace>) {
@@ -487,31 +519,36 @@ impl Bar {
                 (false, _) => (icon::BATTERY, colors.subtle),
             });
         }
+        // Always last, and always there. It brightens when something went
+        // by unattended.
+        glyphs.push(if self.notices.unseen > 0 {
+            (icon::BELL, colors.text)
+        } else {
+            (icon::BELL, colors.subtle)
+        });
         glyphs
     }
 
-    /// The status island: a glyph each for network, volume, and battery, and
-    /// the battery's charge in figures. Returns whether it is still animating.
+    /// The status island: a glyph each for network, volume, and battery, the
+    /// battery's charge in figures, and the bell. Returns whether it is still
+    /// animating.
     fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32, now: Instant) -> bool {
         self.status = None;
         let colors = &self.ctx.theme.colors;
         let mut glyphs = self.status_glyphs();
-        // Without a glyph font a row of words would crowd the bar: the
-        // battery alone speaks, as text.
+        // Without a glyph font a row of words would crowd the bar: only the
+        // battery and the bell speak, as text.
         if !canvas.glyphs() {
             glyphs.drain(
                 ..glyphs
                     .len()
-                    .saturating_sub(usize::from(self.battery.is_some())),
+                    .saturating_sub(1 + usize::from(self.battery.is_some())),
             );
         }
         let label = self
             .battery
             .as_ref()
             .map(|battery| format!("{}%", battery.percent));
-        if glyphs.is_empty() {
-            return false;
-        }
 
         let text = label
             .as_deref()
@@ -536,19 +573,38 @@ impl Bar {
         let glow = self.status_glow.get(now);
         canvas.pill(island, colors.base.mix(colors.overlay, glow));
 
+        // Glyphs, then the battery's figures, then the bell at the very end:
+        // the charge reads with its battery, and the bell keeps the corner.
         let inner = island.inset_xy(space::MD, 0.0);
+        let bell = glyphs.len() - 1;
         for (i, (glyph, tint)) in glyphs.into_iter().enumerate() {
-            let x = inner.x + i as f32 * (slot + gap);
+            let after_text = if i == bell { text_width } else { 0.0 };
+            let x = inner.x + i as f32 * (slot + gap) + after_text;
+            let cell = Rect::new(x, inner.y, slot, inner.h);
             canvas.icon(
                 glyph,
                 size + 2.0,
                 tint.mix(colors.text, glow * 0.5),
-                Rect::new(x, inner.y, slot, inner.h),
+                cell,
                 Align::Center,
             );
+            // A small dot on the bell's shoulder: something is waiting.
+            if i == bell && self.notices.unseen > 0 {
+                let (cx, cy) = cell.center();
+                let reach = (size + 2.0) * 0.36;
+                canvas.circle(
+                    cx + reach,
+                    cy - reach,
+                    3.5,
+                    colors.base.mix(colors.overlay, glow),
+                );
+                canvas.circle(cx + reach, cy - reach, 2.5, self.ctx.accent());
+            }
         }
         if let Some(text) = &text {
-            canvas.text_in(text, inner, Align::End);
+            let before_bell = slot + gap;
+            let figures = Rect::new(inner.x, inner.y, inner.w - before_bell, inner.h);
+            canvas.text_in(text, figures, Align::End);
         }
         self.status_glow.is_animating(now)
     }
@@ -594,8 +650,13 @@ impl App for Bar {
                 self.sound = level;
                 cx.redraw();
             }
+            // Anything written to the state directory: the theme choice, or
+            // the notification daemon's count.
             Event::Message(Message::ThemeChanged) => {
-                if self.ctx.reload_theme() {
+                let notices = Notices::read(&self.ctx.paths);
+                let changed = notices != self.notices;
+                self.notices = notices;
+                if self.ctx.reload_theme() || changed {
                     cx.redraw();
                 }
             }
@@ -615,7 +676,7 @@ impl App for Bar {
                 }
                 if self.intent_due.is_some_and(|due| now >= due) {
                     self.intent_due = None;
-                    if self.status_hovered {
+                    if self.status_hovered && self.may_open_on_hover() {
                         self.dropdown.open(self.config.position);
                     }
                 }
@@ -631,7 +692,19 @@ impl App for Bar {
                 }
                 self.follow_status(Some((x, y)), cx);
             }
+            // Scrolling on the status island turns the volume.
+            Event::Pointer(PointerEvent::Scroll { dy, .. }) if self.status_hovered => {
+                if let Some(level) = self.sound
+                    && let Some(volume) = self.scroll.level(dy, level.volume)
+                {
+                    // Shown at once; the sound server confirms it shortly.
+                    self.sound = Some(Level { volume, ..level });
+                    sound::set(volume);
+                    cx.redraw();
+                }
+            }
             Event::Pointer(PointerEvent::Leave) => {
+                self.scroll.reset();
                 if self.hover(None) {
                     cx.redraw();
                 }
@@ -642,11 +715,8 @@ impl App for Bar {
                 y,
                 button: Button::Left,
             }) => {
-                // A click on the status island opens the control center
-                // without the wait.
                 if self.status_hovered {
-                    self.intent_due = None;
-                    self.dropdown.open(self.config.position);
+                    self.click_status();
                 }
                 let target = self.hits.iter().find(|(rect, _)| rect.contains(x, y));
                 let focused = match target {
@@ -976,26 +1046,75 @@ mod tests {
         assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
         assert_eq!(bar.status_hover(None), Some(false));
 
-        // Switched off in the config, the island is just a readout.
-        bar.config.control_center = false;
-        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), None);
-
-        // A desktop has no battery, but still an island to rest on…
-        bar.config.control_center = true;
+        // A desktop has no battery — nor, perhaps, Wi-Fi or sound — but
+        // always the bell, so always an island to rest on.
+        let with_battery = island.w;
         bar.battery = None;
-        frame(&mut bar, Instant::now());
-        let island = bar.status.expect("an island without a battery");
-        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
-        // …unless there is nothing at all to show.
         bar.link = None;
         bar.sound = None;
         frame(&mut bar, later());
-        assert_eq!(bar.status, None);
-        assert_eq!(bar.status_hover(Some((890.0, 18.0))), Some(false));
+        let island = bar.status.expect("an island with only the bell");
+        assert!(island.w < with_battery / 2.0);
+        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
+        snapshot(&frame(&mut bar, later()).0, "bar-status-desktop");
     }
 
     #[test]
-    fn the_status_island_shows_network_volume_and_battery() {
+    fn resting_opens_the_control_center_and_a_click_the_history() {
+        let mut bar = sample("rose-pine-moon");
+        bar.dropdown = Dropdown::with_program("/nonexistent/enso-ctl");
+        bar.history = History::with_program("/nonexistent/enso-notify");
+        assert!(bar.may_open_on_hover());
+
+        // After a click, resting there opens nothing more…
+        bar.click_status();
+        assert!(bar.clicked && !bar.may_open_on_hover());
+        assert_eq!(bar.intent_due, None);
+        // …and neither does it while the history is open, whoever opened it.
+        bar.clicked = false;
+        bar.notices.open = true;
+        assert!(!bar.may_open_on_hover());
+        bar.notices.open = false;
+        assert!(bar.may_open_on_hover());
+
+        // Switched off in the config, the island still takes the click.
+        bar.config.control_center = false;
+        assert!(!bar.may_open_on_hover());
+    }
+
+    #[test]
+    fn the_bell_says_when_something_is_waiting() {
+        let mut bar = sample("rose-pine-moon");
+        let colors = bar.ctx.theme.colors.clone();
+        assert_eq!(
+            bar.status_glyphs().last(),
+            Some(&(icon::BELL, colors.subtle))
+        );
+        let (quiet, _) = frame(&mut bar, later());
+
+        bar.notices.unseen = 2;
+        assert_eq!(bar.status_glyphs().last(), Some(&(icon::BELL, colors.text)));
+        let (waiting, _) = frame(&mut bar, later());
+        snapshot(&waiting, "bar-status-unseen");
+
+        // The dot is drawn in the accent, somewhere on the island's end.
+        let island = bar.status.unwrap();
+        let accent = bar.ctx.accent();
+        let has_accent = |image: &Offscreen| {
+            let (x0, x1) = (
+                ((island.right() - 40.0) * 2.0) as u32,
+                (island.right() * 2.0) as u32,
+            );
+            (x0..x1).any(|x| {
+                (0..image.height).any(|y| image.pixel(x, y) == [accent.r, accent.g, accent.b, 255])
+            })
+        };
+        assert!(has_accent(&waiting));
+        assert!(!has_accent(&quiet));
+    }
+
+    #[test]
+    fn the_status_island_shows_network_volume_battery_and_bell() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
         let glyphs = |bar: &Bar| -> Vec<Icon> {
@@ -1006,7 +1125,7 @@ mod tests {
         };
         assert_eq!(
             glyphs(&bar),
-            [icon::WIFI_3, icon::VOLUME_MEDIUM, icon::BATTERY]
+            [icon::WIFI_3, icon::VOLUME_MEDIUM, icon::BATTERY, icon::BELL]
         );
 
         bar.link = Some(Link::Offline);
@@ -1021,6 +1140,7 @@ mod tests {
                 (icon::WIFI_OFF, colors.muted),
                 (icon::VOLUME_MUTED, colors.muted),
                 (icon::BATTERY, colors.love),
+                (icon::BELL, colors.subtle),
             ]
         );
 
@@ -1030,7 +1150,7 @@ mod tests {
             muted: false,
         });
         bar.battery = None;
-        assert_eq!(glyphs(&bar), [icon::ETHERNET, icon::VOLUME]);
+        assert_eq!(glyphs(&bar), [icon::ETHERNET, icon::VOLUME, icon::BELL]);
 
         // Under the pointer the island warms, then settles lit.
         frame(&mut bar, Instant::now());

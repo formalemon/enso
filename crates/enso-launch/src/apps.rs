@@ -87,7 +87,7 @@ fn load_from(dirs: &[PathBuf], desktops: &[String]) -> Vec<App> {
 }
 
 /// `applications` directories in priority order.
-fn application_dirs() -> Vec<PathBuf> {
+pub fn application_dirs() -> Vec<PathBuf> {
     let home = env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     let data_home = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -177,7 +177,7 @@ fn parse(id: &str, text: &str, desktops: &[String]) -> Option<App> {
         }
     }
 
-    let command = parse_exec(&exec?);
+    let command = parse_exec(&exec?, None);
     if command.is_empty() {
         return None;
     }
@@ -212,9 +212,12 @@ fn unescape(value: &str) -> String {
 }
 
 /// Split an `Exec` value into arguments: honour double quotes and backslash
-/// escapes, drop field codes (`%f`, `%U`, …), and turn `%%` into `%`.
-fn parse_exec(exec: &str) -> Vec<String> {
+/// escapes, and turn `%%` into `%`. Field codes that stand for a file or URL
+/// (`%f`, `%F`, `%u`, `%U`) become `file` when there is one — appended if the
+/// entry names no place for it — and every other field code is dropped.
+pub fn parse_exec(exec: &str, file: Option<&str>) -> Vec<String> {
     let mut args = Vec::new();
+    let mut placed = false;
     let mut current = String::new();
     let mut started = false;
     let mut quoted = false;
@@ -233,11 +236,18 @@ fn parse_exec(exec: &str) -> Vec<String> {
                 }
             }
             '%' => {
-                // `%%` is a literal percent sign. Anything else is a field
-                // code; we launch without files or URLs, so it expands to nothing.
-                if chars.next() == Some('%') {
-                    current.push('%');
-                    started = true;
+                match (chars.next(), file) {
+                    (Some('%'), _) => {
+                        current.push('%');
+                        started = true;
+                    }
+                    (Some('f' | 'F' | 'u' | 'U'), Some(file)) if !placed => {
+                        current.push_str(file);
+                        started = true;
+                        placed = true;
+                    }
+                    // Any other field code expands to nothing.
+                    _ => {}
                 }
             }
             c if c.is_whitespace() && !quoted => {
@@ -255,30 +265,44 @@ fn parse_exec(exec: &str) -> Vec<String> {
     if started {
         args.push(current);
     }
+    if let Some(file) = file
+        && !placed
+        && !args.is_empty()
+    {
+        args.push(file.to_owned());
+    }
     args
+}
+
+/// Start a program detached from the launcher, optionally in a directory.
+pub fn spawn_detached(argv: &[String], cwd: Option<&Path>) -> io::Result<()> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| io::Error::other("empty command"))?;
+    let mut command = Command::new(program);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // Its own process group, so it outlives the launcher.
+        .process_group(0)
+        .spawn()
+        .map(drop)
 }
 
 impl App {
     /// Start the application detached from the launcher.
     pub fn launch(&self, terminal: &str) -> io::Result<()> {
-        let mut argv: Vec<&str> = Vec::new();
+        let mut argv: Vec<String> = Vec::new();
         if self.terminal {
-            argv.extend([terminal, "-e"]);
+            argv.extend([terminal.to_owned(), "-e".to_owned()]);
         }
-        argv.extend(self.command.iter().map(String::as_str));
-        let (program, args) = argv
-            .split_first()
-            .ok_or_else(|| io::Error::other("empty command"))?;
-
-        Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            // Its own process group, so it outlives the launcher.
-            .process_group(0)
-            .spawn()
-            .map(drop)
+        argv.extend(self.command.iter().cloned());
+        spawn_detached(&argv, None)
     }
 }
 
@@ -328,18 +352,21 @@ Exec=/usr/lib/firefox/firefox --new-window %u
 
     #[test]
     fn splits_exec_lines() {
-        assert_eq!(parse_exec("foo --bar %U"), ["foo", "--bar"]);
+        assert_eq!(parse_exec("foo --bar %U", None), ["foo", "--bar"]);
         assert_eq!(
-            parse_exec(r#"sh -c "echo hello  world" %f"#),
+            parse_exec(r#"sh -c "echo hello  world" %f"#, None),
             ["sh", "-c", "echo hello  world"]
         );
         assert_eq!(
-            parse_exec(r#""/opt/My App/run" --flag="a b""#),
+            parse_exec(r#""/opt/My App/run" --flag="a b""#, None),
             ["/opt/My App/run", "--flag=a b"]
         );
-        assert_eq!(parse_exec("printf 100%%"), ["printf", "100%"]);
-        assert_eq!(parse_exec(r#"env VAR="" app"#), ["env", "VAR=", "app"]);
-        assert!(parse_exec("   ").is_empty());
+        assert_eq!(parse_exec("printf 100%%", None), ["printf", "100%"]);
+        assert_eq!(
+            parse_exec(r#"env VAR="" app"#, None),
+            ["env", "VAR=", "app"]
+        );
+        assert!(parse_exec("   ", None).is_empty());
     }
 
     #[test]

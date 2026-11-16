@@ -111,7 +111,8 @@ pub mod icon {
 
     pub const SEARCH: Icon = Icon::new("\u{f0349}", "/"); // magnify
     pub const APPS: Icon = Icon::new("\u{f003b}", "#"); // apps
-    pub const FOLDER: Icon = Icon::new("\u{f024b}", "~"); // folder
+    pub const FOLDER: Icon = Icon::new("\u{f024b}", "/"); // folder
+    pub const FILE: Icon = Icon::new("\u{f0224}", "-"); // file-outline
     pub const BELL: Icon = Icon::new("\u{f009a}", "!"); // bell
     pub const CLOSE: Icon = Icon::new("\u{f0156}", "x"); // close
     pub const CHECK: Icon = Icon::new("\u{f012c}", "*"); // check

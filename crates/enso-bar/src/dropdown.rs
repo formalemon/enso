@@ -11,6 +11,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
+    thread,
 };
 
 use crate::config::Position;
@@ -28,11 +29,7 @@ impl Dropdown {
     /// tree or a private prefix uses its own), otherwise whichever is on
     /// `PATH`.
     pub fn new() -> Self {
-        let sibling = env::current_exe()
-            .ok()
-            .and_then(|exe| Some(exe.parent()?.join("enso-ctl")))
-            .filter(|path| path.is_file());
-        Self::with_program(sibling.unwrap_or_else(|| PathBuf::from("enso-ctl")))
+        Self::with_program(companion("enso-ctl"))
     }
 
     pub fn with_program(program: impl Into<PathBuf>) -> Self {
@@ -89,6 +86,13 @@ impl Dropdown {
         }
     }
 
+    /// Ask an open panel to close now: something else wants its place.
+    pub fn close(&mut self) {
+        if let Some((_, stdin)) = &mut self.running {
+            let _ = stdin.write_all(b"close\n").and_then(|()| stdin.flush());
+        }
+    }
+
     /// Tell an open panel whether the pointer is on the island.
     pub fn tell(&mut self, hovering: bool) {
         if let Some((_, stdin)) = &mut self.running {
@@ -96,6 +100,75 @@ impl Dropdown {
             // A panel that has just closed is not listening; `is_open` will
             // notice next time.
             let _ = stdin.write_all(line).and_then(|()| stdin.flush());
+        }
+    }
+}
+
+/// Another tool of the suite: the one installed next to this bar if there
+/// is one (so a build tree or a private prefix uses its own), otherwise
+/// whichever is on `PATH`.
+fn companion(name: &str) -> PathBuf {
+    env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join(name)))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// The notification history, which `enso-notify` shows when asked. Like
+/// the control center it belongs to another tool; without `enso-notify`
+/// the bell is simply a bell.
+#[derive(Debug)]
+pub struct History {
+    program: PathBuf,
+    /// The program could not be started; do not keep trying.
+    missing: bool,
+}
+
+impl History {
+    pub fn new() -> Self {
+        Self::with_program(companion("enso-notify"))
+    }
+
+    pub fn with_program(program: impl Into<PathBuf>) -> Self {
+        Self {
+            program: program.into(),
+            missing: false,
+        }
+    }
+
+    /// Open the history, or close it if it is open.
+    pub fn toggle(&mut self) {
+        if self.missing {
+            return;
+        }
+        let spawned = Command::new(&self.program)
+            .args(["history", "toggle"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            // It says so itself when no daemon is running.
+            .spawn();
+        match spawned {
+            // It passes the word on and exits; wait for it off to the side
+            // so it is not left behind as a zombie.
+            Ok(mut child) => {
+                let waiting = thread::Builder::new()
+                    .name("enso-history".to_owned())
+                    .spawn(move || {
+                        let _ = child.wait();
+                    });
+                if let Err(err) = waiting {
+                    eprintln!("enso-bar: cannot wait for enso-notify: {err}");
+                }
+            }
+            Err(err) => {
+                self.missing = true;
+                if err.kind() == io::ErrorKind::NotFound {
+                    eprintln!("enso-bar: enso-notify is not installed, so the bell opens nothing");
+                } else {
+                    eprintln!("enso-bar: cannot open the notification history: {err}");
+                }
+            }
         }
     }
 }
@@ -114,8 +187,21 @@ mod tests {
         assert!(dropdown.missing && !dropdown.is_open());
         // Telling nobody is harmless.
         dropdown.tell(false);
+        dropdown.close();
         dropdown.open(Position::Top);
         assert!(!dropdown.is_open());
+    }
+
+    #[test]
+    fn a_missing_notification_daemon_is_asked_once() {
+        let mut history = History::with_program("/nonexistent/enso-notify");
+        history.toggle();
+        assert!(history.missing);
+        history.toggle();
+        // One that exists is simply run.
+        let mut history = History::with_program("true");
+        history.toggle();
+        assert!(!history.missing);
     }
 
     #[test]

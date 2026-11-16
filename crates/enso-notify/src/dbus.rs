@@ -1,14 +1,15 @@
 //! The `org.freedesktop.Notifications` service (Desktop Notifications
 //! Specification 1.2), served with zbus on its own thread.
 
-use std::{collections::HashMap, thread, time::Duration};
+use std::{collections::HashMap, path::Path, thread, time::Duration};
 
-use enso_ui::Proxy;
+use enso_ui::{Image, Proxy};
 use zbus::{Connection, connection, interface, object_server::SignalEmitter, wire::OwnedVariant};
 
 use crate::{
     daemon::Message,
-    stack::{CloseReason, Notification, Timeout, Urgency},
+    markup,
+    stack::{Action, CloseReason, Notification, Timeout, Urgency},
 };
 
 const NAME: &str = "org.freedesktop.Notifications";
@@ -17,14 +18,73 @@ const PATH: &str = "/org/freedesktop/Notifications";
 struct Server {
     proxy: Proxy<Message>,
     next_id: u32,
+    /// Ids of notifications that named a stack tag, so the next one with
+    /// the same tag replaces it: how volume pop-ups update in place.
+    tagged: HashMap<String, u32>,
+}
+
+/// Hints under which senders tag notifications that replace each other.
+const TAG_HINTS: [&str; 3] = [
+    "x-canonical-private-synchronous",
+    "synchronous",
+    "x-dunst-stack-tag",
+];
+/// Hints carrying raw pixels, newest name first.
+const IMAGE_DATA_HINTS: [&str; 3] = ["image-data", "image_data", "icon_data"];
+const IMAGE_PATH_HINTS: [&str; 2] = ["image-path", "image_path"];
+
+/// Raw pixels as the specification sends them: width, height, rowstride,
+/// has-alpha, bits per sample, channels, data.
+type RawImage = (i32, i32, i32, bool, i32, i32, Vec<u8>);
+
+fn image_from_raw(raw: RawImage) -> Option<Image> {
+    let (width, height, rowstride, has_alpha, bits, channels, data) = raw;
+    if bits != 8 || channels != if has_alpha { 4 } else { 3 } {
+        return None;
+    }
+    Image::from_raw(
+        width.try_into().ok()?,
+        height.try_into().ok()?,
+        rowstride.try_into().ok()?,
+        has_alpha,
+        &data,
+    )
+}
+
+/// A picture named by path or `file://` URL. Icon-theme names are not
+/// looked up: the suite carries no icon theme.
+fn image_from_path(name: &str) -> Option<Image> {
+    let path = name.strip_prefix("file://").unwrap_or(name);
+    if !path.starts_with('/') {
+        return None;
+    }
+    let path = Path::new(path);
+    let is_png = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+    // Nothing a sender names is worth reading megabytes for.
+    let small = path.metadata().is_ok_and(|meta| meta.len() <= 8 << 20);
+    (is_png && small).then(|| Image::from_png(path)).flatten()
+}
+
+/// Pair up the flat `[key, label, key, label, …]` list.
+fn actions_from(list: &[String]) -> Vec<Action> {
+    list.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[key, label]| Action {
+            key: key.clone(),
+            label: label.clone(),
+        })
+        .collect()
 }
 
 #[interface(name = "org.freedesktop.Notifications")]
 impl Server {
-    /// What this server can render. Markup, actions, and images are not
-    /// advertised yet, so well-behaved clients send plain text.
+    /// What this server can do. Markup is understood and shown as plain
+    /// text; hyperlinks and sounds are not offered.
     fn get_capabilities(&self) -> Vec<&'static str> {
-        vec!["body"]
+        vec!["body", "body-markup", "actions", "icon-static"]
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -32,15 +92,23 @@ impl Server {
         &mut self,
         app_name: String,
         replaces_id: u32,
-        _app_icon: String,
+        app_icon: String,
         summary: String,
         body: String,
-        _actions: Vec<String>,
-        hints: HashMap<String, OwnedVariant>,
+        actions: Vec<String>,
+        mut hints: HashMap<String, OwnedVariant>,
         expire_timeout: i32,
     ) -> u32 {
+        let tag = TAG_HINTS
+            .iter()
+            .find_map(|hint| hints.remove(*hint))
+            .and_then(|value| String::try_from(value).ok())
+            .filter(|tag| !tag.is_empty());
+        let tagged = tag.as_ref().and_then(|tag| self.tagged.get(tag)).copied();
         let id = if replaces_id != 0 {
             replaces_id
+        } else if let Some(id) = tagged {
+            id
         } else {
             let id = self.next_id;
             // Ids are never zero, even after wrapping around.
@@ -62,13 +130,43 @@ impl Server {
             }
             _ => Timeout::Default,
         };
+        if let Some(tag) = tag {
+            self.tagged.insert(tag, id);
+        }
+        let progress = hints
+            .get("value")
+            .and_then(|value| {
+                value
+                    .downcast_ref::<i32>()
+                    .ok()
+                    .or_else(|| value.downcast_ref::<u32>().ok().map(|v| v.min(100) as i32))
+            })
+            .map(|value| value.clamp(0, 100) as u8);
+        // In the specification's order of preference: pixels sent along,
+        // then a picture named by a hint, then the application's icon.
+        let image = IMAGE_DATA_HINTS
+            .iter()
+            .find_map(|hint| hints.remove(*hint))
+            .and_then(|value| RawImage::try_from(value).ok())
+            .and_then(image_from_raw)
+            .or_else(|| {
+                IMAGE_PATH_HINTS
+                    .iter()
+                    .find_map(|hint| hints.remove(*hint))
+                    .and_then(|value| String::try_from(value).ok())
+                    .and_then(|path| image_from_path(&path))
+            })
+            .or_else(|| image_from_path(&app_icon));
         self.proxy.send(Message::Notify(Notification {
             id,
             app_name,
-            summary,
-            body,
+            summary: summary.trim().to_owned(),
+            body: markup::plain(&body),
             urgency,
             timeout,
+            actions: actions_from(&actions),
+            image,
+            progress,
         }));
         id
     }
@@ -104,7 +202,7 @@ pub fn serve(proxy: Proxy<Message>) {
     let failed = proxy.clone();
     let spawned = thread::Builder::new().name("enso-dbus".to_owned()).spawn(move || {
         zbus::block_on(async move {
-            let server = Server { proxy: proxy.clone(), next_id: 1 };
+            let server = Server { proxy: proxy.clone(), next_id: 1, tagged: HashMap::new() };
             match connection::Builder::session().name(NAME)
                 // Never take the name from, or lose it to, another daemon.
                 .allow_name_replacements(false)
@@ -133,6 +231,17 @@ pub fn serve(proxy: Proxy<Message>) {
     }
 }
 
+/// Tell the sender one of its notification's actions was chosen.
+pub fn emit_action(connection: &Connection, id: u32, key: &str) {
+    let result = zbus::block_on(async {
+        let emitter = SignalEmitter::new(connection, PATH)?;
+        Server::action_invoked(&emitter, id, key).await
+    });
+    if let Err(err) = result {
+        eprintln!("enso-notify: cannot emit ActionInvoked: {err}");
+    }
+}
+
 /// Tell clients a notification is gone.
 pub fn emit_closed(connection: &Connection, id: u32, reason: CloseReason) {
     let result = zbus::block_on(async {
@@ -141,5 +250,56 @@ pub fn emit_closed(connection: &Connection, id: u32, reason: CloseReason) {
     });
     if let Err(err) = result {
         eprintln!("enso-notify: cannot emit NotificationClosed: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actions_come_in_pairs() {
+        let list: Vec<String> = ["default", "Open", "reply", "Reply", "dangling"]
+            .map(String::from)
+            .to_vec();
+        let actions = actions_from(&list);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(
+            (actions[1].key.as_str(), actions[1].label.as_str()),
+            ("reply", "Reply")
+        );
+        assert!(actions_from(&[]).is_empty());
+    }
+
+    #[test]
+    fn raw_images_must_be_eight_bit_rgb_or_rgba() {
+        let pixel = vec![10, 20, 30, 255];
+        assert!(image_from_raw((1, 1, 4, true, 8, 4, pixel.clone())).is_some());
+        assert!(image_from_raw((1, 1, 3, false, 8, 3, pixel.clone())).is_some());
+        // Sixteen-bit samples, a channel count that contradicts the alpha
+        // flag, and negative sizes are all refused.
+        assert!(image_from_raw((1, 1, 4, true, 16, 4, pixel.clone())).is_none());
+        assert!(image_from_raw((1, 1, 4, true, 8, 3, pixel.clone())).is_none());
+        assert!(image_from_raw((-1, 1, 4, true, 8, 4, pixel)).is_none());
+    }
+
+    #[test]
+    fn image_hints_convert_from_the_wire_type() {
+        use zbus::wire::Variant;
+        let raw: RawImage = (1, 1, 3, false, 8, 3, vec![1, 2, 3]);
+        let sent = OwnedVariant::try_from(Variant::from(raw.clone())).unwrap();
+        assert_eq!(RawImage::try_from(sent).unwrap(), raw);
+        // Something else under the same name is simply no picture.
+        let wrong = OwnedVariant::try_from(Variant::from("picture")).unwrap();
+        assert!(RawImage::try_from(wrong).is_err());
+    }
+
+    #[test]
+    fn only_png_files_named_by_path_are_loaded() {
+        assert!(image_from_path("dialog-information").is_none());
+        assert!(image_from_path("").is_none());
+        assert!(image_from_path("/nonexistent/picture.png").is_none());
+        assert!(image_from_path("file:///nonexistent/picture.png").is_none());
+        assert!(image_from_path("/etc/hostname").is_none());
     }
 }

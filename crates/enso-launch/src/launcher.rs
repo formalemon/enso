@@ -5,7 +5,13 @@
 //! themselves are gathered on a background thread while the field is already
 //! on screen.
 
-use std::{thread, time::Instant};
+use std::{
+    os::unix::net::UnixListener,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, mpsc::Sender},
+    thread::{self, JoinHandle},
+    time::Instant,
+};
 
 use enso_core::{
     Context, Rgba, Role, Transition, Tween,
@@ -19,7 +25,10 @@ use serde::Deserialize;
 
 use crate::{
     apps::{self, App},
+    files::{self, Hit, Job, Scope},
     fuzzy,
+    history::{self, History},
+    open,
 };
 
 /// The `[launch]` table of `config.toml`.
@@ -32,6 +41,19 @@ pub struct LaunchConfig {
     pub max_results: usize,
     /// Terminal emulator for applications that need one.
     pub terminal: String,
+    /// Search files as well as applications.
+    pub files: bool,
+    /// Directories whose files are searched; `~` is the home directory.
+    pub file_roots: Vec<String>,
+    /// Include dotfiles and dot-directories.
+    pub hidden: bool,
+    /// Names, globs, or paths to leave out of the file search; `!pattern`
+    /// keeps something that would otherwise be left out.
+    pub ignore: Vec<String>,
+    /// Honour `.gitignore` and `.ignore` files.
+    pub gitignore: bool,
+    /// Leave out build output, dependency trees, and caches by name.
+    pub default_ignores: bool,
 }
 
 impl Default for LaunchConfig {
@@ -40,7 +62,23 @@ impl Default for LaunchConfig {
             width: 560,
             max_results: 8,
             terminal: "alacritty".to_owned(),
+            files: true,
+            file_roots: vec!["~".to_owned(), "~/.config".to_owned()],
+            hidden: false,
+            ignore: Vec::new(),
+            gitignore: true,
+            default_ignores: true,
         }
+    }
+}
+
+impl LaunchConfig {
+    /// What the file search covers.
+    pub fn scope(&self, home: &Path) -> Scope {
+        let mut scope = Scope::new(&self.file_roots, self.hidden, &self.ignore, home);
+        scope.gitignore = self.gitignore;
+        scope.defaults = self.default_ignores;
+        scope
     }
 }
 
@@ -49,12 +87,34 @@ const ROW_HEIGHT: f32 = 44.0;
 const CHIP: f32 = 28.0;
 /// File name of the application index inside the cache directory.
 const INDEX: &str = "apps";
+/// File name of the file index inside the cache directory.
+pub const FILE_INDEX: &str = "files";
+/// File name of the launch history inside the state directory.
+const HISTORY: &str = "launch-history";
+/// File matches listed under the applications.
+const FILE_LIMIT: usize = 40;
 
-/// Messages from the loading thread.
+/// Messages from the background threads.
 #[derive(Debug)]
 pub enum Message {
     /// The applications, from the saved index or from a fresh scan.
     Apps(Vec<App>),
+    /// The files matching the query that carried this generation.
+    Files { generation: u64, hits: Vec<Hit> },
+    /// The launcher was invoked again: that closes this one.
+    Dismiss,
+}
+
+/// Background work that should be allowed to finish after the window has
+/// closed — the file walk, so that its result is saved for next time.
+pub type Background = Arc<Mutex<Vec<JoinHandle<()>>>>;
+
+/// One row of the result list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Entry {
+    /// Index into `apps`.
+    App(usize),
+    File(Hit),
 }
 
 #[derive(Debug)]
@@ -67,8 +127,22 @@ pub struct Launcher {
     /// matches", just not known yet.
     loaded: bool,
     query: String,
-    /// Indices into `apps`, best match first.
-    results: Vec<usize>,
+    /// Matching applications as indices into `apps`, best first.
+    app_results: Vec<usize>,
+    /// Matching files, best first, as last answered by the search thread.
+    file_results: Vec<Hit>,
+    /// Counts queries, so a late answer to an old one can be told apart.
+    generation: u64,
+    /// The file search thread, once started.
+    jobs: Option<Sender<Job>>,
+    background: Background,
+    /// Where a second invocation knocks to close this one.
+    toggle: Option<UnixListener>,
+    history: History,
+    /// The home directory, shown as `~` in file locations.
+    home: String,
+    /// Applications first, then files.
+    results: Vec<Entry>,
     selected: usize,
     /// First visible result.
     offset: usize,
@@ -82,9 +156,22 @@ pub struct Launcher {
 }
 
 impl Launcher {
-    pub fn new(ctx: Context, config: LaunchConfig) -> Self {
+    pub fn new(
+        ctx: Context,
+        config: LaunchConfig,
+        background: Background,
+        toggle: Option<UnixListener>,
+    ) -> Self {
         Self {
             presence: Presence::new(&ctx.motion),
+            history: History::load(&ctx.paths.state_dir.join(HISTORY)),
+            home: std::env::var("HOME").unwrap_or_default(),
+            app_results: Vec::new(),
+            file_results: Vec::new(),
+            generation: 0,
+            jobs: None,
+            background,
+            toggle,
             ctx,
             config,
             apps: Vec::new(),
@@ -101,19 +188,80 @@ impl Launcher {
     }
 
     /// Take the applications to search, keeping the query and — where the
-    /// same application is still a result — the selection.
+    /// same entry is still a result — the selection.
     pub fn set_apps(&mut self, apps: Vec<App>) {
-        let selected = self.selected_app().map(|app| app.id.clone());
+        let selected = self.selected_key();
         self.apps = apps;
         self.loaded = true;
-        self.search();
-        let kept = selected.and_then(|id| {
-            self.results
-                .iter()
-                .position(|index| self.apps[*index].id == id)
+        self.rank_apps();
+        self.compose(selected.as_deref());
+    }
+
+    /// Take the answer to a file query. Answers to queries since typed
+    /// past are dropped. Returns whether anything changed.
+    pub fn set_files(&mut self, generation: u64, mut hits: Vec<Hit>) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        let now = history::now();
+        for hit in &mut hits {
+            hit.score += self.history.boost(&file_key(&hit.path), now);
+        }
+        // Stable: equal scores keep the order the search gave them.
+        hits.sort_by_key(|hit| std::cmp::Reverse(hit.score));
+        if hits == self.file_results {
+            return false;
+        }
+        let selected = self.selected_key();
+        self.file_results = hits;
+        self.compose(selected.as_deref());
+        true
+    }
+
+    /// Identity of the selected row, to find it again after the list changes.
+    fn selected_key(&self) -> Option<String> {
+        self.results.get(self.selected).map(|entry| match entry {
+            Entry::App(index) => app_key(&self.apps[*index].id),
+            Entry::File(hit) => file_key(&hit.path),
+        })
+    }
+
+    /// Rebuild the list from its two halves. The row with identity `keep`
+    /// stays selected if it is still listed; otherwise the selection stays
+    /// where it is, or returns to the top when there was none to keep.
+    fn compose(&mut self, keep: Option<&str>) {
+        self.results = self
+            .app_results
+            .iter()
+            .map(|index| Entry::App(*index))
+            .chain(self.file_results.iter().cloned().map(Entry::File))
+            .collect();
+        let kept = keep.and_then(|key| {
+            (0..self.results.len()).find(|index| {
+                self.selected = *index;
+                self.selected_key().as_deref() == Some(key)
+            })
         });
+        self.selected = 0;
+        self.offset = 0;
+        let now = Instant::now();
+        self.highlight
+            .set(0.0, self.ctx.motion.apply(Transition::SELECT), now);
         if let Some(index) = kept {
             self.select(index);
+        }
+        self.list_height.set(
+            self.list_target(),
+            self.ctx.motion.apply(Transition::REFLOW),
+            now,
+        );
+    }
+
+    fn placeholder(&self) -> &'static str {
+        if self.config.files {
+            "Search apps and files"
+        } else {
+            "Search apps"
         }
     }
 
@@ -141,29 +289,44 @@ impl Launcher {
         }
     }
 
-    /// Re-rank applications for the current query and reset the selection.
-    /// An empty query lists nothing.
-    fn search(&mut self) {
+    /// Rank the applications against the current query. An empty query
+    /// lists nothing.
+    fn rank_apps(&mut self) {
+        let now = history::now();
         let mut ranked: Vec<(i32, usize)> = self
             .apps
             .iter()
             .enumerate()
             .filter(|_| !self.is_idle())
-            .filter_map(|(index, app)| rank(&self.query, app).map(|score| (score, index)))
+            .filter_map(|(index, app)| {
+                let boost = self.history.boost(&app_key(&app.id), now);
+                rank(&self.query, app).map(|score| (score + boost, index))
+            })
             .collect();
         // Stable sort: ties keep the alphabetical order of `apps`.
         ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-        self.results = ranked.into_iter().map(|(_, index)| index).collect();
-        self.selected = 0;
-        self.offset = 0;
-        let now = Instant::now();
-        self.highlight
-            .set(0.0, self.ctx.motion.apply(Transition::SELECT), now);
-        self.list_height.set(
-            self.list_target(),
-            self.ctx.motion.apply(Transition::REFLOW),
-            now,
-        );
+        self.app_results = ranked.into_iter().map(|(_, index)| index).collect();
+    }
+
+    /// Search again for the current query and reset the selection.
+    fn search(&mut self) {
+        self.rank_apps();
+        self.generation += 1;
+        let query = self.query.trim();
+        let asked = query.chars().count() >= files::MIN_QUERY
+            && self.jobs.as_ref().is_some_and(|jobs| {
+                jobs.send(Job::Query {
+                    generation: self.generation,
+                    query: query.to_owned(),
+                })
+                .is_ok()
+            });
+        // While the answer is on its way — a few milliseconds — the files
+        // for the previous query stay rather than blink out and back.
+        if !asked {
+            self.file_results.clear();
+        }
+        self.compose(None);
     }
 
     fn select(&mut self, index: usize) {
@@ -217,20 +380,59 @@ impl Launcher {
         true
     }
 
-    fn selected_app(&self) -> Option<&App> {
-        self.results
-            .get(self.selected)
-            .map(|index| &self.apps[*index])
+    /// Launch the selected application or open the selected file — or,
+    /// with `reveal`, the folder the file is in.
+    fn launch_selected(&mut self, reveal: bool, cx: &mut Cx<'_>) {
+        let Some(key) = self.selected_key() else {
+            return;
+        };
+        match &self.results[self.selected] {
+            Entry::App(index) => {
+                let app = &self.apps[*index];
+                if let Err(err) = app.launch(&self.config.terminal) {
+                    eprintln!("enso-launch: cannot start {}: {err}", app.name);
+                }
+            }
+            Entry::File(hit) => {
+                let path = Path::new(&hit.path);
+                let target = match path.parent() {
+                    Some(parent) if reveal => parent,
+                    _ => path,
+                };
+                if let Err(err) = open::open(target, &self.config.terminal) {
+                    eprintln!("enso-launch: cannot open {}: {err}", target.display());
+                }
+            }
+        }
+        self.history.record(&key, history::now());
+        self.presence.close(cx);
     }
 
-    fn launch_selected(&mut self, cx: &mut Cx<'_>) {
-        if let Some(app) = self.selected_app() {
-            if let Err(err) = app.launch(&self.config.terminal) {
-                eprintln!("enso-launch: cannot start {}: {err}", app.name);
+    /// Start indexing and searching files in the background.
+    fn start_files(&mut self, proxy: Proxy<Message>) {
+        let scope = self.config.scope(Path::new(&self.home));
+        let cache: PathBuf = self.ctx.paths.cache_dir.join(FILE_INDEX);
+        let answer = move |generation, hits| {
+            proxy.send(Message::Files { generation, hits });
+        };
+        match files::serve(scope, cache, FILE_LIMIT, answer) {
+            Ok((jobs, scan)) => {
+                self.jobs = Some(jobs);
+                if let Ok(mut background) = self.background.lock() {
+                    background.push(scan);
+                }
             }
-            self.presence.close(cx);
+            Err(err) => eprintln!("enso-launch: file search is unavailable: {err}"),
         }
     }
+}
+
+fn app_key(id: &str) -> String {
+    format!("app:{id}")
+}
+
+fn file_key(path: &str) -> String {
+    format!("file:{path}")
 }
 
 /// Best score for an application across its searchable fields. The name
@@ -273,6 +475,21 @@ impl UiApp for Launcher {
     fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
         // Gathering applications never holds up the first frame: nothing is
         // listed before a key is pressed, and that is ages away.
+        if self.config.files {
+            self.start_files(proxy.clone());
+        }
+        if let Some(listener) = self.toggle.take() {
+            let proxy = proxy.clone();
+            // Any connection at all is the knock. Not being able to listen
+            // only costs the toggle.
+            let _ = thread::Builder::new()
+                .name("enso-toggle".to_owned())
+                .spawn(move || {
+                    if listener.accept().is_ok() {
+                        proxy.send(Message::Dismiss);
+                    }
+                });
+        }
         let index = self.ctx.paths.cache_dir.join(INDEX);
         let load = move || {
             apps::load_indexed(&index, |apps| {
@@ -295,13 +512,19 @@ impl UiApp for Launcher {
                 self.set_apps(apps);
                 cx.redraw();
             }
+            Event::Message(Message::Files { generation, hits }) => {
+                if self.set_files(generation, hits) {
+                    cx.redraw();
+                }
+            }
+            Event::Message(Message::Dismiss) => self.presence.close(cx),
             Event::Key(key) => {
                 if let Some(nav) = key.nav(false) {
                     self.move_selection(nav);
                 } else {
                     match key.key {
                         Key::Escape => return self.presence.close(cx),
-                        Key::Enter => return self.launch_selected(cx),
+                        Key::Enter => return self.launch_selected(key.mods.ctrl, cx),
                         _ if !self.edit(&key) => return,
                         _ => {}
                     }
@@ -323,7 +546,7 @@ impl UiApp for Launcher {
             }) => {
                 if let Some(row) = self.rows.iter().position(|row| row.contains(x, y)) {
                     self.select(self.offset + row);
-                    self.launch_selected(cx);
+                    self.launch_selected(false, cx);
                 } else if !self.card.contains(x, y) {
                     self.presence.close(cx);
                 }
@@ -384,7 +607,7 @@ impl UiApp for Launcher {
         );
         let typed = if self.query.is_empty() {
             canvas.text_in(
-                &Text::new("Search apps", title, colors.muted),
+                &Text::new(self.placeholder(), title, colors.muted),
                 field,
                 Align::Start,
             );
@@ -446,14 +669,14 @@ impl UiApp for Launcher {
             canvas.fill(highlight, radius::CONTROL, colors.overlay);
 
             let visible = self.visible_rows();
-            for (row_index, app_index) in self
+            let glyphs = canvas.glyphs();
+            for (row_index, entry) in self
                 .results
                 .iter()
                 .skip(self.offset)
                 .take(visible)
                 .enumerate()
             {
-                let app = &self.apps[*app_index];
                 let row = list.row(row_index, ROW_HEIGHT, 0.0);
                 // While the card is still growing, rows below its edge wait their turn.
                 if row.bottom() > card.bottom() {
@@ -461,26 +684,47 @@ impl UiApp for Launcher {
                 }
                 self.rows.push(row);
                 let content = row.inset_xy(space::SM, 0.0);
-
-                // A letter chip stands in for an icon: no icon themes needed.
-                let tint = colors.get(chip_role(&app.name));
                 let chip = Rect::new(content.x, content.y + (content.h - CHIP) / 2.0, CHIP, CHIP);
-                canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT + 0.06));
-                let initial: String = app
-                    .name
-                    .chars()
-                    .next()
-                    .map(|c| c.to_uppercase().collect())
-                    .unwrap_or_default();
-                canvas.text_in(
-                    &Text::new(&initial, base_size, tint).bold(),
-                    chip,
-                    Align::Center,
-                );
+
+                let location;
+                let (name, description) = match entry {
+                    Entry::App(index) => {
+                        let app = &self.apps[*index];
+                        // A letter chip stands in for an icon: no icon themes needed.
+                        let tint = colors.get(chip_role(&app.name));
+                        canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT + 0.06));
+                        let initial: String = app
+                            .name
+                            .chars()
+                            .next()
+                            .map(|c| c.to_uppercase().collect())
+                            .unwrap_or_default();
+                        canvas.text_in(
+                            &Text::new(&initial, base_size, tint).bold(),
+                            chip,
+                            Align::Center,
+                        );
+                        (app.name.as_str(), app.description.as_deref())
+                    }
+                    Entry::File(hit) => {
+                        // Files are quieter than applications: one glyph,
+                        // folders in the accent's cooler neighbour.
+                        let (glyph, tint) = if hit.is_dir {
+                            (icon::FOLDER, colors.foam)
+                        } else {
+                            (icon::FILE, colors.subtle)
+                        };
+                        canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT));
+                        let size = if glyphs { base_size + 3.0 } else { base_size };
+                        canvas.icon(glyph, size, tint, chip, Align::Center);
+                        location = hit.location(&self.home);
+                        (hit.name(), Some(location.as_str()))
+                    }
+                };
 
                 let text_x = chip.right() + space::MD;
                 let available = content.right() - text_x;
-                let name = Text::new(&app.name, base_size, colors.text)
+                let name = Text::new(name, base_size, colors.text)
                     .medium()
                     .max_width(available);
                 let name_width = canvas
@@ -490,12 +734,13 @@ impl UiApp for Launcher {
                         Align::Start,
                     )
                     .w;
-                if let Some(description) = &app.description {
+                if let Some(description) = description {
                     let x = text_x + name_width + space::MD;
                     let room = content.right() - x;
                     if room > 60.0 {
                         let text =
-                            Text::new(description, base_size * type_scale::SMALL, colors.muted);
+                            Text::new(description, base_size * type_scale::SMALL, colors.muted)
+                                .max_width(room);
                         canvas.text_in(
                             &text,
                             Rect::new(x, content.y, room, content.h),
@@ -572,7 +817,27 @@ mod tests {
                 max_results: 6,
                 ..LaunchConfig::default()
             },
+            Background::default(),
+            None,
         )
+    }
+
+    fn selected_name(launcher: &Launcher) -> Option<&str> {
+        launcher
+            .results
+            .get(launcher.selected)
+            .map(|entry| match entry {
+                Entry::App(index) => launcher.apps[*index].name.as_str(),
+                Entry::File(hit) => hit.name(),
+            })
+    }
+
+    fn hit(path: &str, score: i32) -> Hit {
+        Hit {
+            path: path.strip_suffix('/').unwrap_or(path).to_owned(),
+            is_dir: path.ends_with('/'),
+            score,
+        }
     }
 
     /// Draw the launcher at rest and return the frame.
@@ -617,7 +882,10 @@ mod tests {
         launcher
             .results
             .iter()
-            .map(|i| launcher.apps[*i].name.as_str())
+            .map(|entry| match entry {
+                Entry::App(index) => launcher.apps[*index].name.as_str(),
+                Entry::File(hit) => hit.name(),
+            })
             .collect()
     }
 
@@ -625,7 +893,7 @@ mod tests {
     fn nothing_is_listed_until_typing_starts() {
         let mut launcher = launcher();
         assert!(launcher.results.is_empty());
-        assert!(launcher.selected_app().is_none());
+        assert!(selected_name(&launcher).is_none());
         assert_eq!(launcher.list_target(), 0.0);
 
         // The card is just the search field: no rows, no "no matches".
@@ -672,7 +940,7 @@ mod tests {
         let mut launcher = launcher();
         type_text(&mut launcher, "fi");
         launcher.move_selection(Nav::Down);
-        assert_eq!(launcher.selected_app().unwrap().name, "Firefox");
+        assert_eq!(selected_name(&launcher).unwrap(), "Firefox");
 
         // The fresh scan found something the saved index did not have.
         launcher.set_apps(vec![
@@ -682,11 +950,11 @@ mod tests {
         ]);
         assert_eq!(launcher.query, "fi");
         assert_eq!(launcher.results.len(), 3);
-        assert_eq!(launcher.selected_app().unwrap().name, "Firefox");
+        assert_eq!(selected_name(&launcher).unwrap(), "Firefox");
 
         // If the selected application is gone, the best match is selected.
         launcher.set_apps(vec![app("Files", "")]);
-        assert_eq!(launcher.selected_app().unwrap().name, "Files");
+        assert_eq!(selected_name(&launcher).unwrap(), "Files");
     }
 
     #[test]
@@ -702,7 +970,7 @@ mod tests {
 
         type_text(&mut launcher, "zzz");
         assert!(launcher.results.is_empty());
-        assert!(launcher.selected_app().is_none());
+        assert!(selected_name(&launcher).is_none());
     }
 
     #[test]
@@ -766,6 +1034,65 @@ mod tests {
             [surface.r, surface.g, surface.b, 255]
         );
         snapshot(&frame, "launch");
+    }
+
+    #[test]
+    fn files_are_listed_under_the_applications() {
+        let mut launcher = launcher();
+        launcher.home = "/home/mira".to_owned();
+        type_text(&mut launcher, "fi");
+        assert_eq!(names(&launcher), ["Files", "Firefox"]);
+
+        // An answer to a query since typed past is ignored.
+        let stale = launcher.generation - 1;
+        assert!(!launcher.set_files(stale, vec![hit("/home/mira/old.txt", 9)]));
+        assert_eq!(launcher.results.len(), 2);
+
+        launcher.move_selection(Nav::Down);
+        let hits = vec![
+            hit("/home/mira/notes/first-ideas.md", 80),
+            hit("/home/mira/dev/fish/", 70),
+            hit("/home/mira/Pictures/fig.png", 60),
+        ];
+        assert!(launcher.set_files(launcher.generation, hits.clone()));
+        assert_eq!(
+            names(&launcher),
+            ["Files", "Firefox", "first-ideas.md", "fish", "fig.png"]
+        );
+        // The list grew under the selection without moving it.
+        assert_eq!(selected_name(&launcher), Some("Firefox"));
+        // The same answer again changes nothing.
+        assert!(!launcher.set_files(launcher.generation, hits));
+
+        // A selected file stays selected when the applications change.
+        launcher.select(3);
+        launcher.set_apps(vec![app("Files", "")]);
+        assert_eq!(selected_name(&launcher), Some("fish"));
+        assert_eq!(launcher.selected, 2);
+
+        let frame = settled(&mut launcher);
+        assert_eq!(launcher.rows.len(), 4);
+        snapshot(&frame, "launch-files");
+
+        // Too short a query asks for no files and drops the old ones.
+        launcher.edit(&key(Key::Backspace, false));
+        assert_eq!(names(&launcher), ["Files"]);
+    }
+
+    #[test]
+    fn what_was_chosen_before_ranks_higher() {
+        let mut launcher = launcher();
+        type_text(&mut launcher, "fi");
+        assert_eq!(names(&launcher), ["Files", "Firefox"]);
+        let now = history::now();
+        launcher.history.record("app:firefox", now);
+        launcher.history.record("file:/home/mira/b.txt", now);
+        launcher.search();
+        assert_eq!(names(&launcher), ["Firefox", "Files"]);
+
+        let hits = vec![hit("/home/mira/a.txt", 50), hit("/home/mira/b.txt", 40)];
+        launcher.set_files(launcher.generation, hits);
+        assert_eq!(names(&launcher)[2..], ["b.txt", "a.txt"]);
     }
 
     #[test]

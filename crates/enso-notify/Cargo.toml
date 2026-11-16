@@ -9,13 +9,11 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-enso-ui.workspace = true
+# PNG: pictures that notifications name by file.
+enso-ui = { workspace = true, features = ["png"] }
 serde.workspace = true
 lexopt.workspace = true
 zbus.workspace = true
-
-[dev-dependencies]
-enso-ui = { workspace = true, features = ["png"] }
 
 [lints]
 workspace = true

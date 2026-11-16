@@ -12,6 +12,7 @@ use std::{
 };
 
 use enso_core::{Motion, Transition, Tween};
+use enso_ui::Image;
 
 /// How urgent the sender says a notification is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,15 +34,51 @@ pub enum Timeout {
     After(Duration),
 }
 
+/// Something the sender offers to do about a notification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Action {
+    /// What the sender calls it; sent back when it is chosen.
+    pub key: String,
+    /// What the button says.
+    pub label: String,
+}
+
+/// The key of the action meant by activating the notification itself.
+pub const DEFAULT_ACTION: &str = "default";
+
 /// A notification as received over D-Bus.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Notification {
     pub id: u32,
     pub app_name: String,
     pub summary: String,
+    /// Plain text; markup has been reduced already.
     pub body: String,
     pub urgency: Urgency,
     pub timeout: Timeout,
+    pub actions: Vec<Action>,
+    /// A picture: an avatar, album art, a screenshot's thumbnail.
+    pub image: Option<Image>,
+    /// A level to show as a bar, in percent — volume and brightness
+    /// pop-ups send one.
+    pub progress: Option<u8>,
+}
+
+impl Notification {
+    /// Whether clicking the toast itself does something at the sender.
+    pub fn has_default_action(&self) -> bool {
+        self.actions
+            .iter()
+            .any(|action| action.key == DEFAULT_ACTION)
+    }
+
+    /// The actions that get a button of their own.
+    pub fn buttons(&self) -> impl Iterator<Item = &Action> {
+        self.actions
+            .iter()
+            .filter(|action| action.key != DEFAULT_ACTION && !action.label.trim().is_empty())
+            .take(3)
+    }
 }
 
 /// Why a notification went away, as reported in `NotificationClosed`.
@@ -103,6 +140,9 @@ pub struct Stack {
     toasts: Vec<Toast>,
     /// Notifications (with their measured heights) waiting for a free slot.
     queue: VecDeque<(Notification, f32)>,
+    /// Since when nothing expires: the pointer is on the toasts, so they
+    /// are being read.
+    paused: Option<Instant>,
 }
 
 impl Stack {
@@ -112,7 +152,51 @@ impl Stack {
             motion,
             toasts: Vec::new(),
             queue: VecDeque::new(),
+            paused: None,
         }
+    }
+
+    /// Stop the clocks: nothing expires until [`Stack::resume`].
+    pub fn pause(&mut self, now: Instant) {
+        self.paused.get_or_insert(now);
+    }
+
+    /// Start the clocks again. Every toast gets back the time it had left
+    /// when they stopped.
+    pub fn resume(&mut self, now: Instant) {
+        if let Some(since) = self.paused.take() {
+            let held = now.saturating_duration_since(since);
+            for toast in &mut self.toasts {
+                toast.expires = toast.expires.map(|at| at + held);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn is_paused(&self) -> bool {
+        self.paused.is_some()
+    }
+
+    /// Drop everything at once, showing and queued, without ceremony: the
+    /// history card is taking the toasts' place. Returns the ids dropped.
+    pub fn clear(&mut self) -> Vec<u32> {
+        let ids = self
+            .toasts
+            .drain(..)
+            .filter(|toast| !toast.is_leaving())
+            .map(|toast| toast.note.id)
+            .chain(self.queue.drain(..).map(|(note, _)| note.id))
+            .collect();
+        self.paused = None;
+        ids
+    }
+
+    /// The notification with this id, if it is showing and not on its way out.
+    pub fn get(&self, id: u32) -> Option<&Notification> {
+        self.toasts
+            .iter()
+            .find(|toast| toast.note.id == id && !toast.is_leaving())
+            .map(|toast| &toast.note)
     }
 
     /// Show a notification whose card is `height` tall. A notification with
@@ -167,10 +251,11 @@ impl Stack {
     pub fn tick(&mut self, now: Instant) -> Vec<u32> {
         self.toasts
             .retain(|toast| toast.gone_at.is_none_or(|at| at > now));
+        let running = self.paused.is_none();
         let expired: Vec<u32> = self
             .toasts
             .iter()
-            .filter(|t| !t.is_leaving() && t.expires.is_some_and(|at| at <= now))
+            .filter(|t| running && !t.is_leaving() && t.expires.is_some_and(|at| at <= now))
             .map(|t| t.note.id)
             .collect();
         for id in &expired {
@@ -185,7 +270,12 @@ impl Stack {
     pub fn next_deadline(&self, now: Instant) -> Option<Duration> {
         self.toasts
             .iter()
-            .filter_map(|toast| toast.gone_at.or(toast.expires))
+            .filter_map(|toast| {
+                // While paused only departures in progress are due.
+                toast
+                    .gone_at
+                    .or(toast.expires.filter(|_| self.paused.is_none()))
+            })
             .min()
             .map(|at| at.saturating_duration_since(now))
     }
@@ -399,6 +489,85 @@ mod tests {
         assert!(stack.close(1, now));
         assert!(!stack.close(1, now), "already leaving");
         assert!(!stack.close(99, now));
+    }
+
+    #[test]
+    fn clearing_drops_showing_and_queued_alike() {
+        let now = Instant::now();
+        let mut stack = stack(2);
+        for id in 1..=4 {
+            stack.push(note(id), H, now);
+        }
+        stack.close(1, now);
+        stack.pause(now);
+        // 1 was already leaving and has been reported; 3 was promoted.
+        assert_eq!(stack.clear(), [2, 3, 4]);
+        assert!(stack.is_empty() && !stack.is_paused());
+        assert_eq!(stack.next_deadline(now), None);
+    }
+
+    #[test]
+    fn nothing_expires_while_paused() {
+        let t0 = Instant::now();
+        let mut stack = stack(5);
+        stack.push(note(1), H, t0);
+        assert_eq!(stack.next_deadline(t0), Some(Duration::from_secs(5)));
+
+        // Four seconds in, the pointer arrives and stays a minute.
+        let t1 = t0 + Duration::from_secs(4);
+        stack.pause(t1);
+        assert!(stack.is_paused());
+        assert_eq!(stack.next_deadline(t1), None);
+        let t2 = t1 + Duration::from_secs(60);
+        assert!(stack.tick(t2).is_empty());
+        // Pausing again does not restart the hold.
+        stack.pause(t2);
+
+        // It leaves: the toast has the one second it had left.
+        stack.resume(t2);
+        assert_eq!(stack.next_deadline(t2), Some(Duration::from_secs(1)));
+        assert!(stack.tick(t2 + ms(900)).is_empty());
+        assert_eq!(stack.tick(t2 + ms(1000)), [1]);
+
+        // A dismissal still completes while paused.
+        stack.push(note(2), H, t2);
+        stack.pause(t2);
+        assert!(stack.close(2, t2));
+        assert!(stack.next_deadline(t2).is_some());
+    }
+
+    #[test]
+    fn default_action_and_buttons_are_told_apart() {
+        let action = |key: &str, label: &str| Action {
+            key: key.into(),
+            label: label.into(),
+        };
+        let plain = note(1);
+        assert!(!plain.has_default_action());
+        assert_eq!(plain.buttons().count(), 0);
+
+        let rich = Notification {
+            actions: vec![
+                action("default", "Open"),
+                action("reply", "Reply"),
+                action("blank", " "),
+                action("mute", "Mute"),
+                action("a", "A"),
+                action("b", "B"),
+            ],
+            ..note(2)
+        };
+        assert!(rich.has_default_action());
+        let labels: Vec<&str> = rich.buttons().map(|a| a.label.as_str()).collect();
+        assert_eq!(labels, ["Reply", "Mute", "A"]);
+
+        let now = Instant::now();
+        let mut stack = stack(5);
+        stack.push(rich, H, now);
+        assert!(stack.get(2).is_some());
+        assert!(stack.get(3).is_none());
+        stack.close(2, now);
+        assert!(stack.get(2).is_none(), "leaving toasts take no more input");
     }
 
     #[test]

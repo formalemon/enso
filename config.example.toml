@@ -42,6 +42,30 @@ width = 560
 max_results = 8
 # Terminal emulator for applications that need one.
 terminal = "alacritty"
+# Search files as well as applications.
+files = true
+# Directories whose files are searched; "~" is your home directory. A hidden
+# directory named here is searched even with `hidden = false`, which is how
+# ~/.config is included while the rest of the dotfiles stay out.
+file_roots = ["~", "~/.config"]
+# Include dotfiles and dot-directories.
+hidden = false
+# Honour .gitignore and .ignore files below the directory they are in,
+# whether or not it is a Git repository. (The one directly in your home
+# directory is skipped: that belongs to a dotfiles repository.)
+gitignore = true
+# Leave out what nobody searches for, by name: dependency trees and caches
+# (node_modules, __pycache__, cache, …), compiler by-products (*.o, *.pyc, …),
+# and build output where a project file gives it away — `target` beside a
+# Cargo.toml, `dist` beside a package.json, `bin` beside a .csproj. A `bin`
+# or `build` folder of your own, with no such file beside it, is searched.
+default_ignores = true
+# Your own list, with the last word over both of the above. A name or glob
+# matches at any depth, a relative path matches the end of a path, and a
+# path starting with "/" or "~" matches exactly that one. A leading "!"
+# keeps something that would otherwise be left out:
+# ignore = ["*.iso", "Music/incoming", "~/VMs", "!target"]
+ignore = []
 
 [notify]
 width = 360
@@ -51,6 +75,10 @@ timeout_ms = 5000
 max_visible = 5
 # Space between toasts.
 gap = 10
+# The history (`enso-notify history`, or a click on the bar's bell):
+# notifications shown at once — the rest scroll — and how many are remembered.
+history_rows = 5
+history_size = 50
 
 [ctl]
 width = 340

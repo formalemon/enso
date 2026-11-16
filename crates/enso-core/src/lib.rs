@@ -17,6 +17,7 @@
 pub mod color;
 pub mod config;
 pub mod motion;
+pub mod notices;
 pub mod palette;
 pub mod paths;
 pub mod style;
@@ -27,6 +28,7 @@ use std::{fmt, io, path::Path, path::PathBuf};
 pub use color::Rgba;
 pub use config::Config;
 pub use motion::{Easing, Lerp, Motion, Transition, Tween};
+pub use notices::Notices;
 pub use palette::{Palette, Role};
 pub use paths::Paths;
 pub use style::Icon;

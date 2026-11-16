@@ -13,6 +13,7 @@
 
 pub mod canvas;
 pub mod geom;
+pub mod image;
 pub mod input;
 mod keymap;
 pub mod presence;
@@ -22,6 +23,7 @@ pub mod watch;
 
 pub use canvas::{Canvas, Offscreen};
 pub use geom::{Align, Rect, Size};
+pub use image::Image;
 pub use input::{Button, Key, KeyEvent, Mods, Nav, PointerEvent};
 pub use presence::Presence;
 pub use shell::{

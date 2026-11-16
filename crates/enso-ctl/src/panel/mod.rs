@@ -87,6 +87,8 @@ pub enum Message {
     ThemeChanged,
     /// From the bar: whether the pointer is on the island that opened us.
     Owner(bool),
+    /// From the bar: something else is opening in this panel's place.
+    Dismiss,
 }
 
 /// What the panel is showing.
@@ -1295,6 +1297,7 @@ impl App for Panel {
                 self.owner_hovering = hovering;
                 Outcome::Ignored
             }
+            Event::Message(Message::Dismiss) => Outcome::Close,
             Event::Wake if self.presence.is_closing() => return cx.exit(),
             Event::Wake => {
                 let due = self
@@ -1343,7 +1346,8 @@ impl App for Panel {
 
 /// Follow the bar's side of the conversation on standard input: `enter` and
 /// `leave` as the pointer comes and goes from the island that opened this
-/// dropdown. The bar going away counts as leaving. Returns whether anyone
+/// dropdown, and `close` when the bar wants the space for something else.
+/// The bar going away counts as leaving. Returns whether anyone
 /// is listening.
 fn follow_owner(proxy: Proxy<Message>) -> bool {
     thread::Builder::new()
@@ -1353,6 +1357,10 @@ fn follow_owner(proxy: Proxy<Message>) -> bool {
                 let hovering = match line.as_deref().map(str::trim) {
                     Ok("enter") => true,
                     Ok("leave") => false,
+                    Ok("close") => {
+                        proxy.send(Message::Dismiss);
+                        return;
+                    }
                     Ok(_) => continue,
                     Err(_) => break,
                 };

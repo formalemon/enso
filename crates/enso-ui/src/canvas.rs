@@ -6,11 +6,13 @@ use enso_core::{
     style::{Shadow, radius},
 };
 use tiny_skia::{
-    BlendMode, Color, FillRule, Paint, Path, PathBuilder, PixmapMut, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, Pattern, PixmapMut,
+    PixmapRef, SpreadMode, Stroke, Transform,
 };
 
 use crate::{
     geom::{Align, Rect, Size},
+    image::Image,
     text::{Font, Text, TextEngine},
 };
 
@@ -25,7 +27,16 @@ pub struct Canvas<'a> {
     /// Byte order is B, G, R, A (Wayland `argb8888`) instead of R, G, B, A.
     bgra: bool,
     opacity: f32,
+    /// Where drawing is confined to, if anywhere.
+    clip: Option<Clip>,
     text: &'a mut TextEngine,
+}
+
+/// A clip rectangle: as a mask for shapes, and as physical pixel bounds
+/// (`x0, y0, x1, y1`, end-exclusive) for text.
+struct Clip {
+    mask: Mask,
+    bounds: (i32, i32, i32, i32),
 }
 
 impl std::fmt::Debug for Canvas<'_> {
@@ -55,6 +66,7 @@ impl<'a> Canvas<'a> {
             scale,
             bgra,
             opacity: 1.0,
+            clip: None,
             text,
         }
     }
@@ -99,6 +111,39 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Confine everything drawn from now on to `rect`, or lift the limit
+    /// with `None`. What falls outside is simply not drawn — the way a
+    /// scrolling list keeps to its viewport. [`Canvas::clear`] ignores it.
+    pub fn set_clip(&mut self, rect: Option<Rect>) {
+        self.clip = rect.and_then(|rect| {
+            let scale = self.scale;
+            let x0 = ((rect.x * scale).round() as i32).clamp(0, self.width as i32);
+            let y0 = ((rect.y * scale).round() as i32).clamp(0, self.height as i32);
+            let x1 = ((rect.right() * scale).round() as i32).clamp(x0, self.width as i32);
+            let y1 = ((rect.bottom() * scale).round() as i32).clamp(y0, self.height as i32);
+            let mut mask = Mask::new(self.width, self.height)?;
+            // An empty clip hides everything: the mask stays blank.
+            if let Some(area) =
+                tiny_skia::Rect::from_ltrb(x0 as f32, y0 as f32, x1 as f32, y1 as f32)
+            {
+                let path = PathBuilder::from_rect(area);
+                mask.fill_path(&path, FillRule::Winding, false, Transform::identity());
+            }
+            Some(Clip {
+                mask,
+                bounds: (x0, y0, x1, y1),
+            })
+        });
+    }
+
+    /// Run `draw` confined to `rect`, then restore the previous limit.
+    pub fn with_clip(&mut self, rect: Rect, draw: impl FnOnce(&mut Self)) {
+        let previous = self.clip.take();
+        self.set_clip(Some(rect));
+        draw(self);
+        self.clip = previous;
+    }
+
     /// Fill a rectangle with rounded corners. `radius` 0 gives square corners.
     pub fn fill(&mut self, rect: Rect, radius: f32, color: Rgba) {
         let Some(path) = rounded_rect(rect, radius) else {
@@ -106,8 +151,9 @@ impl<'a> Canvas<'a> {
         };
         let paint = self.paint(color);
         let transform = self.transform();
-        if let Some(mut pixmap) = self.pixmap() {
-            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, None);
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
         }
     }
 
@@ -128,8 +174,9 @@ impl<'a> Canvas<'a> {
             width,
             ..Stroke::default()
         };
-        if let Some(mut pixmap) = self.pixmap() {
-            pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.stroke_path(&path, &paint, &stroke, transform, mask);
         }
     }
 
@@ -169,12 +216,16 @@ impl<'a> Canvas<'a> {
             (x * self.scale).round() as i32,
             (y * self.scale).round() as i32,
         );
-        let (width, height) = (self.width as i32, self.height as i32);
+        let width = self.width as i32;
+        let (x0, y0, x1, y1) = self
+            .clip
+            .as_ref()
+            .map_or((0, 0, width, self.height as i32), |clip| clip.bounds);
         let (bgra, opacity) = (self.bgra, self.opacity);
         let pixels = &mut *self.pixels;
         self.text
             .rasterize(text, self.scale, origin, |px, py, color| {
-                if px < 0 || py < 0 || px >= width || py >= height {
+                if px < x0 || py < y0 || px >= x1 || py >= y1 {
                     return;
                 }
                 let i = (py as usize * width as usize + px as usize) * 4;
@@ -213,8 +264,50 @@ impl<'a> Canvas<'a> {
         self.text_in(&text, rect, align)
     }
 
-    fn pixmap(&mut self) -> Option<PixmapMut<'_>> {
-        PixmapMut::from_bytes(self.pixels, self.width, self.height)
+    /// Draw `image` so that it covers `rect`, centred and cropped to fit,
+    /// with rounded corners.
+    pub fn image(&mut self, image: &Image, rect: Rect, radius: f32) {
+        let Some(path) = rounded_rect(rect, radius) else {
+            return;
+        };
+        let bytes = if self.bgra { &image.bgra } else { &image.rgba };
+        let Some(source) = PixmapRef::from_bytes(bytes, image.width, image.height) else {
+            return;
+        };
+        let (w, h) = (image.width as f32, image.height as f32);
+        let scale = (rect.w / w).max(rect.h / h);
+        let placement = Transform::from_row(
+            scale,
+            0.0,
+            0.0,
+            scale,
+            rect.x + (rect.w - w * scale) / 2.0,
+            rect.y + (rect.h - h * scale) / 2.0,
+        );
+        let paint = Paint {
+            shader: Pattern::new(
+                source,
+                SpreadMode::Pad,
+                FilterQuality::Bilinear,
+                self.opacity,
+                placement,
+            ),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+        }
+    }
+
+    /// The pixels to draw on, and the clip mask to draw through.
+    fn target(&mut self) -> (Option<PixmapMut<'_>>, Option<&Mask>) {
+        (
+            PixmapMut::from_bytes(self.pixels, self.width, self.height),
+            self.clip.as_ref().map(|clip| &clip.mask),
+        )
     }
 
     fn transform(&self) -> Transform {

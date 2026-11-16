@@ -39,7 +39,8 @@ Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   height   = 36                    bar height in pixels
   position = \"top\"                 \"top\" or \"bottom\"
   clock    = \"%a %-d %b  %H:%M\"    strftime format
-  control_center = true            open enso-ctl from the status island
+  control_center = true            open enso-ctl while the pointer rests on
+                                   the status island
 ";
 
 fn main() -> ExitCode {
