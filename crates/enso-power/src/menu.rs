@@ -1,9 +1,19 @@
 //! The power menu overlay: a short row of choices, one keypress each.
+//!
+//! The key for each is a letter of its own name, marked in the name itself
+//! in the choice's colour: the L of Lock, the o of Log out. Landing on a
+//! choice sends a glint of light across its letter, and a small sparkle
+//! twinkles at its shoulder — once, then it rests.
 
-use std::{os::unix::net::UnixListener, thread, time::Instant};
+use std::{
+    f32::consts::PI,
+    os::unix::net::UnixListener,
+    thread,
+    time::{Duration, Instant},
+};
 
 use enso_core::{
-    Context, Rgba, Transition, Tween,
+    Context, Easing, Rgba, Transition, Tween,
     style::{Shadow, opacity, radius, space, stroke, type_scale},
 };
 use enso_ui::{
@@ -43,7 +53,12 @@ impl Default for PowerConfig {
 }
 
 const TILE_WIDTH: f32 = 104.0;
-const TILE_HEIGHT: f32 = 124.0;
+/// The disc and the name, with as much room below as above.
+const TILE_HEIGHT: f32 = 112.0;
+/// Height of the line the name sits on.
+const LABEL_HEIGHT: f32 = 20.0;
+/// How long the glint takes to cross a letter.
+const GLINT: Duration = Duration::from_millis(900);
 /// Diameter of the tinted disc behind each icon.
 const DISC: f32 = 52.0;
 const CAPTION_HEIGHT: f32 = 28.0;
@@ -87,6 +102,10 @@ pub struct Menu {
     highlight: Tween<f32>,
     /// Animated height of the line under the tiles.
     caption: Tween<f32>,
+    /// The key for each action: a letter of its name.
+    keys: Vec<Option<char>>,
+    /// When the glint last set out across the selected choice's letter.
+    glint: Option<Instant>,
     /// Geometry from the last frame, for hit-testing.
     card: Rect,
     tiles: Vec<Rect>,
@@ -115,6 +134,9 @@ impl Menu {
         }
         Self {
             presence: Presence::new(&ctx.motion),
+            keys: Action::keys(&config.actions),
+            // The first choice glints as the menu arrives.
+            glint: Some(Instant::now()),
             ctx,
             config,
             run,
@@ -164,6 +186,7 @@ impl Menu {
         self.selected = index;
         self.armed = None;
         self.problem = None;
+        self.glint = Some(Instant::now());
         self.highlight.set(
             index as f32,
             self.ctx.motion.apply(Transition::SELECT),
@@ -227,7 +250,7 @@ impl Menu {
             Key::End => self.select(usize::MAX),
             Key::Char(c) if key.mods.is_plain() && !key.repeat => {
                 let typed = c.to_ascii_lowercase();
-                return match self.actions().iter().position(|a| a.key() == typed) {
+                return match self.keys.iter().position(|key| *key == Some(typed)) {
                     Some(index) => self.choose(index),
                     None => Outcome::Ignored,
                 };
@@ -375,16 +398,17 @@ impl App for Menu {
                 if selected { colors.text } else { colors.subtle },
             )
             .medium();
-            let label_row = Rect::new(rect.x, disc.bottom() + space::SM, rect.w, 20.0);
-            canvas.text_in(&label, label_row, Align::Center);
-
-            // The key that picks it, as quiet as a footnote.
-            let hint = action.key().to_string();
-            canvas.text_in(
-                &Text::new(&hint, base_size * type_scale::SMALL, colors.muted),
-                Rect::new(rect.x, label_row.bottom(), rect.w, 18.0),
-                Align::Center,
-            );
+            let label_row = Rect::new(rect.x, disc.bottom() + space::SM, rect.w, LABEL_HEIGHT);
+            let mark = self.keys[index].and_then(|key| action.mark(key));
+            // The letter is the choice's own colour: full where the
+            // selection is, quieter elsewhere.
+            let letter = if selected {
+                tint
+            } else {
+                tint.mix(colors.subtle, 0.35)
+            };
+            let glint = if selected { self.glint_at(now) } else { None };
+            paint_label(canvas, &label, mark, label_row, letter, glint, &colors);
         }
 
         // The caption arrives with the room made for it.
@@ -409,8 +433,107 @@ impl App for Menu {
         Paint::when(
             self.presence.is_animating(now)
                 || self.highlight.is_animating(now)
-                || self.caption.is_animating(now),
+                || self.caption.is_animating(now)
+                || self.glint_at(now).is_some(),
         )
+    }
+}
+
+impl Menu {
+    /// How far the glint has crossed the selected letter (`0..1`), while it
+    /// is crossing. Never with motion turned off.
+    fn glint_at(&self, now: Instant) -> Option<f32> {
+        let length = self
+            .ctx
+            .motion
+            .apply(Transition::new(GLINT.as_millis() as u64, Easing::Linear))
+            .duration;
+        let elapsed = now.saturating_duration_since(self.glint?);
+        (!length.is_zero() && elapsed < length)
+            .then(|| elapsed.as_secs_f32() / length.as_secs_f32())
+    }
+}
+
+/// A choice's name, centred in `row`, with the letter that picks it — the
+/// byte range `mark` — in its own colour. While `glint` (`0..1`) is under
+/// way, a band of light crosses that letter, and a small four-pointed
+/// sparkle grows and fades at its shoulder.
+fn paint_label(
+    canvas: &mut Canvas<'_>,
+    label: &Text<'_>,
+    mark: Option<std::ops::Range<usize>>,
+    row: Rect,
+    letter: Rgba,
+    glint: Option<f32>,
+    colors: &enso_core::Palette,
+) {
+    let Some(mark) = mark else {
+        canvas.text_in(label, row, Align::Center);
+        return;
+    };
+    let words = label.text;
+    let (before, key, after) = (
+        &words[..mark.start],
+        &words[mark.clone()],
+        &words[mark.end..],
+    );
+    let width = |canvas: &mut Canvas<'_>, text: &str| canvas.measure(&Text { text, ..*label }).w;
+    // Each piece starts where the name up to it ends, so the spacing is the
+    // name's own.
+    let whole = width(canvas, words);
+    let start = row.x + (row.w - whole) / 2.0;
+    let to_key = width(canvas, before);
+    let through_key = width(canvas, &words[..mark.end]);
+    let piece = |canvas: &mut Canvas<'_>, text: &str, x: f32, w: f32, color: Rgba| {
+        if !text.is_empty() {
+            let text = Text {
+                text,
+                color,
+                ..*label
+            };
+            canvas.text_in(&text, Rect::new(x, row.y, w + 2.0, row.h), Align::Start);
+        }
+    };
+    piece(canvas, before, start, to_key, label.color);
+    piece(
+        canvas,
+        after,
+        start + through_key,
+        whole - through_key,
+        label.color,
+    );
+    let cell = Rect::new(start + to_key, row.y, through_key - to_key, row.h);
+    piece(canvas, key, cell.x, cell.w, letter);
+
+    let Some(t) = glint else {
+        return;
+    };
+    // The light: a narrow band, brighter than the letter, swept across it
+    // and seen only where the letter is.
+    let shine = letter.mix(colors.text, 0.7);
+    let band = (cell.w * 0.55).max(3.0);
+    let eased = 1.0 - (1.0 - t).powi(3);
+    let centre = cell.x - band + eased * (cell.w + 2.0 * band);
+    canvas.with_clip(
+        Rect::new(centre - band / 2.0, row.y, band, row.h),
+        |canvas| {
+            piece(canvas, key, cell.x, cell.w, shine);
+        },
+    );
+    // The sparkle: it swells and fades over the glint, turning a little.
+    let size = (PI * t).sin();
+    if size > 0.01 {
+        let (x, y) = (cell.right() + 1.5, row.y + row.h * 0.22);
+        let (long, short) = (3.6 * size, 1.0 * size);
+        let turn = t * 0.6;
+        let points: Vec<(f32, f32)> = (0..8)
+            .map(|i| {
+                let reach = if i % 2 == 0 { long } else { short };
+                let angle = turn + i as f32 * PI / 4.0;
+                (x + reach * angle.cos(), y + reach * angle.sin())
+            })
+            .collect();
+        canvas.polygon(&points, shine.alpha(size.min(1.0)));
     }
 }
 
@@ -502,6 +625,39 @@ mod tests {
         assert_eq!(ran(), [Action::Lock]);
     }
 
+    /// The marked letters are the keys: `o` for Log out, which asks first.
+    #[test]
+    fn the_marked_letter_is_the_key() {
+        let mut menu = menu(PowerConfig::default());
+        assert_eq!(menu.keys, [Some('l'), Some('o'), Some('r'), Some('s')]);
+        assert_eq!(press(&mut menu, Key::Char('o')), Outcome::Redraw);
+        assert_eq!((menu.selected, menu.armed), (1, Some(1)));
+        // The old hint keys mean nothing now.
+        assert_eq!(press(&mut menu, Key::Char('e')), Outcome::Ignored);
+        assert!(ran().is_empty());
+    }
+
+    /// Landing on a choice sends the glint across its letter once; then all
+    /// is still. With motion off there is no glint at all.
+    #[test]
+    fn the_glint_crosses_once_on_arrival() {
+        let mut menu = menu(PowerConfig::default());
+        let now = Instant::now();
+        assert!(menu.glint_at(now).is_some(), "it glints as the menu opens");
+        assert_eq!(menu.glint_at(now + GLINT), None);
+        press(&mut menu, Key::Right);
+        let landed = menu.glint.unwrap();
+        assert!(
+            menu.glint_at(landed + GLINT / 2)
+                .is_some_and(|t| (0.4..0.6).contains(&t))
+        );
+        assert_eq!(menu.glint_at(landed + GLINT), None);
+
+        menu.ctx.motion = enso_core::Motion::none();
+        press(&mut menu, Key::Right);
+        assert_eq!(menu.glint_at(Instant::now()), None);
+    }
+
     #[test]
     fn navigation_wraps_and_confirmation_can_be_turned_off() {
         let mut menu = menu(PowerConfig {
@@ -515,7 +671,7 @@ mod tests {
         press(&mut menu, Key::Right);
         press(&mut menu, Key::Tab);
         assert_eq!(menu.selected, 2);
-        // A key for something not on the menu does nothing.
+        // A key for nothing on the menu does nothing.
         assert_eq!(press(&mut menu, Key::Char('z')), Outcome::Ignored);
         assert!(ran().is_empty());
         assert_eq!(press(&mut menu, Key::Enter), Outcome::Close);
@@ -602,6 +758,53 @@ mod tests {
             .save_png(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../../target/snapshots/power-confirm.png"
+            ))
+            .unwrap();
+    }
+
+    /// The selected name's key letter is in its choice's colour; caught
+    /// halfway, the glint is on it and the sparkle beside it.
+    #[test]
+    fn the_key_letter_is_marked_and_glints() {
+        let mut menu = menu(PowerConfig::default());
+        let mut text = TextEngine::new(&menu.ctx.config.appearance);
+        let colors = menu.ctx.theme.colors.clone();
+        let mut draw = |menu: &mut Menu, now| {
+            Offscreen::render(&mut text, (900, 420), 2, |canvas| {
+                menu.draw(canvas, now);
+            })
+        };
+        let start = Instant::now();
+        draw(&mut menu, start);
+        let settled = draw(&mut menu, start + Duration::from_secs(2));
+        // Somewhere in Lock's name row, the letter in foam.
+        let has = |frame: &Offscreen, menu: &Menu, index: usize, color: Rgba| {
+            let tile = menu.tiles[index];
+            let top = tile.y + space::LG + DISC + space::SM;
+            let (x0, x1) = ((tile.x * 2.0) as u32, (tile.right() * 2.0) as u32);
+            let (y0, y1) = ((top * 2.0) as u32, ((top + LABEL_HEIGHT) * 2.0) as u32);
+            (x0..x1)
+                .any(|x| (y0..y1).any(|y| frame.pixel(x, y) == [color.r, color.g, color.b, 255]))
+        };
+        assert!(has(&settled, &menu, 0, colors.foam));
+        settled
+            .save_png(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../target/snapshots/power-keys.png"
+            ))
+            .unwrap();
+
+        // On to Log out; halfway through its glint, the light is on the o.
+        press(&mut menu, Key::Right);
+        let landed = menu.glint.unwrap();
+        draw(&mut menu, landed);
+        let shining = draw(&mut menu, landed + GLINT * 2 / 5);
+        let shine = colors.gold.mix(colors.text, 0.7);
+        assert!(has(&shining, &menu, 1, shine), "the glint is on the letter");
+        shining
+            .save_png(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../target/snapshots/power-glint.png"
             ))
             .unwrap();
     }

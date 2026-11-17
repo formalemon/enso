@@ -74,15 +74,47 @@ impl Action {
         }
     }
 
-    /// The key that picks it without moving the selection there first.
-    pub const fn key(self) -> char {
+    /// The letters of its name that may pick it, best first: the one
+    /// people reach for, then the rest of the name. Never `j` or `k`, which
+    /// move the selection.
+    const fn letters(self) -> &'static [char] {
         match self {
-            Self::Lock => 'l',
-            Self::Suspend => 'z',
-            Self::Logout => 'e',
-            Self::Restart => 'r',
-            Self::Shutdown => 's',
+            Self::Lock => &['l', 'o', 'c'],
+            Self::Suspend => &['s', 'p', 'e', 'l'],
+            Self::Logout => &['o', 'l', 'g', 'u', 't'],
+            Self::Restart => &['r', 't', 'e', 's', 'a'],
+            Self::Shutdown => &['s', 'd', 'h', 'u', 't', 'o', 'w', 'n'],
         }
+    }
+
+    /// Who chooses a letter first when two want the same one: what is used
+    /// most, and what is most expected to be on its first letter.
+    const PRIORITY: [Self; 5] = [
+        Self::Lock,
+        Self::Shutdown,
+        Self::Restart,
+        Self::Logout,
+        Self::Suspend,
+    ];
+
+    /// Where the letter `key` sits in its label, to be marked there: a
+    /// letter that starts a word if there is one (the `o` of "out" in "Log
+    /// out"), else its first appearance. A byte range.
+    pub fn mark(self, key: char) -> Option<std::ops::Range<usize>> {
+        let label = self.label();
+        let mut first = None;
+        let mut previous = ' ';
+        for (at, c) in label.char_indices() {
+            if c.to_ascii_lowercase() == key {
+                let range = at..at + c.len_utf8();
+                if !previous.is_alphanumeric() {
+                    return Some(range);
+                }
+                first.get_or_insert(range);
+            }
+            previous = c;
+        }
+        first
     }
 
     pub const fn icon(self) -> Icon {
@@ -105,6 +137,26 @@ impl Action {
             Self::Restart => Role::Rose,
             Self::Shutdown => Role::Love,
         }
+    }
+
+    /// The key for each of `actions`, in order: every one its own letter,
+    /// from its own name, so that what is marked is what is pressed.
+    pub fn keys(actions: &[Self]) -> Vec<Option<char>> {
+        let mut keys = vec![None; actions.len()];
+        let mut taken = Vec::new();
+        for action in Self::PRIORITY {
+            let Some(at) = actions.iter().position(|a| *a == action) else {
+                continue;
+            };
+            let key = action
+                .letters()
+                .iter()
+                .copied()
+                .find(|c| !taken.contains(c));
+            taken.extend(key);
+            keys[at] = key;
+        }
+        keys
     }
 
     /// Whether it ends the session, and with it anything unsaved.
@@ -191,17 +243,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ids_round_trip_and_keys_are_distinct() {
+    fn ids_round_trip() {
         for action in Action::ALL {
             assert_eq!(Action::from_id(action.id()), Some(action));
-            // Navigation keys must stay navigation.
-            assert!(!['j', 'k', 'n', 'p'].contains(&action.key()), "{action:?}");
         }
-        let mut keys: Vec<char> = Action::ALL.iter().map(|action| action.key()).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        assert_eq!(keys.len(), Action::ALL.len());
         assert_eq!(Action::from_id("hibernate"), None);
+    }
+
+    /// Each key is a letter of the name it picks, marked where it stands.
+    #[test]
+    fn keys_are_letters_of_their_names() {
+        use Action::*;
+        // The usual menu: L, o, R, S.
+        assert_eq!(
+            Action::keys(&[Lock, Logout, Restart, Shutdown]),
+            [Some('l'), Some('o'), Some('r'), Some('s')]
+        );
+        // With Sleep too, Shut down keeps the S, and Sleep takes its p —
+        // whatever order the menu lists them in.
+        assert_eq!(
+            Action::keys(&[Suspend, Shutdown, Lock]),
+            [Some('p'), Some('s'), Some('l')]
+        );
+        let all = Action::keys(&Action::ALL);
+        let mut distinct: Vec<char> = all.iter().flatten().copied().collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), Action::ALL.len());
+        for (action, key) in Action::ALL.into_iter().zip(all) {
+            let key = key.unwrap();
+            // Navigation keys stay navigation.
+            assert!(!['j', 'k'].contains(&key), "{action:?}");
+            assert!(action.label().to_lowercase().contains(key), "{action:?}");
+        }
+
+        // Marked where a word starts with it: the o of "out", not of "Log".
+        assert_eq!(Logout.mark('o'), Some(4..5));
+        assert_eq!(&Logout.label()[4..5], "o");
+        assert_eq!(Lock.mark('l'), Some(0..1));
+        assert_eq!(Shutdown.mark('s'), Some(0..1));
+        // Else where it first appears.
+        assert_eq!(Suspend.mark('p'), Some(4..5));
+        assert_eq!(Lock.mark('z'), None);
     }
 
     #[test]

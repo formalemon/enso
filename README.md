@@ -50,7 +50,7 @@ spawn-at-startup "enso-wall"
 binds {
     Mod+D { spawn "enso-launch"; }   // press again to close
     Mod+C { spawn "enso-ctl"; }
-    Mod+Escape { spawn "enso-power"; }   // then l, e, r, or s
+    Mod+Escape { spawn "enso-power"; }   // then l, o, r, or s
     Super+Alt+L { spawn "enso-lock"; }
 
     XF86MonBrightnessUp   allow-when-locked=true { spawn "enso-ctl" "brightness" "up"; }
@@ -401,14 +401,19 @@ pixels at all — about 5 MB — and wakes for nothing but a theme, a wallpaper,
 or a monitor changing.
 
 **`enso-power`** — a row of four: Lock, Log out, Restart, Shut down. Each has
-a key (`l`, `e`, `r`, `s`), so leaving is the binding that opens the menu and
-one letter. The three that end the session ask for the letter (or `Enter`)
+a key, a letter of its own name marked there in the choice's colour — the
+**L** of Lock, the **o** of Log *o*ut, the **R** of Restart, the **S** of Shut
+down — so leaving is the binding that opens the menu and one letter. Landing
+on a choice sends a glint of light across its letter, with a small sparkle
+at its shoulder, once. The three that end the session ask for the letter (or `Enter`)
 a second time — the tile warms and a line says what a second press does —
 and `Esc` takes the question back before it closes the menu. Arrows, `Tab`,
 `j`/`k`, and `Ctrl+n`/`Ctrl+p` move; a click chooses; a click outside or a
 second `enso-power` closes. `confirm = false` under `[power]` makes every
 choice immediate, and `actions` picks and orders the tiles (`"suspend"` adds
-Sleep, on `z`).
+Sleep, on the **p** of Slee*p*, the S being Shut down's). Each choice takes the
+first free letter of its name, in a fixed order of who chooses first, so the
+letters never clash however the tiles are ordered.
 
 `enso-power lock` (or `suspend`, `logout`, `restart`, `shutdown`) skips the
 menu and acts, for key bindings. Shutting down, restarting, and sleeping go

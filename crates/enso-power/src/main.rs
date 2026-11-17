@@ -1,8 +1,9 @@
 //! `enso-power` — the power menu: lock, log out, restart, shut down.
 //!
-//! Opens focused as a short row of choices. Each has a key (`l`, `e`, `r`,
-//! `s`), so leaving is two keystrokes from anywhere: the binding that opens
-//! the menu, and the letter. The three that end the session ask for the
+//! Opens focused as a short row of choices. Each has a key — a letter of its
+//! own name, marked there (`l`, `o`, `r`, `s`) — so leaving is two
+//! keystrokes from anywhere: the binding that opens the menu, and the
+//! letter. The three that end the session ask for the
 //! letter (or `Enter`) once more first. `Esc` or a click outside dismisses,
 //! and running it again while it is open closes it.
 //!
@@ -41,8 +42,8 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-Keys:
-  l  lock      e  log out      r  restart      s  shut down      z  sleep
+Keys: the letter marked in each name
+  l  lock      o  log out      r  restart      s  shut down      p  sleep
   Left / Right, Tab, j / k, Ctrl+n / Ctrl+p    move
   Enter    choose          Esc    take back a question, then close
 
