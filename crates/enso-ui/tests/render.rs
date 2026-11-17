@@ -95,3 +95,57 @@ fn canvas_draws_shapes_text_and_icons() {
         ))
         .expect("write snapshot");
 }
+
+/// Every figure, at the sizes the tools draw them on a plain screen, and
+/// large: a contact sheet to judge the set by (`--features png` writes it
+/// to `target/snapshots/figures-*.png`).
+#[test]
+fn every_figure_draws_at_every_size() {
+    use enso_ui::figure::{self, ALL, Look};
+
+    let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-test"));
+    let colors = &ctx.theme.colors;
+    let mut text = TextEngine::new(&ctx.config.appearance);
+    for (name, size, scale) in [("small", 18.0, 1), ("large", 48.0, 2)] {
+        let cell = size * 1.8;
+        let columns = 12;
+        let rows = ALL.len().div_ceil(columns);
+        let frame = Offscreen::render(
+            &mut text,
+            ((cell * columns as f32) as u32, (cell * rows as f32) as u32),
+            scale,
+            |canvas| {
+                canvas.clear(colors.base);
+                for (i, figure) in ALL.iter().enumerate() {
+                    let (col, row) = ((i % columns) as f32, (i / columns) as f32);
+                    let at = (
+                        col * cell + (cell - size) / 2.0,
+                        row * cell + (cell - size) / 2.0,
+                    );
+                    figure::draw(canvas, *figure, at, size, Look::new(colors.text));
+                }
+            },
+        );
+        // Something was drawn in every cell.
+        for (i, figure) in ALL.iter().enumerate() {
+            let (col, row) = ((i % columns) as f32, (i / columns) as f32);
+            let (cx, cy) = (
+                ((col + 0.5) * cell) as u32 * scale,
+                ((row + 0.5) * cell) as u32 * scale,
+            );
+            let reach = (size * 0.45) as u32 * scale;
+            let inked = (cx - reach..cx + reach)
+                .flat_map(|x| (cy - reach..cy + reach).map(move |y| (x, y)))
+                .any(|(x, y)| frame.pixel(x, y) != frame.pixel(0, 0));
+            assert!(inked, "{figure:?} drew nothing");
+        }
+        #[cfg(feature = "png")]
+        frame
+            .save_png(format!(
+                "{}/../../target/snapshots/figures-{name}.png",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("write snapshot");
+        let _ = name;
+    }
+}

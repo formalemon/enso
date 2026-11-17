@@ -116,7 +116,11 @@ struct Look {
     base: f32,
     /// Caption text size.
     small: f32,
-    /// Width of the icon column at the start of a row.
+    /// Icons in rows: drawn on their grid, so their ink is a little
+    /// smaller than this, and stands as tall as the row's words.
+    icon: f32,
+    /// Width of the icon column at the start of a row: the icon and the
+    /// breath after it.
     icon_width: f32,
 }
 
@@ -138,7 +142,8 @@ impl Panel {
             accent: self.ctx.accent(),
             base,
             small: base * type_scale::SMALL,
-            icon_width: if canvas.glyphs() { 26.0 } else { 38.0 },
+            icon: (base * 1.43).round(),
+            icon_width: if canvas.glyphs() { 28.0 } else { 38.0 },
         };
 
         // The card eases in from the edge it hangs off.
@@ -235,8 +240,9 @@ impl Panel {
                 } else {
                     Text::new(&tile.value, look.small, colors.text).bold()
                 };
-                if canvas.glyphs() && width + space::XS + look.base <= content.w {
-                    canvas.icon(tile.icon, look.base, look.accent, top, Align::End);
+                let tile_icon = look.icon - 2.0;
+                if canvas.glyphs() && width + space::SM + tile_icon <= content.w {
+                    canvas.icon(tile.icon, tile_icon, look.accent, top, Align::End);
                 }
                 canvas.text_in(&value, top, Align::Start);
                 canvas.text_in(
@@ -293,7 +299,7 @@ impl Panel {
             _ if percent < 67 => icon::VOLUME_MEDIUM,
             _ => icon::VOLUME,
         };
-        let size = look.base + 2.0;
+        let size = look.icon;
         let button = Rect::new(content.x, content.y, look.icon_width, content.h);
         canvas.icon(glyph, size, colors.subtle, button, Align::Start);
 
@@ -347,7 +353,7 @@ impl Panel {
             let chevron = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
             canvas.icon(
                 icon::CHEVRON_RIGHT,
-                look.base + 2.0,
+                look.icon,
                 colors.muted,
                 chevron,
                 Align::End,
@@ -402,7 +408,7 @@ impl Panel {
 
         canvas.icon(
             glyph,
-            look.base + 2.0,
+            look.icon,
             colors.subtle.alpha(dim),
             content,
             Align::Start,
@@ -411,7 +417,7 @@ impl Panel {
         if available {
             canvas.icon(
                 icon::CHEVRON_RIGHT,
-                look.base + 2.0,
+                look.icon,
                 colors.muted,
                 Rect::new(right - CHEVRON, content.y, CHEVRON, content.h),
                 Align::End,
@@ -494,7 +500,7 @@ impl Panel {
 
         canvas.icon(
             icon::CHEVRON_LEFT,
-            look.base + 2.0,
+            look.icon,
             colors.subtle,
             content,
             Align::Start,
@@ -642,7 +648,19 @@ impl Panel {
         } else {
             colors.text
         };
-        paint_bars(canvas, content, network.bars(), lit, colors.highlight_med);
+        // The same fan as everywhere else, lit as far as the signal reaches.
+        let (_, middle) = content.center();
+        enso_ui::figure::draw(
+            canvas,
+            enso_core::Figure::Wifi(network.bars()),
+            (content.x, (middle - look.icon / 2.0).round()),
+            look.icon,
+            enso_ui::figure::Look {
+                on: lit,
+                off: colors.highlight_med,
+                pen: enso_ui::figure::PEN,
+            },
+        );
 
         let busy = self.busy.as_deref() == Some(network.id.as_str());
         let connecting = busy
@@ -690,13 +708,7 @@ impl Panel {
         } else {
             colors.subtle
         };
-        canvas.icon(
-            icon::BLUETOOTH,
-            look.base + 2.0,
-            tint,
-            content,
-            Align::Start,
-        );
+        canvas.icon(icon::BLUETOOTH, look.icon, tint, content, Align::Start);
 
         let busy = self.busy.as_deref() == Some(device.id.as_str());
         let trailing = match (busy, selected, device.connected, device.paired) {
@@ -790,7 +802,7 @@ impl Panel {
         } else {
             colors.subtle
         };
-        canvas.icon(glyph, look.base + 2.0, tint, content, Align::Start);
+        canvas.icon(glyph, look.icon, tint, content, Align::Start);
         let trailing = match (device.current, selected) {
             (true, _) => Trailing::Check,
             (false, true) => Trailing::Word("Use"),
@@ -843,13 +855,7 @@ impl Panel {
             Align::Start,
         );
         if active {
-            canvas.icon(
-                icon::CHECK,
-                look.base + 2.0,
-                look.accent,
-                content,
-                Align::End,
-            );
+            canvas.icon(icon::CHECK, look.icon, look.accent, content, Align::End);
         }
     }
 
@@ -922,14 +928,8 @@ fn paint_label(
             right -= canvas.text_in(&word, content, Align::End).w + space::MD;
         }
         Trailing::Check => {
-            canvas.icon(
-                icon::CHECK,
-                look.base + 2.0,
-                look.accent,
-                content,
-                Align::End,
-            );
-            right -= look.base + 2.0 + space::MD;
+            canvas.icon(icon::CHECK, look.icon, look.accent, content, Align::End);
+            right -= look.icon + space::MD;
         }
     }
 
@@ -950,8 +950,8 @@ fn paint_label(
         )
         .w;
     if let Some(badge) = badge {
-        let slot = Rect::new(end + space::SM, content.y, look.small, content.h);
-        canvas.icon(badge, look.small, colors.muted, slot, Align::Start);
+        let slot = Rect::new(end + space::SM, content.y, look.base, content.h);
+        canvas.icon(badge, look.base, colors.muted, slot, Align::Start);
         end = slot.right();
     }
     if let Some(detail) = detail
@@ -983,23 +983,4 @@ fn paint_switch(canvas: &mut Canvas<'_>, rect: Rect, on: f32, look: &Look) {
         knob / 2.0,
         colors.subtle.mix(colors.base, on),
     );
-}
-
-/// Four rising bars, `lit` of them filled: signal strength without a font.
-fn paint_bars(canvas: &mut Canvas<'_>, content: Rect, lit: u8, on: Rgba, off: Rgba) {
-    const WIDTH: f32 = 3.0;
-    const GAP: f32 = 2.0;
-    const TALLEST: f32 = 13.0;
-    let (_, cy) = content.center();
-    let floor = cy + TALLEST / 2.0;
-    for bar in 0..4u8 {
-        let height = 4.0 + 3.0 * f32::from(bar);
-        let rect = Rect::new(
-            content.x + 2.0 + f32::from(bar) * (WIDTH + GAP),
-            floor - height,
-            WIDTH,
-            height,
-        );
-        canvas.fill(rect, 1.0, if bar < lit { on } else { off });
-    }
 }

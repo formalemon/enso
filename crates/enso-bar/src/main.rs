@@ -3,9 +3,9 @@
 //! Three floating islands on a transparent strip: the windows of the current
 //! workspace — opening out to every workspace under the pointer — (from
 //! Niri's IPC socket), the clock, and a status cluster: network (from `/sys`
-//! and `/proc`), volume (from PipeWire), and battery (from `/sys`). Resting
-//! the pointer on the status island opens the control center, when
-//! `enso-ctl` is installed. Works with no config file and follows
+//! and `/proc`), battery (from `/sys`), and the notification bell; scrolling
+//! on it turns the volume (through PipeWire). Resting the pointer on the
+//! status island opens the control center, when `enso-ctl` is installed. Works with no config file and follows
 //! `enso-ctl theme set` live.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
@@ -32,9 +32,10 @@ Options:
 
 The left island shows a dot for each window on the current workspace. Hover
 it to see every workspace; click a dot to focus that window, or a group of
-dots to switch to that workspace. The right island shows network, volume,
-and battery; resting the pointer on it opens the control center, if enso-ctl
-is installed.
+dots to switch to that workspace. The right island shows network, battery,
+and the notification bell; scroll on it to turn the volume, rest the pointer
+on it to open the control center (if enso-ctl is installed), click it for the
+notification history.
 
 Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   height   = 36                    bar height in pixels; the status icons
@@ -43,6 +44,7 @@ Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   clock    = \"%a %-d %b  %H:%M\"    strftime format
   control_center = true            open enso-ctl while the pointer rests on
                                    the status island
+  opacity  = 0.9                   how solid the islands are, 0.0 to 1.0
 ";
 
 fn main() -> ExitCode {

@@ -33,7 +33,7 @@ pub use motion::{Easing, Lerp, Motion, Transition, Tween};
 pub use notices::Notices;
 pub use palette::{Palette, Role};
 pub use paths::Paths;
-pub use style::Icon;
+pub use style::{Figure, Icon};
 pub use theme::{Registry, Theme, Variant};
 
 /// Everything a tool needs at startup, resolved in one call.

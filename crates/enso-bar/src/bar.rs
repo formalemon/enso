@@ -7,7 +7,7 @@
 //! with no battery and no Wi-Fi still has an island to rest on.
 //!
 //! Its icons are drawn, not taken from a font (see [`icons`]): Wi-Fi or a
-//! cable, the speaker, the battery — a pill holding its percentage, filled
+//! cable, the battery — a pill holding its percentage, filled
 //! as far as it is charged — and the bell, which rings when something new
 //! arrives. They are sized from the bar's height, so a taller or shorter bar
 //! keeps the same island, larger or smaller.
@@ -23,7 +23,7 @@ use std::{
 };
 
 use enso_core::{
-    Context, Notices, Rgba, Transition, Tween,
+    Context, Figure, Notices, Rgba, Transition, Tween,
     style::{edge, space, type_scale},
 };
 use enso_sys::{
@@ -82,7 +82,6 @@ const RING: Duration = Duration::from_millis(900);
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
     Network(Link),
-    Sound(Level),
     Battery(Charge),
     Bell,
 }
@@ -148,7 +147,8 @@ pub struct Bar {
     battery: Option<Battery>,
     /// How the machine is online, if it has the hardware to be.
     link: Option<Link>,
-    /// The output's volume, if there is an output.
+    /// The output's volume, if there is an output: what scrolling on the
+    /// status island steps from.
     sound: Option<Level>,
     /// Scrolling on the status island, on its way to a volume step.
     scroll: sound::Scroll,
@@ -331,6 +331,15 @@ impl Bar {
         self.hover(self.pointer);
     }
 
+    /// An island's fill: its colour, as see-through as the config asks.
+    fn island_color(&self, color: Rgba) -> Rgba {
+        color.alpha(if self.config.opacity.is_finite() {
+            self.config.opacity
+        } else {
+            1.0
+        })
+    }
+
     /// Workspaces on this bar's output (all of them until the output is known).
     fn visible_workspaces(&self) -> impl Iterator<Item = &Workspace> {
         self.workspaces
@@ -456,7 +465,7 @@ impl Bar {
             return false;
         };
         let colors = &self.ctx.theme.colors;
-        canvas.pill(island.rect, colors.base);
+        canvas.pill(island.rect, self.island_color(colors.base));
 
         for group in &island.groups {
             // A soft capsule marks the current workspace once there are
@@ -506,7 +515,7 @@ impl Bar {
         let text = Text::new(&self.clock, size, colors.text).medium();
         let width = canvas.measure(&text).w + 2.0 * space::LG;
         let island = bar.centered(width, bar.h);
-        canvas.pill(island, colors.base);
+        canvas.pill(island, self.island_color(colors.base));
         canvas.text_in(&text, island, Align::Center);
     }
 
@@ -529,28 +538,28 @@ impl Bar {
         })
     }
 
-    /// What the status island shows, left to right: the network and the
-    /// sound where there are such, the battery where there is one, and the
-    /// bell, always — so there is always an island to rest on.
+    /// What the status island shows, left to right: the network where there
+    /// is such, the battery where there is one, and the bell, always — so
+    /// there is always an island to rest on. The volume is not shown (the
+    /// control center has it), but scrolling on the island still turns it.
     fn status_items(&self) -> Vec<Item> {
-        let mut items = Vec::with_capacity(4);
+        let mut items = Vec::with_capacity(3);
         items.extend(self.link.map(Item::Network));
-        items.extend(self.sound.map(Item::Sound));
         items.extend(self.charge().map(Item::Battery));
         items.push(Item::Bell);
         items
     }
 
-    /// An item's colour: quiet when all is well, muted when off, and the
-    /// bell bright when something went by unattended.
+    /// An item's colour: quiet, and the bell bright when something went by
+    /// unattended. Offline is told by the drawing — every arc faint, a
+    /// slash across — not by a darker colour, which would leave too little
+    /// to see.
     fn tint(&self, item: Item) -> Rgba {
         let colors = &self.ctx.theme.colors;
         match item {
-            Item::Network(Link::Offline) | Item::Sound(Level { muted: true, .. }) => colors.muted,
-            Item::Sound(Level { volume: 0, .. }) => colors.muted,
             Item::Bell if self.notices.unseen > 0 => colors.text,
             Item::Battery(charge) => charge.fill,
-            Item::Network(_) | Item::Sound(_) | Item::Bell => colors.subtle,
+            Item::Network(_) | Item::Bell => colors.subtle,
         }
     }
 
@@ -571,7 +580,7 @@ impl Bar {
         (icons::ring(t), true)
     }
 
-    /// The status island: Wi-Fi (or a cable) and the speaker, the battery,
+    /// The status island: Wi-Fi (or a cable), the battery,
     /// and the bell, every one drawn at the bar's scale. Returns whether it
     /// is still animating.
     fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, now: Instant) -> bool {
@@ -589,10 +598,8 @@ impl Bar {
             .as_deref()
             .map(|figures| Text::new(figures, battery.figures(), colors.text).bold());
         let width_of = |item: &Item, canvas: &mut Canvas<'_>| match item {
-            Item::Network(Link::Wired) => scale.width(icons::Icon::Wired),
-            Item::Network(_) => scale.width(icons::Icon::Wifi),
-            Item::Sound(_) => scale.width(icons::Icon::Speaker),
-            Item::Bell => scale.width(icons::Icon::Bell),
+            Item::Network(link) => scale.width(network(*link)),
+            Item::Bell => scale.width(Figure::Bell),
             Item::Battery(charge) => label.as_ref().map_or(0.0, |label| {
                 battery.width(canvas.measure(label).w, charge.plugged)
             }),
@@ -606,7 +613,7 @@ impl Bar {
         // It warms a shade under the pointer: there is something behind it.
         let glow = self.status_glow.get(now);
         let ground = colors.base.mix(colors.overlay, glow);
-        canvas.pill(island, ground);
+        canvas.pill(island, self.island_color(ground));
         let (swing, ringing) = self.swing(now);
         let accent = self.ctx.accent();
 
@@ -626,10 +633,7 @@ impl Bar {
                 icon_h,
             );
             match item {
-                Item::Network(Link::Wired) => icons::wired(canvas, icon, ink),
-                Item::Network(Link::Offline) => icons::wifi(canvas, icon, None, ink),
-                Item::Network(Link::Wifi { bars }) => icons::wifi(canvas, icon, Some(bars), ink),
-                Item::Sound(level) => icons::speaker(canvas, icon, waves(level), ink),
+                Item::Network(link) => icons::draw(canvas, network(link), icon, ink),
                 Item::Battery(charge) => {
                     if let Some(label) = &label {
                         battery.draw(canvas, slot, charge, label, glow, colors);
@@ -646,13 +650,12 @@ impl Bar {
     }
 }
 
-/// How many of the speaker's waves a level lights: none when muted.
-fn waves(level: Level) -> Option<u8> {
-    match level {
-        Level { muted: true, .. } | Level { volume: 0, .. } => None,
-        Level { volume: ..34, .. } => Some(1),
-        Level { volume: ..67, .. } => Some(2),
-        Level { .. } => Some(3),
+/// The figure for how the machine is online.
+fn network(link: Link) -> Figure {
+    match link {
+        Link::Wired => Figure::Ethernet,
+        Link::Offline => Figure::WifiOff,
+        Link::Wifi { bars } => Figure::Wifi(bars),
     }
 }
 
@@ -692,10 +695,8 @@ impl App for Bar {
                 self.set_workspaces(workspaces);
                 cx.redraw();
             }
-            Event::Message(Message::Sound(level)) => {
-                self.sound = level;
-                cx.redraw();
-            }
+            // Kept for scrolling on the island; nothing shows it.
+            Event::Message(Message::Sound(level)) => self.sound = level,
             // Anything written to the state directory: the theme choice, or
             // the notification daemon's count.
             Event::Message(Message::ThemeChanged) => {
@@ -747,10 +748,9 @@ impl App for Bar {
                 if let Some(level) = self.sound
                     && let Some(volume) = self.scroll.level(dy, level.volume)
                 {
-                    // Shown at once; the sound server confirms it shortly.
+                    // Counted from at once; the sound server confirms it shortly.
                     self.sound = Some(Level { volume, ..level });
                     sound::set(volume);
-                    cx.redraw();
                 }
             }
             Event::Pointer(PointerEvent::Leave) => {
@@ -916,6 +916,43 @@ mod tests {
             .expect("an island")
     }
 
+    /// `color` as an island shows it: premultiplied, as see-through as
+    /// the bar's `opacity`.
+    fn on_island(bar: &Bar, color: Rgba) -> [u8; 4] {
+        let a = u32::from(bar.island_color(color).a);
+        let mul = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;
+        [mul(color.r), mul(color.g), mul(color.b), a as u8]
+    }
+
+    /// The islands let a little of the wallpaper through, and only they:
+    /// what sits on them — icons, the battery — stays solid.
+    #[test]
+    fn islands_are_a_little_see_through() {
+        let mut bar = sample("rose-pine-moon");
+        let colors = bar.ctx.theme.colors.clone();
+        assert_eq!(BarConfig::default().opacity, 0.9);
+        let (drawn, _) = frame(&mut bar, later());
+        let island = bar.status.unwrap();
+        let ground = drawn.pixel(((island.x + 4.0) * 2.0) as u32, 36);
+        assert_eq!(ground, on_island(&bar, colors.base));
+        assert_eq!(ground[3], 230);
+        // The battery's fill is as solid as ever.
+        let solid =
+            |pixel: [u8; 4]| pixel == [colors.subtle.r, colors.subtle.g, colors.subtle.b, 255];
+        let row = (0..drawn.width).map(|x| drawn.pixel(x, 36));
+        assert!(row.filter(|pixel| solid(*pixel)).count() > 10);
+
+        // Solid on request, and a nonsense value is solid too.
+        bar.config.opacity = 1.0;
+        let (solid_frame, _) = frame(&mut bar, later());
+        assert_eq!(
+            solid_frame.pixel(((island.x + 4.0) * 2.0) as u32, 36)[3],
+            255
+        );
+        bar.config.opacity = f32::NAN;
+        assert_eq!(bar.island_color(colors.base).a, 255);
+    }
+
     fn snapshot(frame: &Offscreen, name: &str) {
         frame
             .save_png(format!(
@@ -933,17 +970,14 @@ mod tests {
             assert_eq!(paint, Paint::Idle);
 
             let base = bar.ctx.theme.colors.base;
-            // The bar is transparent between islands and opaque inside them.
+            // The bar is transparent between islands, and nearly solid
+            // inside them.
             assert_eq!(
                 frame.pixel(400, 36)[3],
                 0,
                 "gap between islands should be transparent"
             );
-            assert_eq!(
-                frame.pixel(900, 20),
-                [base.r, base.g, base.b, 255],
-                "clock island"
-            );
+            assert_eq!(frame.pixel(900, 20), on_island(&bar, base), "clock island");
             snapshot(&frame, &format!("bar-{theme}"));
         }
     }
@@ -1020,9 +1054,10 @@ mod tests {
                 frame.pixel(((group.rect.x + 3.0) * 2.0) as u32, (y * 2.0) as u32)
             };
             let rgb = |color: Rgba| [color.r, color.g, color.b, 255];
+            // The current workspace's capsule is solid on the island.
             assert_eq!(behind(&island.groups[1]), rgb(colors.overlay));
-            assert_eq!(behind(&island.groups[0]), rgb(colors.base));
-            assert_eq!(behind(&island.groups[2]), rgb(colors.base));
+            assert_eq!(behind(&island.groups[0]), on_island(&bar, colors.base));
+            assert_eq!(behind(&island.groups[2]), on_island(&bar, colors.base));
             // Only the current workspace shows its focused window as a pill.
             assert_eq!(island.groups[1].dots[1].rect.w, ACTIVE_WIDTH);
             assert!(island.groups[0].dots.iter().all(|dot| dot.rect.w == DOT));
@@ -1180,7 +1215,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_island_shows_network_volume_battery_and_bell() {
+    fn the_status_island_shows_network_battery_and_bell() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
         let kinds = |bar: &Bar| -> Vec<&'static str> {
@@ -1189,46 +1224,30 @@ mod tests {
                 .map(|item| match item {
                     Item::Network(Link::Wired) => "cable",
                     Item::Network(_) => "wifi",
-                    Item::Sound(_) => "speaker",
                     Item::Battery(_) => "battery",
                     Item::Bell => "bell",
                 })
                 .collect()
         };
-        assert_eq!(kinds(&bar), ["wifi", "speaker", "battery", "bell"]);
+        // The volume is known (for scrolling) but not shown.
+        assert!(bar.sound.is_some());
+        assert_eq!(kinds(&bar), ["wifi", "battery", "bell"]);
         let tints = |bar: &Bar| -> Vec<Rgba> {
             bar.status_items()
                 .into_iter()
                 .map(|item| bar.tint(item))
                 .collect()
         };
-        assert_eq!(
-            tints(&bar),
-            [colors.subtle, colors.subtle, colors.subtle, colors.subtle]
-        );
-        assert_eq!(waves(bar.sound.unwrap()), Some(2));
+        assert_eq!(tints(&bar), [colors.subtle, colors.subtle, colors.subtle]);
 
         bar.link = Some(Link::Offline);
-        bar.sound = Some(Level {
-            volume: 60,
-            muted: true,
-        });
         bar.battery.as_mut().unwrap().percent = 12;
-        assert_eq!(
-            tints(&bar),
-            [colors.muted, colors.muted, colors.love, colors.subtle]
-        );
-        assert_eq!(waves(bar.sound.unwrap()), None);
-        snapshot(&frame(&mut bar, later()).0, "bar-status-offline-muted");
+        assert_eq!(tints(&bar), [colors.subtle, colors.love, colors.subtle]);
+        snapshot(&frame(&mut bar, later()).0, "bar-status-offline");
 
         bar.link = Some(Link::Wired);
-        bar.sound = Some(Level {
-            volume: 90,
-            muted: false,
-        });
         bar.battery = None;
-        assert_eq!(kinds(&bar), ["cable", "speaker", "bell"]);
-        assert_eq!(waves(bar.sound.unwrap()), Some(3));
+        assert_eq!(kinds(&bar), ["cable", "bell"]);
 
         // Under the pointer the island warms, then settles lit.
         frame(&mut bar, Instant::now());
@@ -1240,18 +1259,18 @@ mod tests {
         let (x, y) = ((island.x + 5.0) * 2.0, 36.0);
         assert_eq!(
             lit.pixel(x as u32, y as u32),
-            [colors.overlay.r, colors.overlay.g, colors.overlay.b, 255]
+            on_island(&bar, colors.overlay)
         );
         snapshot(&lit, "bar-status-hovered");
     }
 
-    /// Signal and volume light their arcs from the inside out; the rest stay
-    /// whole, in a whisper of the same colour.
+    /// Signal lights the arcs from the inside out; the rest stay whole, in a
+    /// whisper of the same colour.
     #[test]
     fn strength_lights_arcs_and_leaves_the_rest_faint() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
-        let faint = colors.subtle.mix(colors.base, 0.72);
+        let faint = colors.subtle.mix(colors.base, icons::UNLIT);
         let count = |frame: &Offscreen, bar: &Bar, color: Rgba| {
             let island = bar.status.unwrap();
             let xs = (island.x * 2.0) as u32..(island.right() * 2.0) as u32;
@@ -1260,18 +1279,16 @@ mod tests {
                 .count()
         };
         bar.link = Some(Link::Wifi { bars: 4 });
-        bar.sound = Some(Level {
-            volume: 100,
-            muted: false,
-        });
         let (full, _) = frame(&mut bar, later());
-        assert_eq!(count(&full, &bar, faint), 0, "everything is lit");
+        // Fully lit, nothing is faint (but the odd edge pixel, whose blend
+        // of icon and island happens to land on the same colour).
+        let edges = count(&full, &bar, faint);
+        assert!(
+            edges < 10,
+            "everything is lit, yet {edges} pixels are faint"
+        );
 
         bar.link = Some(Link::Wifi { bars: 1 });
-        bar.sound = Some(Level {
-            volume: 10,
-            muted: false,
-        });
         let (weak, _) = frame(&mut bar, later());
         assert!(
             count(&weak, &bar, faint) > 40,

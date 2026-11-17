@@ -7,7 +7,7 @@ and one way of moving.
 
 | Tool | What it is | State |
 | --- | --- | --- |
-| `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, volume, battery, notification bell | working |
+| `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, battery, notification bell; scroll for volume | working |
 | `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
 | `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, fonts, the cursor, Firefox, Qt, Flatpak | working |
@@ -65,8 +65,11 @@ With `enso-bar` and `enso-ctl` installed, resting the pointer on the bar's
 right island opens the control center beneath it; with `enso-notify`
 running, clicking the island opens the notification history there instead.
 
-Icons are Nerd Font glyphs. Without a Nerd Font installed the tools fall back
-to short text labels; on Arch, `ttf-nerd-fonts-symbols` is enough.
+Icons are enso's own drawings (`enso_ui::figure`), the same in every tool:
+one pen, round ends and soft corners, each kept to the middle of a 24-unit
+grid so every icon has the same breathing room. They need no icon font —
+nothing to install. `icons = "text"` under `[appearance]` puts a few letters
+in their place.
 
 ## Layout
 
@@ -115,7 +118,7 @@ the service itself (`/sys`, sockets, D-Bus), never to a CLI wrapper.
 | `net` | `/sys`, `/proc` | online by cable or Wi-Fi, and the signal | always on, no dependencies |
 
 The service backends are opt-in features, so a tool links only the clients
-it uses: `enso-bar` takes `audio` for its volume glyph and no D-Bus at all.
+it uses: `enso-bar` takes `audio` to turn the volume on a scroll, and no D-Bus at all.
 Each takes a complete snapshot of its service (`state()`), blocks while
 acting, and has a `watch()` that reports when a new snapshot is worth taking.
 An interface keeps them on worker threads; `enso-ctl`'s `system` module is
@@ -163,8 +166,6 @@ corners, one hand for all of them:
 - **Wi-Fi**, a dot and three arcs lit from the inside out with the signal
   (the rest stay, faintly); offline, all faint and struck through. A cable
   when wired.
-- **The speaker**, its three waves lit with the volume the same way; muted,
-  a small cross where the waves were.
 - **The battery**, a pill holding its percentage, filled from the left as far
   as it is charged — in foam on power, gold below 30 %, love below 15 % — with
   a small lightning bolt before the figures while it charges. Where the fill
@@ -173,7 +174,9 @@ corners, one hand for all of them:
   new arrives unattended, and keeps a dot in the accent until it is seen.
 
 Every size is taken from the bar's `height`, so a taller or shorter bar gets
-the same island, larger or smaller. And the island, the control center, the
+the same island, larger or smaller. The islands let a little of the
+wallpaper through (`opacity = 0.9` under `[bar]`; 1.0 is solid); what sits
+on them stays solid. And the island, the control center, the
 notification history, and toasts all keep the same distance from the side
 of the screen, so their right edges line up. Each is there only if the machine has it — a desktop shows no battery —
 except the bell, which always is, so there is always an island to rest on.

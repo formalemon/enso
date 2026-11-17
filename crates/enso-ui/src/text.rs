@@ -1,4 +1,4 @@
-//! Text shaping and rasterisation (cosmic-text), including Nerd Font icons.
+//! Text shaping and rasterisation (cosmic-text).
 
 use std::{
     cell::OnceCell,
@@ -36,8 +36,6 @@ pub enum Font {
     Ui,
     /// The configured monospace font.
     Mono,
-    /// The detected Nerd Font, for icon glyphs.
-    Icon,
 }
 
 /// A run of text and how to draw it.
@@ -128,7 +126,6 @@ struct Loaded {
     cache: SwashCache,
     layouts: Layouts,
     families: Families,
-    glyphs: bool,
 }
 
 /// The families each [`Font`] stands for, resolved against what is
@@ -136,7 +133,6 @@ struct Loaded {
 struct Families {
     ui: String,
     mono: String,
-    icon: Option<String>,
 }
 
 impl Families {
@@ -144,21 +140,14 @@ impl Families {
         match font {
             Font::Ui => family_of(&self.ui),
             Font::Mono => family_of(&self.mono),
-            Font::Icon => self.icon.as_deref().map_or(Family::SansSerif, Family::Name),
         }
     }
 }
 
 impl Loaded {
-    fn new(family: &str, mono: &str, icons: IconMode) -> Self {
+    fn new(family: &str, mono: &str) -> Self {
         let mut fonts = FontSystem::new();
         resolve_generic_families(&mut fonts);
-        let icon = find_nerd_font(&fonts);
-        let glyphs = match icons {
-            IconMode::Auto => icon.is_some(),
-            IconMode::Glyphs => true,
-            IconMode::Text => false,
-        };
         let installed = |name: &str, generic: &str| {
             let known = matches!(family_of(name), Family::Name(_)).then(|| {
                 fonts
@@ -176,14 +165,12 @@ impl Loaded {
         let families = Families {
             ui: installed(family, "sans-serif"),
             mono: installed(mono, "monospace"),
-            icon,
         };
         Self {
             fonts,
             cache: SwashCache::new(),
             layouts: Layouts::default(),
             families,
-            glyphs,
         }
     }
 }
@@ -212,7 +199,7 @@ impl TextEngine {
 
     fn loaded(&self) -> &Loaded {
         self.loaded
-            .get_or_init(|| Loaded::new(&self.family, &self.mono, self.icons))
+            .get_or_init(|| Loaded::new(&self.family, &self.mono))
     }
 
     fn loaded_mut(&mut self) -> &mut Loaded {
@@ -222,14 +209,10 @@ impl TextEngine {
             .expect("the fonts were loaded on the line above")
     }
 
-    /// Whether icons render as Nerd Font glyphs (as opposed to text stand-ins).
+    /// Whether icons are drawn (as opposed to stood in for by words). Icons
+    /// need no font, so this does not load any.
     pub fn glyphs(&self) -> bool {
-        self.loaded().glyphs
-    }
-
-    /// Family name of the Nerd Font used for icons, if one is installed.
-    pub fn icon_family(&self) -> Option<&str> {
-        self.loaded().families.icon.as_deref()
+        self.icons != IconMode::Text
     }
 
     /// Size the text would occupy, in logical pixels.
@@ -539,24 +522,6 @@ fn missing_generic(
         return None;
     }
     preferred.iter().copied().find(|name| installed(name))
-}
-
-/// Pick the best installed Nerd Font family for icon glyphs: the symbols-only
-/// font if present, otherwise any patched font.
-fn find_nerd_font(fonts: &FontSystem) -> Option<String> {
-    let mut best: Option<&str> = None;
-    for face in fonts.db().faces() {
-        for (family, _) in &face.families {
-            if !family.contains("Nerd Font") {
-                continue;
-            }
-            if family.starts_with("Symbols Nerd Font") {
-                return Some(family.clone());
-            }
-            best.get_or_insert(family);
-        }
-    }
-    best.map(str::to_owned)
 }
 
 #[cfg(test)]

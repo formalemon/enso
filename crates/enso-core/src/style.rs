@@ -101,67 +101,103 @@ impl Shadow {
     };
 }
 
-/// An icon: a Nerd Font glyph plus a plain-text stand-in for systems without one,
-/// so binaries never depend on SVGs or icon packs.
+/// What an icon shows. enso-ui draws every one itself — round-ended
+/// strokes, soft corners, one pen for all — so no tool depends on an icon
+/// font, an image file, or an icon pack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Figure {
+    Search,
+    Apps,
+    Folder,
+    File,
+    Bell,
+    Close,
+    Check,
+    Palette,
+    /// Wi-Fi with this much signal, `0..=4`: the dot, then each arc.
+    Wifi(u8),
+    WifiOff,
+    Ethernet,
+    Bluetooth,
+    /// A speaker sounding `1..=3`: one wave, two with the outer faint, two.
+    Speaker(u8),
+    SpeakerMuted,
+    Battery,
+    BatteryCharging,
+    /// A lightning bolt: the power profile.
+    Bolt,
+    Thermometer,
+    Brightness,
+    Keyboard,
+    Lock,
+    ChevronLeft,
+    ChevronRight,
+    ChevronUp,
+    ChevronDown,
+    Microphone,
+    MicrophoneOff,
+    Power,
+    Restart,
+    Logout,
+    Sleep,
+    CapsLock,
+}
+
+/// An icon: the figure drawn, and a few letters standing in for it where
+/// pictures are not wanted (`icons = "text"`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Icon {
-    /// Nerd Font codepoint (Material Design Icons range).
-    pub glyph: &'static str,
-    /// Short text used when no Nerd Font is available.
+    pub figure: Figure,
+    /// Short text used instead, when icons are words.
     pub text: &'static str,
 }
 
 impl Icon {
-    pub const fn new(glyph: &'static str, text: &'static str) -> Self {
-        Self { glyph, text }
-    }
-
-    /// The glyph or its stand-in.
-    pub const fn get(self, glyphs: bool) -> &'static str {
-        if glyphs { self.glyph } else { self.text }
+    pub const fn new(figure: Figure, text: &'static str) -> Self {
+        Self { figure, text }
     }
 }
 
-/// The suite's icon vocabulary. Codepoints are `nf-md-*` names from Nerd Fonts v3.
+/// The suite's icon vocabulary.
 pub mod icon {
-    use super::Icon;
+    use super::{Figure, Icon};
 
-    pub const SEARCH: Icon = Icon::new("\u{f0349}", "/"); // magnify
-    pub const APPS: Icon = Icon::new("\u{f003b}", "#"); // apps
-    pub const FOLDER: Icon = Icon::new("\u{f024b}", "/"); // folder
-    pub const FILE: Icon = Icon::new("\u{f0224}", "-"); // file-outline
-    pub const BELL: Icon = Icon::new("\u{f009a}", "!"); // bell
-    pub const CLOSE: Icon = Icon::new("\u{f0156}", "x"); // close
-    pub const CHECK: Icon = Icon::new("\u{f012c}", "*"); // check
-    pub const PALETTE: Icon = Icon::new("\u{f03d8}", "theme"); // palette
-    pub const WIFI: Icon = Icon::new("\u{f05a9}", "wifi"); // wifi
-    pub const BLUETOOTH: Icon = Icon::new("\u{f00af}", "bt"); // bluetooth
-    pub const VOLUME: Icon = Icon::new("\u{f057e}", "vol"); // volume-high
-    pub const VOLUME_MUTED: Icon = Icon::new("\u{f0581}", "mute"); // volume-off
-    pub const BATTERY: Icon = Icon::new("\u{f0079}", "bat"); // battery
-    pub const BATTERY_CHARGING: Icon = Icon::new("\u{f0084}", "chg"); // battery-charging
-    pub const POWER_PROFILE: Icon = Icon::new("\u{f0241}", "mode"); // flash
-    pub const THERMOMETER: Icon = Icon::new("\u{f050f}", "temp"); // thermometer
-    pub const BRIGHTNESS: Icon = Icon::new("\u{f00df}", "lum"); // brightness-6
-    pub const KEYBOARD: Icon = Icon::new("\u{f030c}", "keys"); // keyboard
-    pub const LOCK: Icon = Icon::new("\u{f033e}", ""); // lock
-    pub const CHEVRON_LEFT: Icon = Icon::new("\u{f0141}", "<"); // chevron-left
-    pub const CHEVRON_RIGHT: Icon = Icon::new("\u{f0142}", ">"); // chevron-right
-    pub const CHEVRON_DOWN: Icon = Icon::new("\u{f0140}", "v"); // chevron-down
-    pub const CHEVRON_UP: Icon = Icon::new("\u{f0143}", "^"); // chevron-up
-    pub const VOLUME_LOW: Icon = Icon::new("\u{f057f}", "vol"); // volume-low
-    pub const VOLUME_MEDIUM: Icon = Icon::new("\u{f0580}", "vol"); // volume-medium
-    pub const MICROPHONE: Icon = Icon::new("\u{f036c}", "mic"); // microphone
-    pub const MICROPHONE_OFF: Icon = Icon::new("\u{f036d}", "mic"); // microphone-off
-    pub const ETHERNET: Icon = Icon::new("\u{f0200}", "net"); // ethernet
-    pub const WIFI_OFF: Icon = Icon::new("\u{f05aa}", "off"); // wifi-off
-    pub const WIFI_1: Icon = Icon::new("\u{f091f}", "wifi"); // wifi-strength-1
-    pub const WIFI_2: Icon = Icon::new("\u{f0922}", "wifi"); // wifi-strength-2
-    pub const WIFI_3: Icon = Icon::new("\u{f0925}", "wifi"); // wifi-strength-3
-    pub const WIFI_4: Icon = Icon::new("\u{f0928}", "wifi"); // wifi-strength-4
-    pub const POWER: Icon = Icon::new("\u{f0425}", "off"); // power
-    pub const RESTART: Icon = Icon::new("\u{f0709}", "re"); // restart
-    pub const LOGOUT: Icon = Icon::new("\u{f0343}", "exit"); // logout
-    pub const SLEEP: Icon = Icon::new("\u{f04b2}", "zz"); // sleep
-    pub const CAPS_LOCK: Icon = Icon::new("\u{f0a9b}", "caps"); // keyboard-caps
+    pub const SEARCH: Icon = Icon::new(Figure::Search, "/");
+    pub const APPS: Icon = Icon::new(Figure::Apps, "#");
+    pub const FOLDER: Icon = Icon::new(Figure::Folder, "/");
+    pub const FILE: Icon = Icon::new(Figure::File, "-");
+    pub const BELL: Icon = Icon::new(Figure::Bell, "!");
+    pub const CLOSE: Icon = Icon::new(Figure::Close, "x");
+    pub const CHECK: Icon = Icon::new(Figure::Check, "*");
+    pub const PALETTE: Icon = Icon::new(Figure::Palette, "theme");
+    pub const WIFI: Icon = Icon::new(Figure::Wifi(4), "wifi");
+    pub const BLUETOOTH: Icon = Icon::new(Figure::Bluetooth, "bt");
+    pub const VOLUME: Icon = Icon::new(Figure::Speaker(3), "vol");
+    pub const VOLUME_MUTED: Icon = Icon::new(Figure::SpeakerMuted, "mute");
+    pub const BATTERY: Icon = Icon::new(Figure::Battery, "bat");
+    pub const BATTERY_CHARGING: Icon = Icon::new(Figure::BatteryCharging, "chg");
+    pub const POWER_PROFILE: Icon = Icon::new(Figure::Bolt, "mode");
+    pub const THERMOMETER: Icon = Icon::new(Figure::Thermometer, "temp");
+    pub const BRIGHTNESS: Icon = Icon::new(Figure::Brightness, "lum");
+    pub const KEYBOARD: Icon = Icon::new(Figure::Keyboard, "keys");
+    pub const LOCK: Icon = Icon::new(Figure::Lock, "");
+    pub const CHEVRON_LEFT: Icon = Icon::new(Figure::ChevronLeft, "<");
+    pub const CHEVRON_RIGHT: Icon = Icon::new(Figure::ChevronRight, ">");
+    pub const CHEVRON_DOWN: Icon = Icon::new(Figure::ChevronDown, "v");
+    pub const CHEVRON_UP: Icon = Icon::new(Figure::ChevronUp, "^");
+    pub const VOLUME_LOW: Icon = Icon::new(Figure::Speaker(1), "vol");
+    pub const VOLUME_MEDIUM: Icon = Icon::new(Figure::Speaker(2), "vol");
+    pub const MICROPHONE: Icon = Icon::new(Figure::Microphone, "mic");
+    pub const MICROPHONE_OFF: Icon = Icon::new(Figure::MicrophoneOff, "mic");
+    pub const ETHERNET: Icon = Icon::new(Figure::Ethernet, "net");
+    pub const WIFI_OFF: Icon = Icon::new(Figure::WifiOff, "off");
+    pub const WIFI_1: Icon = Icon::new(Figure::Wifi(1), "wifi");
+    pub const WIFI_2: Icon = Icon::new(Figure::Wifi(2), "wifi");
+    pub const WIFI_3: Icon = Icon::new(Figure::Wifi(3), "wifi");
+    pub const WIFI_4: Icon = Icon::new(Figure::Wifi(4), "wifi");
+    pub const POWER: Icon = Icon::new(Figure::Power, "off");
+    pub const RESTART: Icon = Icon::new(Figure::Restart, "re");
+    pub const LOGOUT: Icon = Icon::new(Figure::Logout, "exit");
+    pub const SLEEP: Icon = Icon::new(Figure::Sleep, "zz");
+    pub const CAPS_LOCK: Icon = Icon::new(Figure::CapsLock, "caps");
 }

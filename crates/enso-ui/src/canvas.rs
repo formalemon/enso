@@ -14,7 +14,7 @@ use crate::{
     geom::{Align, Rect, Size},
     image::Image,
     picture::Picture,
-    text::{Font, Text, TextEngine},
+    text::{Text, TextEngine},
 };
 
 /// Drawing surface handed to [`App::draw`](crate::App::draw).
@@ -86,7 +86,7 @@ impl<'a> Canvas<'a> {
         Rect::new(0.0, 0.0, w, h)
     }
 
-    /// Whether icons render as Nerd Font glyphs.
+    /// Whether icons are drawn (as opposed to stood in for by words).
     pub fn glyphs(&self) -> bool {
         self.text.glyphs()
     }
@@ -309,17 +309,30 @@ impl<'a> Canvas<'a> {
         self.text(&text, x, rect.y + (rect.h - size.h) / 2.0)
     }
 
-    /// Draw an icon aligned in `rect`: a Nerd Font glyph, or its text stand-in
-    /// when no Nerd Font is available.
+    /// Draw an icon `size` logical pixels square, aligned across `rect` and
+    /// centred down it: drawn (see [`figure`](crate::figure)), or its few
+    /// letters where icons are words. Returns the space it took.
     pub fn icon(&mut self, icon: Icon, size: f32, color: Rgba, rect: Rect, align: Align) -> Size {
-        let glyphs = self.glyphs();
-        let text = Text::new(
-            icon.get(glyphs),
-            if glyphs { size } else { size * 0.8 },
-            color,
-        )
-        .font(if glyphs { Font::Icon } else { Font::Ui });
-        self.text_in(&text, rect, align)
+        if !self.glyphs() {
+            let text = Text::new(icon.text, size * 0.8, color);
+            return self.text_in(&text, rect, align);
+        }
+        let x = match align {
+            Align::Start => rect.x,
+            Align::Center => rect.x + (rect.w - size) / 2.0,
+            Align::End => rect.right() - size,
+        };
+        let y = rect.y + (rect.h - size) / 2.0;
+        // On whole pixels, so the pen falls the same way in every icon.
+        let snap = |v: f32| (v * self.scale).round() / self.scale;
+        crate::figure::draw(
+            self,
+            icon.figure,
+            (snap(x), snap(y)),
+            size,
+            crate::figure::Look::new(color),
+        );
+        Size { w: size, h: size }
     }
 
     /// Draw `image` so that it covers `rect`, centred and cropped to fit,
@@ -491,10 +504,33 @@ impl Shape {
         self
     }
 
+    /// A quadratic Bézier curve to `(x, y)`, pulled toward the control.
+    pub fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) -> &mut Self {
+        self.builder.quad_to(x1, y1, x, y);
+        self
+    }
+
     /// A circular arc around `(cx, cy)`, as a piece of its own: from the
     /// angle `start`, turning through `sweep` (radians; positive turns
     /// clockwise on screen, and 0 points right).
-    pub fn arc(&mut self, (cx, cy): (f32, f32), r: f32, start: f32, sweep: f32) -> &mut Self {
+    pub fn arc(&mut self, centre: (f32, f32), r: f32, start: f32, sweep: f32) -> &mut Self {
+        self.arc_from(centre, r, start, sweep, false)
+    }
+
+    /// [`arc`](Self::arc), carrying on the current piece: a straight line
+    /// is drawn to where the arc begins.
+    pub fn arc_to(&mut self, centre: (f32, f32), r: f32, start: f32, sweep: f32) -> &mut Self {
+        self.arc_from(centre, r, start, sweep, true)
+    }
+
+    fn arc_from(
+        &mut self,
+        (cx, cy): (f32, f32),
+        r: f32,
+        start: f32,
+        sweep: f32,
+        joined: bool,
+    ) -> &mut Self {
         // Each quarter turn or less is one cubic, whose controls sit
         // 4/3·tan(θ/4) of the radius along the tangents.
         let pieces = (sweep.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0);
@@ -502,7 +538,11 @@ impl Shape {
         let k = 4.0 / 3.0 * (step / 4.0).tan();
         let at = |angle: f32| (cx + r * angle.cos(), cy + r * angle.sin());
         let (x, y) = at(start);
-        self.builder.move_to(x, y);
+        if joined && self.builder.last_point().is_some() {
+            self.builder.line_to(x, y);
+        } else {
+            self.builder.move_to(x, y);
+        }
         let mut angle = start;
         for _ in 0..pieces as usize {
             let next = angle + step;
@@ -533,6 +573,18 @@ impl Shape {
             self.builder.push_path(&path);
         }
         self
+    }
+
+    /// The smallest rectangle around what the shape covers — curves at
+    /// their true extent, not their control points — before any stroke.
+    pub fn bounds(&self) -> Option<Rect> {
+        let bounds = self.path()?.compute_tight_bounds()?;
+        Some(Rect::new(
+            bounds.x(),
+            bounds.y(),
+            bounds.width(),
+            bounds.height(),
+        ))
     }
 
     fn path(&self) -> Option<Path> {

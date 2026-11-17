@@ -361,8 +361,9 @@ impl App for Menu {
                 DISC,
             );
             canvas.pill(disc, tint.alpha(opacity::TINT + 0.06));
+            // About half the disc, as on any round button: room all round.
             let glyph = if canvas.glyphs() {
-                base_size * 1.7
+                (DISC * 0.5).round()
             } else {
                 base_size
             };

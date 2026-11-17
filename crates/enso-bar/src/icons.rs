@@ -1,29 +1,32 @@
-//! The status island's icons, drawn rather than taken from a font: Wi-Fi
-//! (or a cable), the speaker, the battery, and the bell.
+//! The status island's icons: Wi-Fi (or a cable), the bell — enso's own
+//! drawings ([`enso_ui::figure`], the same everywhere in the suite) — and
+//! the battery, which is the bar's alone: a pill holding its percentage.
 //!
-//! They share one hand. Lines are thick and round at their ends and
-//! corners; shapes are soft-cornered and a little plump. Strength — signal,
-//! volume — is told the same way in both: the parts that are on are drawn
-//! in the icon's colour, the parts that are off in a whisper of it, so the
-//! shape stays whole and only its fill changes.
-//!
-//! Every measure is a fraction of the icon's height, and that height comes
-//! from the bar's (see [`Scale`]), so the island grows and shrinks with the
-//! bar and stays sharp at any size and on any screen.
+//! Here the icons are fitted by their ink rather than placed on their grid:
+//! each stands exactly as tall as the next and as the battery, and takes
+//! exactly as much width as it has ink, so they line up along the island
+//! and the gaps between them are even. Every measure comes from the bar's
+//! height (see [`Scale`]), so the island grows and shrinks with the bar.
 
-use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+use std::f32::consts::PI;
 
-use enso_core::{Palette, Rgba};
-use enso_ui::{Align, Canvas, Rect, Shape, Text};
+use enso_core::{Figure, Palette, Rgba};
+use enso_ui::{
+    Align, Canvas, Rect, Text,
+    figure::{self, Look},
+};
 
 /// The bar's island height the icons were drawn for; every size scales by
 /// the island's own height over this.
 const DESIGN_HEIGHT: f32 = 28.0;
 
 /// How much of an unlit part's colour is the ground's: "off" is the icon's
-/// colour, faded into the island behind it. Opaque, so parts that overlap do
-/// not darken where they meet.
-const UNLIT: f32 = 0.72;
+/// colour, faded into the island behind it.
+pub const UNLIT: f32 = 0.62;
+
+/// The pen for status icons: a little heavier than elsewhere, because they
+/// are small.
+const PEN: f32 = figure::PEN * 1.2;
 
 /// Sizes for one bar height.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,14 +47,15 @@ impl Scale {
         px * self.unit
     }
 
-    /// The height of an icon.
+    /// The height of an icon: half the island's, so the icons sit in it
+    /// with room around them rather than filling it.
     pub fn icon(self) -> f32 {
-        self.px(16.0).round()
+        self.px(14.0).round()
     }
 
-    /// The width each icon takes.
-    pub fn width(self, icon: Icon) -> f32 {
-        (self.icon() * icon.aspect()).round()
+    /// The width a figure takes.
+    pub fn width(self, figure: Figure) -> f32 {
+        (self.icon() * figure::aspect(figure, PEN)).round()
     }
 
     /// Space between neighbouring icons.
@@ -65,300 +69,60 @@ impl Scale {
     }
 }
 
-/// Which icon, for its proportions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Icon {
-    Wifi,
-    Wired,
-    Speaker,
-    Bell,
-}
-
-/// Where an icon's ink falls, in the units it is drawn in: `u` across and
-/// `v` down, strokes and round ends included.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Extent {
-    u: (f32, f32),
-    v: (f32, f32),
-}
-
-impl Icon {
-    /// The ink of each icon, worked out from its drawing below: the outermost
-    /// curve or corner, plus half its pen. Every icon is fitted by this, so
-    /// all of them stand exactly as tall as each other, and each takes
-    /// exactly as much width as it has ink — the gaps between them are then
-    /// all the same, to the eye as well as to the ruler.
-    fn extent(self) -> Extent {
-        match self {
-            // The outer arc's ends (0.72 at 45°) and top, plus half its
-            // 0.13 pen; the dot's foot below.
-            Self::Wifi => Extent {
-                u: (-0.574, 0.574),
-                v: (0.095, 0.94),
-            },
-            // The outer squares; the top one's head and the feet.
-            Self::Wired => Extent {
-                u: (-0.47, 0.47),
-                v: (0.06, 0.94),
-            },
-            // The cone's back, plus half its 0.1 pen; the outer wave (and
-            // the cross, which reaches as far) at the front; the outer
-            // wave's ends above and below.
-            Self::Speaker => Extent {
-                u: (-0.01, 1.035),
-                v: (0.054, 0.946),
-            },
-            // The rim's ends; the knob's top and the clapper's foot.
-            Self::Bell => Extent {
-                u: (-0.4, 0.4),
-                v: (0.025, 1.005),
-            },
-        }
-    }
-
-    /// Width over height, of the ink.
-    fn aspect(self) -> f32 {
-        let Extent { u, v } = self.extent();
-        (u.1 - u.0) / (v.1 - v.0)
-    }
-}
-
 /// The colours an icon is drawn in.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ink {
     /// The parts that are on.
     pub on: Rgba,
-    /// What it sits on: the island, as lit as it is.
+    /// What it sits on: the island's colour, as lit as it is, before any
+    /// see-through. Unlit parts are the icon's colour faded into it.
     pub ground: Rgba,
 }
 
 impl Ink {
-    fn off(self) -> Rgba {
-        self.on.mix(self.ground, UNLIT)
-    }
-}
-
-/// An icon's drawing units laid onto a box: its ink's top at the box's
-/// top, its foot at the box's foot, and centred across.
-#[derive(Clone, Copy)]
-struct Frame {
-    /// Where `(u, v) = (0, 0)` lands.
-    x: f32,
-    y: f32,
-    /// Logical pixels per unit.
-    k: f32,
-}
-
-impl Frame {
-    fn fit(rect: Rect, icon: Icon) -> Self {
-        let Extent { u, v } = icon.extent();
-        let k = rect.h / (v.1 - v.0);
-        let ink = (u.1 - u.0) * k;
-        Self {
-            x: rect.x + (rect.w - ink) / 2.0 - u.0 * k,
-            y: rect.y - v.0 * k,
-            k,
+    fn look(self) -> Look {
+        Look {
+            on: self.on,
+            off: self.on.mix(self.ground, UNLIT),
+            pen: PEN,
         }
     }
+}
 
-    fn at(self, u: f32, v: f32) -> (f32, f32) {
-        (self.x + u * self.k, self.y + v * self.k)
-    }
-
-    fn len(self, units: f32) -> f32 {
-        units * self.k
+/// How far a figure is drawn above centre, in whole pixels for an icon
+/// `height` tall: an optical correction. Wi-Fi meets its top line at a
+/// single point, where the others meet it all along, and centred by its box
+/// it reads as hanging low.
+fn lift(figure: Figure, height: f32) -> f32 {
+    match figure {
+        Figure::Wifi(_) | Figure::WifiOff => (height * 0.07).round(),
+        _ => 0.0,
     }
 }
 
-/// Wi-Fi: a dot and three arcs fanning up from it. `bars` (`0..=4`) lights
-/// the dot and then the arcs from the inside out; `None` is offline — every
-/// part unlit, and a slash across.
-pub fn wifi(canvas: &mut Canvas<'_>, rect: Rect, bars: Option<u8>, ink: Ink) {
-    let f = Frame::fit(rect, Icon::Wifi);
-    let origin = f.at(0.0, 0.88);
-    let lit = bars.map_or(0, |bars| bars.clamp(1, 4));
-    let paint = |n: u8| if n < lit { ink.on } else { ink.off() };
-
-    // The dot.
-    let mut dot = Shape::new();
-    dot.circle((origin.0, origin.1 - f.len(0.04)), f.len(0.1));
-    canvas.fill_shape(&dot, paint(0));
-    // The arcs: a quarter turn each, centred on straight up.
-    for (n, radius) in [(1, 0.28), (2, 0.5), (3, 0.72)] {
-        let mut arc = Shape::new();
-        arc.arc(origin, f.len(radius), -FRAC_PI_2 - FRAC_PI_4, FRAC_PI_2);
-        canvas.stroke_shape(&arc, f.len(0.13), paint(n));
-    }
-    if bars.is_none() {
-        slash(canvas, f, ink);
-    }
-}
-
-/// A cable: three soft squares, joined like a little family tree.
-pub fn wired(canvas: &mut Canvas<'_>, rect: Rect, ink: Ink) {
-    let f = Frame::fit(rect, Icon::Wired);
-    let square = |canvas: &mut Canvas<'_>, u: f32, v: f32| {
-        let (x, y) = f.at(u - 0.15, v);
-        let mut shape = Shape::new();
-        shape.rounded_rect(Rect::new(x, y, f.len(0.3), f.len(0.28)), f.len(0.08));
-        canvas.fill_shape(&shape, ink.on);
+/// Draw a status figure in `rect` (as wide as [`Scale::width`] said).
+pub fn draw(canvas: &mut Canvas<'_>, figure: Figure, rect: Rect, ink: Ink) {
+    let rect = Rect {
+        y: rect.y - lift(figure, rect.h),
+        ..rect
     };
-    square(canvas, 0.0, 0.06);
-    square(canvas, -0.32, 0.66);
-    square(canvas, 0.32, 0.66);
-    let mut lines = Shape::new();
-    let (x, y) = f.at(0.0, 0.34);
-    lines.move_to(x, y);
-    let (x, y) = f.at(0.0, 0.5);
-    lines.line_to(x, y);
-    let (x0, y0) = f.at(-0.32, 0.68);
-    let (x1, y1) = f.at(-0.32, 0.5);
-    let (x2, y2) = f.at(0.32, 0.5);
-    let (x3, y3) = f.at(0.32, 0.68);
-    lines
-        .move_to(x0, y0)
-        .line_to(x1, y1)
-        .line_to(x2, y2)
-        .line_to(x3, y3);
-    canvas.stroke_shape(&lines, f.len(0.1), ink.on);
+    figure::draw_fitted(canvas, figure, rect, ink.look(), 0.0);
 }
 
-/// The speaker: a soft cone, with `waves` (`0..=3`) of its three sound
-/// waves lit; `None` is muted — the waves give way to a small cross.
-pub fn speaker(canvas: &mut Canvas<'_>, rect: Rect, waves: Option<u8>, ink: Ink) {
-    let f = Frame::fit(rect, Icon::Speaker);
-    let point = |u: f32, v: f32| f.at(u, v);
-    let mut cone = Shape::new();
-    let corners = [
-        (0.04, 0.36),
-        (0.24, 0.36),
-        (0.48, 0.14),
-        (0.48, 0.86),
-        (0.24, 0.64),
-        (0.04, 0.64),
-    ];
-    let (x, y) = point(corners[0].0, corners[0].1);
-    cone.move_to(x, y);
-    for (u, v) in &corners[1..] {
-        let (x, y) = point(*u, *v);
-        cone.line_to(x, y);
-    }
-    cone.close();
-    // Filled, then traced with a round pen: the corners come out soft.
-    canvas.fill_shape(&cone, ink.on);
-    canvas.stroke_shape(&cone, f.len(0.1), ink.on);
-
-    let centre = point(0.42, 0.5);
-    match waves {
-        Some(lit) => {
-            for (n, radius) in [(0_u8, 0.22), (1, 0.39), (2, 0.56)] {
-                let mut wave = Shape::new();
-                wave.arc(centre, f.len(radius), -FRAC_PI_4, FRAC_PI_2);
-                let color = if n < lit { ink.on } else { ink.off() };
-                canvas.stroke_shape(&wave, f.len(0.1), color);
-            }
-        }
-        None => {
-            let (cx, cy) = point(0.84, 0.5);
-            let reach = f.len(0.14);
-            let mut cross = Shape::new();
-            cross
-                .move_to(cx - reach, cy - reach)
-                .line_to(cx + reach, cy + reach)
-                .move_to(cx + reach, cy - reach)
-                .line_to(cx - reach, cy + reach);
-            canvas.stroke_shape(&cross, f.len(0.11), ink.on);
-        }
-    }
-}
-
-/// The bell: a plump dome on a flared rim, a knob on top and a clapper
-/// below. `swing` (radians) tilts it about the knob — the bell ringing.
-/// With `dot`, a small dot in that colour sits on its shoulder: something
-/// is waiting.
+/// The bell, swung `swing` radians about its knob. With `dot`, a small dot
+/// in that colour sits just clear of its shoulder — no ring is cut around
+/// it, because the island behind may be see-through and a ring would show.
 pub fn bell(canvas: &mut Canvas<'_>, rect: Rect, swing: f32, dot: Option<Rgba>, ink: Ink) {
-    let f = Frame::fit(rect, Icon::Bell);
-    let pivot = f.at(0.0, 0.06);
-    let (sin, cos) = swing.sin_cos();
-    let at = |u: f32, v: f32| {
-        let (x, y) = f.at(u, v);
-        let (dx, dy) = (x - pivot.0, y - pivot.1);
-        (pivot.0 + dx * cos - dy * sin, pivot.1 + dx * sin + dy * cos)
-    };
-    let mut body = Shape::new();
-    let mut path = |points: &[(f32, f32)]| {
-        // A curve per three points, after the first.
-        let (x, y) = at(points[0].0, points[0].1);
-        body.move_to(x, y);
-        for curve in points[1..].chunks(3) {
-            let [(u1, v1), (u2, v2), (u3, v3)] = [curve[0], curve[1], curve[2]];
-            let ((x1, y1), (x2, y2), (x3, y3)) = (at(u1, v1), at(u2, v2), at(u3, v3));
-            body.cubic_to(x1, y1, x2, y2, x3, y3);
-        }
-        body.close();
-    };
-    path(&[
-        (0.0, 0.13),
-        // Right shoulder, and down the side.
-        (0.2, 0.13),
-        (0.3, 0.27),
-        (0.3, 0.44),
-        (0.3, 0.52),
-        (0.3, 0.58),
-        (0.3, 0.6),
-        // The flare.
-        (0.3, 0.68),
-        (0.4, 0.7),
-        (0.4, 0.77),
-        // The rim, softly cornered.
-        (0.4, 0.81),
-        (0.37, 0.82),
-        (0.33, 0.82),
-        (0.1, 0.82),
-        (-0.1, 0.82),
-        (-0.33, 0.82),
-        (-0.37, 0.82),
-        (-0.4, 0.81),
-        (-0.4, 0.77),
-        // Up the left side.
-        (-0.4, 0.7),
-        (-0.3, 0.68),
-        (-0.3, 0.6),
-        (-0.3, 0.58),
-        (-0.3, 0.52),
-        (-0.3, 0.44),
-        (-0.3, 0.27),
-        (-0.2, 0.13),
-        (0.0, 0.13),
-    ]);
-    canvas.fill_shape(&body, ink.on);
-    let mut knob = Shape::new();
-    knob.circle(at(0.0, 0.1), f.len(0.075));
-    // The clapper swings a little further than the bell.
-    let clapper = {
-        let (sin, cos) = (swing * 1.6).sin_cos();
-        let (x, y) = f.at(0.0, 0.92);
-        let (dx, dy) = (x - pivot.0, y - pivot.1);
-        (pivot.0 + dx * cos - dy * sin, pivot.1 + dx * sin + dy * cos)
-    };
-    knob.circle(clapper, f.len(0.085));
-    canvas.fill_shape(&knob, ink.on);
-
+    figure::draw_fitted(canvas, Figure::Bell, rect, ink.look(), swing);
     if let Some(color) = dot {
-        let (x, y) = f.at(0.34, 0.2);
-        canvas.circle(x, y, f.len(0.24), ink.ground);
-        canvas.circle(x, y, f.len(0.16), color);
+        let (cx, _) = rect.center();
+        canvas.circle(
+            cx + rect.h * 0.47,
+            rect.y + rect.h * 0.12,
+            rect.h * 0.15,
+            color,
+        );
     }
-}
-
-/// A slash across an icon, cut out of what it crosses.
-fn slash(canvas: &mut Canvas<'_>, f: Frame, ink: Ink) {
-    let mut line = Shape::new();
-    let (x0, y0) = f.at(-0.42, 0.1);
-    let (x1, y1) = f.at(0.42, 0.92);
-    line.move_to(x0, y0).line_to(x1, y1);
-    canvas.stroke_shape(&line, f.len(0.26), ink.ground);
-    canvas.stroke_shape(&line, f.len(0.11), ink.on);
 }
 
 /// The bell's ring: a swing that dies away over `t` (`0..=1`), a few times
@@ -405,25 +169,31 @@ impl Battery {
         self.scale.icon()
     }
 
+    /// Everything inside the pill is a share of its height, so it keeps its
+    /// proportions at any size.
+    fn part(self, share: f32) -> f32 {
+        self.height() * share
+    }
+
     fn pad(self) -> f32 {
-        self.scale.px(6.0)
+        self.part(0.36)
     }
 
     /// The terminal cap after the pill: width, height, and the gap before it.
     /// Whole pixels, so that everything after the battery stays on them.
     fn nub(self) -> (f32, f32, f32) {
-        let whole = |px: f32| self.scale.px(px).round().max(1.0);
-        (whole(2.0), whole(6.0), whole(2.0))
+        let whole = |share: f32| self.part(share).round().max(1.0);
+        (whole(0.13), whole(0.4), whole(0.13))
     }
 
     /// The charging bolt's size, and the space between it and the figures.
     fn bolt(self) -> (f32, f32, f32) {
-        (self.scale.px(6.0), self.scale.px(10.0), self.scale.px(2.0))
+        (self.part(0.38), self.part(0.62), self.part(0.13))
     }
 
-    /// The figures' size: they fill the pill as the bar's text fills it.
+    /// The figures' size: two thirds of the pill.
     pub fn figures(self) -> f32 {
-        self.scale.px(10.4)
+        self.part(0.66)
     }
 
     /// The whole width, cap included, for figures this wide.
@@ -432,7 +202,7 @@ impl Battery {
         let bolt = if plugged { bolt + bolt_gap } else { 0.0 };
         let (nub, _, nub_gap) = self.nub();
         (figures + bolt + 2.0 * self.pad())
-            .max(self.scale.px(30.0))
+            .max(self.part(1.9))
             .round()
             + nub
             + nub_gap
@@ -518,20 +288,20 @@ mod tests {
     #[test]
     fn sizes_follow_the_bar() {
         let normal = Scale::new(28.0);
-        assert_eq!(normal.icon(), 16.0);
+        assert_eq!(normal.icon(), 14.0);
         assert_eq!(normal.gap(), 10.0);
         let tall = Scale::new(56.0);
-        assert_eq!(tall.icon(), 32.0);
+        assert_eq!(tall.icon(), 28.0);
         // Twice the bar, twice the icon (to the pixel each is rounded to).
-        assert!((tall.width(Icon::Wifi) - 2.0 * normal.width(Icon::Wifi)).abs() <= 1.0);
+        assert!((tall.width(Figure::Wifi(4)) - 2.0 * normal.width(Figure::Wifi(4))).abs() <= 1.0);
         assert!(Battery::new(tall).width(20.0, true) > Battery::new(normal).width(20.0, true));
         // Never smaller than half the design, however small the bar.
-        assert_eq!(Scale::new(4.0).icon(), 8.0);
+        assert_eq!(Scale::new(4.0).icon(), 7.0);
     }
 
-    /// Every icon's ink fills its box exactly — as tall as the others, and
-    /// as wide as it is — so they line up along the island and the gaps
-    /// between them are even. Measured from what is actually drawn.
+    /// Every status icon's ink fills its box exactly — as tall as the
+    /// others, and as wide as it is — so they line up along the island and
+    /// the gaps between them are even. Measured from what is drawn.
     #[test]
     fn every_icon_fills_its_box() {
         use enso_core::{Context, Paths};
@@ -545,32 +315,21 @@ mod tests {
             ground: Rgba::new(0, 0, 0, 0),
         };
         let h = 100.0;
-        // Muted, the waves are gone and the cone alone stands a little
-        // shorter — centred where the whole speaker is, not stretched.
-        let cone = (0.09 - 0.054) / (0.946 - 0.054) * h;
-        /// A name, the icon, how far its ink stands in from top and foot,
-        /// and how to draw it.
-        type Drawing<'a> = (&'a str, Icon, f32, &'a dyn Fn(&mut Canvas<'_>, Rect));
-        let drawings: [Drawing<'_>; 7] = [
-            ("wifi", Icon::Wifi, 0.0, &|c, r| wifi(c, r, Some(4), ink)),
-            ("weak wifi", Icon::Wifi, 0.0, &|c, r| {
-                wifi(c, r, Some(1), ink)
-            }),
-            ("wired", Icon::Wired, 0.0, &|c, r| wired(c, r, ink)),
-            ("speaker", Icon::Speaker, 0.0, &|c, r| {
-                speaker(c, r, Some(3), ink)
-            }),
-            ("quiet speaker", Icon::Speaker, 0.0, &|c, r| {
-                speaker(c, r, Some(1), ink)
-            }),
-            ("muted", Icon::Speaker, cone, &|c, r| {
-                speaker(c, r, None, ink)
-            }),
-            ("bell", Icon::Bell, 0.0, &|c, r| bell(c, r, 0.0, None, ink)),
-        ];
-        for (name, icon, inset, draw) in drawings {
-            let rect = Rect::new(40.0, 40.0, (h * icon.aspect()).round(), h);
-            let image = Offscreen::render(&mut text, (260, 180), 1, |canvas| draw(canvas, rect));
+        for figure in [
+            Figure::Wifi(4),
+            Figure::Wifi(1),
+            Figure::Ethernet,
+            Figure::Bell,
+        ] {
+            let w = (h * figure::aspect(figure, PEN)).round();
+            let rect = Rect::new(40.0, 40.0, w, h);
+            let image = Offscreen::render(&mut text, (260, 180), 1, |canvas| {
+                if figure == Figure::Bell {
+                    bell(canvas, rect, 0.0, None, ink);
+                } else {
+                    draw(canvas, figure, rect, ink);
+                }
+            });
             let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
             for y in 0..image.height {
                 for x in 0..image.width {
@@ -580,13 +339,24 @@ mod tests {
                 }
             }
             let near = |drawn: u32, wanted: f32| (drawn as f32 - wanted).abs() <= 2.0;
+            let lift = lift(figure, h);
             assert!(
                 near(x0, rect.x)
                     && near(x1, rect.right())
-                    && near(y0, rect.y + inset)
-                    && near(y1, rect.bottom() - inset),
-                "{name}: ink {x0}..{x1} × {y0}..{y1}, box {rect:?}"
+                    && near(y0, rect.y - lift)
+                    && near(y1, rect.bottom() - lift),
+                "{figure:?}: ink {x0}..{x1} × {y0}..{y1}, box {rect:?}"
             );
+        }
+    }
+
+    /// Only Wi-Fi is lifted, by whole pixels, and more on a taller bar.
+    #[test]
+    fn wifi_is_lifted_a_whole_pixel() {
+        assert_eq!(lift(Figure::Wifi(3), 14.0), 1.0);
+        assert_eq!(lift(Figure::WifiOff, 28.0), 2.0);
+        for figure in [Figure::Ethernet, Figure::Bell] {
+            assert_eq!(lift(figure, 14.0), 0.0);
         }
     }
 

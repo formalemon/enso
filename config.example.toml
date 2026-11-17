@@ -20,8 +20,8 @@ font = "sans-serif"
 mono_font = "monospace"
 # Base text size in logical pixels.
 font_size = 14.0
-# "auto" draws Nerd Font glyphs when a Nerd Font is installed and plain text
-# otherwise; "glyphs" and "text" force one or the other.
+# "auto" draws icons (enso draws its own: no icon font is needed); "text"
+# puts a few letters in their place. "glyphs" is the same as "auto".
 icons = "auto"
 # Pointer cursor: an XCursor theme by its directory name, as installed in
 # ~/.local/share/icons or /usr/share/icons ("Bibata-Modern-Ice", "Adwaita").
@@ -46,6 +46,9 @@ clock = "%a %-d %b  %H:%M"
 # Open the control center (enso-ctl, when installed) under the status island
 # while the pointer rests on it.
 control_center = true
+# How solid the islands are, from 0.0 to 1.0: a little under 1.0 lets the
+# wallpaper show through, just. What sits on them stays solid.
+opacity = 0.9
 
 [launch]
 width = 560

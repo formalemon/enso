@@ -664,7 +664,7 @@ impl Screens for Lock {
             if canvas.glyphs() {
                 canvas.icon(
                     icon::LOCK,
-                    base_size * 1.3,
+                    (base_size * 1.43).round(),
                     colors.muted,
                     field,
                     Align::Center,
@@ -704,18 +704,18 @@ impl Screens for Lock {
                 // Caps Lock gets its glyph, set just left of the words.
                 let words = Text::new(text, base_size * type_scale::SMALL, color);
                 let width = canvas.measure(&words).w;
-                let glyph = base_size + space::XS;
-                let start = (bounds.w - width - glyph - space::XS) / 2.0;
+                let glyph = base_size + 2.0;
+                let start = (bounds.w - width - glyph - space::SM) / 2.0;
                 canvas.icon(
                     icon::CAPS_LOCK,
-                    base_size,
+                    glyph,
                     colors.gold,
                     Rect::new(start, line.y, glyph, line.h),
                     Align::Start,
                 );
                 canvas.text_in(
                     &words,
-                    Rect::new(start + glyph + space::XS, line.y, width + 1.0, line.h),
+                    Rect::new(start + glyph + space::SM, line.y, width + 1.0, line.h),
                     Align::Start,
                 );
             } else {

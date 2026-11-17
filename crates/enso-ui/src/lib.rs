@@ -4,7 +4,8 @@
 //! - [`screens`] — its sibling for interfaces that cover every output, one
 //!   surface each: the wallpaper and the lock screen.
 //! - [`canvas`] — a software canvas for rounded shapes, soft shadows, text,
-//!   and Nerd Font icons.
+//!   icons, and shapes of one's own.
+//! - [`figure`] — the suite's icons, drawn: one hand, one pen, no icon font.
 //! - [`picture`] — full-screen pictures, fitted to an output once and copied.
 //! - [`input`] — keyboard and pointer events, including the suite-wide
 //!   navigation keys.
@@ -15,6 +16,7 @@
 //! shaping (cosmic-text). Colours, spacing, and motion come from `enso-core`.
 
 pub mod canvas;
+pub mod figure;
 pub mod geom;
 pub mod idle;
 pub mod image;

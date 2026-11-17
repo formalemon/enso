@@ -35,7 +35,7 @@ pub struct Appearance {
     pub mono_font: String,
     /// Base text size in logical pixels.
     pub font_size: f32,
-    /// Whether to draw Nerd Font glyphs or plain-text stand-ins.
+    /// Whether icons are drawn, or stood in for by a few letters.
     pub icons: IconMode,
     /// Pointer cursor theme, by its directory name under an `icons`
     /// directory, until one is chosen with `enso-ctl cursor set`. Empty
@@ -59,16 +59,17 @@ impl Default for Appearance {
     }
 }
 
-/// How icons are rendered.
+/// How icons are rendered. enso draws its icons itself, so they need no
+/// font; `text` is for those who would rather read a word.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IconMode {
-    /// Glyphs when a Nerd Font is installed, text otherwise.
+    /// Drawn icons.
     #[default]
     Auto,
-    /// Always Nerd Font glyphs.
+    /// Drawn icons: the same as `auto`, kept so older configs still read.
     Glyphs,
-    /// Always plain text.
+    /// A few letters for each icon.
     Text,
 }
 

@@ -588,18 +588,14 @@ impl UiApp for Launcher {
 
         // Search field.
         let search = Rect::new(card.x, card.y, card.w, SEARCH_HEIGHT).inset_xy(space::LG, 0.0);
+        // The magnifier stands as tall as the words typed after it.
+        let magnifier = (title * 1.25).round();
         let icon_width = if canvas.glyphs() {
-            title + space::SM
+            magnifier + space::SM
         } else {
             space::LG
         };
-        canvas.icon(
-            icon::SEARCH,
-            title + 2.0,
-            colors.subtle,
-            search,
-            Align::Start,
-        );
+        canvas.icon(icon::SEARCH, magnifier, colors.subtle, search, Align::Start);
         let field = Rect::new(
             search.x + icon_width + space::XS,
             search.y,
@@ -716,7 +712,7 @@ impl UiApp for Launcher {
                             (icon::FILE, colors.subtle)
                         };
                         canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT));
-                        let size = if glyphs { base_size + 3.0 } else { base_size };
+                        let size = if glyphs { base_size + 5.0 } else { base_size };
                         canvas.icon(glyph, size, tint, chip, Align::Center);
                         location = hit.location(&self.home);
                         (hit.name(), Some(location.as_str()))
