@@ -67,8 +67,11 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
 }
 
 /// The palette as Alacritty's `[colors]`, mapped as Rosé Pine's own
-/// Alacritty theme maps it.
+/// Alacritty theme maps it — but for the cursor, which is enso's caret: the
+/// accent, as in the launcher and the control center. Rosé Pine's
+/// `highlight-high` suits a block; drawn as a thin beam it all but vanishes.
 pub fn render(job: &Job<'_>) -> String {
+    let accent = job.accent();
     let Palette {
         base,
         surface,
@@ -109,8 +112,8 @@ dim_foreground = "{subtle}"
 bright_foreground = "{text}"
 
 [colors.cursor]
-text = "{text}"
-cursor = "{highlight_high}"
+text = "{base}"
+cursor = "{accent}"
 
 [colors.vi_mode_cursor]
 text = "{text}"
@@ -163,7 +166,8 @@ mod tests {
 
     use super::{super::sandbox::Sandbox, *};
 
-    /// Rosé Pine's published Alacritty theme for Moon, less its comments.
+    /// Rosé Pine's published Alacritty theme for Moon, less its comments —
+    /// and with enso's cursor: the accent (rose), over the base colour.
     const UPSTREAM_MOON: &str = r##"
 [colors.primary]
 foreground = "#e0def4"
@@ -172,8 +176,8 @@ dim_foreground = "#908caa"
 bright_foreground = "#e0def4"
 
 [colors.cursor]
-text = "#e0def4"
-cursor = "#56526e"
+text = "#232136"
+cursor = "#ea9a97"
 
 [colors.vi_mode_cursor]
 text = "#e0def4"

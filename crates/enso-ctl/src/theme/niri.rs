@@ -11,12 +11,18 @@
 //!
 //! Put the line after any colours of your own: later settings win, and
 //! `optional` keeps the config valid before the first `theme set`.
+//!
+//! The file carries the cursor too, when one is chosen and installed (see
+//! [`cursor`](super::cursor)): Niri draws it, and hands it on to every
+//! program it starts. Niri merges the `cursor` section across files, so a
+//! `hide-when-typing` of your own stays — but an `xcursor-theme` of your own
+//! included after this file wins over it.
 
 use std::path::Path;
 
 use enso_core::{Theme, style::radius};
 
-use super::{Job, Outcome, files, mentions};
+use super::{Job, Outcome, cursor, files, mentions};
 
 /// Name of the generated file inside the state directory.
 const FILE: &str = "niri.kdl";
@@ -52,8 +58,8 @@ fn includes(dir: &Path) -> bool {
     mentions(&files(dir, &["kdl"], 0), "//", &format!("enso/{FILE}"))
 }
 
-/// The palette as Niri config: only colours, so that gaps, widths, and
-/// everything else stay the user's own.
+/// The palette as Niri config: only colours (and the cursor), so that gaps,
+/// widths, and everything else stay the user's own.
 pub fn render(job: &Job<'_>) -> String {
     let theme: &Theme = job.theme;
     let c = job.colors();
@@ -65,6 +71,13 @@ pub fn render(job: &Job<'_>) -> String {
         "#00000033"
     };
     let corner = radius::PANEL;
+    let pointer = cursor::usable(job).map_or_else(String::new, |cursor| {
+        format!(
+            "\ncursor {{\n    xcursor-theme \"{}\"\n    xcursor-size {}\n}}\n",
+            cursor.name.replace('\\', "\\\\").replace('"', "\\\""),
+            cursor.size
+        )
+    });
     format!(
         r#"// {banner}
 
@@ -109,7 +122,7 @@ recent-windows {{
         corner-radius {corner}
     }}
 }}
-"#,
+{pointer}"#,
         banner = job.banner(),
     )
 }

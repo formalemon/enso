@@ -10,6 +10,9 @@
 //! - **GTK** is told dark or light through dconf, which is also what the
 //!   settings portal hands to Qt 6, Firefox, and Electron; its palette is a
 //!   generated stylesheet to import.
+//! - **The cursor**, when one is chosen, goes to GTK through dconf and to
+//!   whatever asks for no theme through the `default` one; Niri has it in
+//!   `niri.kdl`, and passes it on to what it starts.
 //! - **Firefox** gets a stylesheet for its own interface, to import from a
 //!   profile's `userChrome.css`.
 //! - **Qt** gets a colour scheme for qt5ct and qt6ct to pick.
@@ -20,6 +23,7 @@
 //! installed is passed over.
 
 mod alacritty;
+pub mod cursor;
 mod firefox;
 mod flatpak;
 mod gtk;
@@ -48,6 +52,7 @@ pub enum Place {
     Alacritty,
     Neovim,
     Gtk,
+    Cursor,
     Firefox,
     Qt,
     Flatpak,
@@ -56,11 +61,12 @@ pub enum Place {
 impl Place {
     /// Every place, in the order they are applied: Flatpak passes on what
     /// GTK was given, so it comes after.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Niri,
         Self::Alacritty,
         Self::Neovim,
         Self::Gtk,
+        Self::Cursor,
         Self::Firefox,
         Self::Qt,
         Self::Flatpak,
@@ -73,6 +79,7 @@ impl Place {
             Self::Alacritty => "alacritty",
             Self::Neovim => "neovim",
             Self::Gtk => "gtk",
+            Self::Cursor => "cursor",
             Self::Firefox => "firefox",
             Self::Qt => "qt",
             Self::Flatpak => "flatpak",
@@ -85,6 +92,7 @@ impl Place {
             Self::Alacritty => alacritty::apply(job),
             Self::Neovim => neovim::apply(job),
             Self::Gtk => gtk::apply(job),
+            Self::Cursor => cursor::apply(job),
             Self::Firefox => firefox::apply(job),
             Self::Qt => qt::apply(job),
             Self::Flatpak => flatpak::apply(job),
@@ -104,6 +112,9 @@ pub struct Host {
     pub data: PathBuf,
     /// The directories of `$PATH`.
     pub path: Vec<PathBuf>,
+    /// Where icon and cursor themes are installed, the user's own first:
+    /// `$XDG_DATA_HOME/icons`, `~/.icons`, then each of `$XDG_DATA_DIRS`.
+    pub icons: Vec<PathBuf>,
     /// Whether this is the user's real session, whose services (dconf) may
     /// be spoken to.
     pub session: bool,
@@ -122,21 +133,30 @@ impl Host {
             .first()
             .map_or_else(|| config.clone(), |dir| parent(dir));
         let session = ctx.paths == Paths::from_env();
-        let (home, path) = if session {
+        let (home, path, shared) = if session {
+            let shared = env::var_os("XDG_DATA_DIRS")
+                .filter(|dirs| !dirs.is_empty())
+                .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
             (
                 env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
                 env::var_os("PATH")
                     .map(|path| env::split_paths(&path).collect())
                     .unwrap_or_default(),
+                env::split_paths(&shared).collect(),
             )
         } else {
-            (parent(&config), Vec::new())
+            (parent(&config), Vec::new(), Vec::new())
         };
+        let icons = [data.join("icons"), home.join(".icons")]
+            .into_iter()
+            .chain(shared.into_iter().map(|dir: PathBuf| dir.join("icons")))
+            .collect();
         Self {
             home,
             config,
             data,
             path,
+            icons,
             session,
         }
     }
@@ -399,7 +419,8 @@ fn run_on(
     let io = |err: std::io::Error| err.to_string();
     let set = |theme: &Theme, everything: bool, out: &mut dyn Write| {
         let reports = apply_on(host, ctx, theme, places);
-        print(theme, &reports, everything, out).map_err(io)?;
+        let title = format!("{} ({})", theme.name, theme.id);
+        print_reports(&title, &reports, everything, out).map_err(io)?;
         match reports
             .iter()
             .filter(|report| report.result.is_err())
@@ -466,15 +487,15 @@ fn run_on(
 /// Width of the column of place names.
 const NAMES: usize = 10;
 
-/// The theme and, line by line, where it went. Places whose program is not
-/// installed are left out unless `everything` is asked for.
-fn print(
-    theme: &Theme,
+/// What was applied and, line by line, where it went. Places whose program
+/// is not installed are left out unless `everything` is asked for.
+fn print_reports(
+    title: &str,
     reports: &[Report],
     everything: bool,
     out: &mut dyn Write,
 ) -> std::io::Result<()> {
-    writeln!(out, "{} ({})", theme.name, theme.id)?;
+    writeln!(out, "{title}")?;
     for report in reports {
         let place = report.place;
         match &report.result {
@@ -553,6 +574,7 @@ pub(crate) mod sandbox {
             assert!(!host.session, "a sandbox must not reach the real session");
             let host = Host {
                 home: root.clone(),
+                icons: vec![root.join(".local/share/icons"), root.join(".icons")],
                 ..host
             };
             Self { root, ctx, host }

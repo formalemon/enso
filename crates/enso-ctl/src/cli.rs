@@ -53,12 +53,20 @@ Theme:
   theme [list]              List available themes
   theme current             Print the active theme's id
   theme set <ID>            Switch theme: enso at once, and with it Niri,
-                            Alacritty, Neovim, GTK, Firefox, Qt, and Flatpak
+                            Alacritty, Neovim, GTK, the cursor, Firefox, Qt,
+                            and Flatpak
   theme next                Switch to the next theme
   theme apply               Apply the active theme again, and say how each
                             of those programs stands
   theme show [ID]           Print a theme's palette
   theme dirs                Print where themes are loaded from
+
+Cursor:
+  cursor [list]             List installed cursor themes, the one in use marked
+  cursor set <NAME> [SIZE]  Use this cursor theme everywhere: Niri, GTK, and
+                            programs that ask for none (SIZE in pixels, kept
+                            unless given)
+  cursor size <N>           Change only the size
 
 Options:
   -h, --help                Print this help
@@ -91,6 +99,7 @@ pub enum Command {
     Help,
     Version,
     Theme(ThemeCommand),
+    Cursor(CursorCommand),
     Power,
     Brightness(Light, Level),
     Profile(ProfileCommand),
@@ -125,6 +134,14 @@ pub enum ThemeCommand {
     Apply,
     Show(Option<String>),
     Dirs,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CursorCommand {
+    List,
+    /// A theme by name, at this size or the one in use.
+    Set(String, Option<u32>),
+    Size(u32),
 }
 
 /// Which backlight `brightness` is about.
@@ -224,6 +241,20 @@ pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Comm
         ["theme", "show", id] => Ok(Command::Theme(ThemeCommand::Show(Some((*id).to_owned())))),
         ["theme", "dirs"] => Ok(Command::Theme(ThemeCommand::Dirs)),
         ["theme", other, ..] => Err(format!("unknown theme command `{other}`")),
+        ["cursor"] | ["cursor", "list"] => Ok(Command::Cursor(CursorCommand::List)),
+        ["cursor", "set", name] => Ok(Command::Cursor(CursorCommand::Set(
+            (*name).to_owned(),
+            None,
+        ))),
+        ["cursor", "set", name, size] => cursor_size(size)
+            .map(|size| Command::Cursor(CursorCommand::Set((*name).to_owned(), Some(size)))),
+        ["cursor", "set"] => {
+            Err("`cursor set` needs a cursor theme (see `enso-ctl cursor list`)".to_owned())
+        }
+        ["cursor", "size", size] => {
+            cursor_size(size).map(|size| Command::Cursor(CursorCommand::Size(size)))
+        }
+        ["cursor", other, ..] => Err(format!("unknown cursor command `{other}`")),
 
         ["power"] => Ok(Command::Power),
         ["brightness", "keyboard", rest @ ..] => {
@@ -312,6 +343,13 @@ pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Comm
 }
 
 /// The part of a `volume` command that says what to do.
+/// A cursor size: whole pixels. Whether it is a sensible one is the
+/// cursor module's to say.
+fn cursor_size(word: &str) -> Result<u32, String> {
+    word.parse()
+        .map_err(|_| format!("`{word}` is not a cursor size in pixels"))
+}
+
 fn volume(words: &[&str]) -> Result<VolumeChange, String> {
     match words {
         ["mute"] => Ok(VolumeChange::Mute(true)),
@@ -364,6 +402,29 @@ mod tests {
         );
         assert!(parse_words(&["--dropdown=left"]).is_err());
         assert!(parse_words(&["--dropdown", "wifi"]).is_err());
+    }
+
+    #[test]
+    fn parses_cursor_commands() {
+        use CursorCommand::*;
+        assert_eq!(parse_words(&["cursor"]), Ok(Command::Cursor(List)));
+        assert_eq!(parse_words(&["cursor", "list"]), Ok(Command::Cursor(List)));
+        assert_eq!(
+            parse_words(&["cursor", "set", "Bibata-Modern-Ice"]),
+            Ok(Command::Cursor(Set("Bibata-Modern-Ice".into(), None)))
+        );
+        assert_eq!(
+            parse_words(&["cursor", "set", "Bibata-Modern-Ice", "32"]),
+            Ok(Command::Cursor(Set("Bibata-Modern-Ice".into(), Some(32))))
+        );
+        assert_eq!(
+            parse_words(&["cursor", "size", "28"]),
+            Ok(Command::Cursor(Size(28)))
+        );
+        assert!(parse_words(&["cursor", "set"]).is_err());
+        assert!(parse_words(&["cursor", "size", "big"]).is_err());
+        assert!(parse_words(&["cursor", "set", "Bibata", "-1"]).is_err());
+        assert!(parse_words(&["cursor", "spin"]).is_err());
     }
 
     #[test]

@@ -19,6 +19,13 @@ font_size = 14.0
 # "auto" draws Nerd Font glyphs when a Nerd Font is installed and plain text
 # otherwise; "glyphs" and "text" force one or the other.
 icons = "auto"
+# Pointer cursor: an XCursor theme by its directory name, as installed in
+# ~/.local/share/icons or /usr/share/icons ("Bibata-Modern-Ice", "Adwaita").
+# `enso-ctl theme apply` takes it to Niri, GTK, and every other program; ""
+# leaves cursors alone. `enso-ctl cursor set` chooses one without editing this.
+cursor = ""
+# Cursor size in logical pixels.
+cursor_size = 24
 
 [motion]
 # false makes every transition instant.
@@ -85,10 +92,10 @@ history_keep = true
 
 [ctl]
 width = 340
-# The programs `enso-ctl theme set` takes the palette to, besides enso's own
-# tools. One that is not installed is passed over; drop a name to have enso
-# leave that program alone.
-theme_targets = ["niri", "alacritty", "neovim", "gtk", "firefox", "qt", "flatpak"]
+# The programs `enso-ctl theme set` takes the palette (and the cursor) to,
+# besides enso's own tools. One that is not installed is passed over; drop a
+# name to have enso leave that program alone.
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "cursor", "firefox", "qt", "flatpak"]
 
 [wall]
 # How a picture meets a screen of another shape: "cover" fills the screen

@@ -10,7 +10,7 @@ and one way of moving.
 | `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, volume, battery, notification bell | working |
 | `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
-| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, Firefox, Qt, Flatpak | working |
+| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, the cursor, Firefox, Qt, Flatpak | working |
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
@@ -495,9 +495,10 @@ which is the thing to run after installing one, or after adding a line.
 | Program | What enso writes | What you add, once | Follows a switch |
 | --- | --- | --- | --- |
 | Niri | `niri.kdl`: ring, border, shadow, backdrop colours | `include optional=true "~/.local/state/enso/niri.kdl"` in `config.kdl`, after any colours of your own | at once |
-| Alacritty | `alacritty.toml`: Rosé Pine's own mapping to the terminal colours | `import = ["~/.local/state/enso/alacritty.toml"]` under `[general]` in `alacritty.toml` | at once |
+| Alacritty | `alacritty.toml`: Rosé Pine's own mapping to the terminal colours, and the accent for the cursor, as enso's carets have it | `import = ["~/.local/state/enso/alacritty.toml"]` under `[general]` in `alacritty.toml` | at once |
 | Neovim | `nvim.lua`: the palette, handed to [`rose-pine/neovim`](https://github.com/rose-pine/neovim) | `dofile(vim.fn.expand("~/.local/state/enso/nvim.lua"))` in `init.lua`, after the plugin is loaded | at once, in every running Neovim |
 | GTK, and the system | the dark-or-light preference (dconf's `color-scheme`); `gtk-application-prefer-dark-theme` for GTK 3 | nothing | at once — GTK 3 programs when next started |
+| The cursor | `cursor-theme` and `cursor-size` in dconf; GTK 3's two cursor keys; `~/.local/share/icons/default` inheriting the chosen theme; and a `cursor` section in `niri.kdl` | nothing — choose one (see [The cursor](#the-cursor)) | at once |
 | GTK's palette | `gtk-4.0.css`: the colours libadwaita is built from; `gtk-3.0.css`: the same, and GTK 3's stock widgets recoloured | `@import url("file:///home/you/.local/state/enso/gtk-4.0.css");` in `~/.config/gtk-4.0/gtk.css`, and likewise for `gtk-3.0` | when a program next starts |
 | Firefox | `firefox.css`: tabs, toolbars, address bar, menus | the same kind of `@import` in a profile's `chrome/userChrome.css`, with `toolkit.legacyUserProfileCustomizations.stylesheets` on in `about:config` | when Firefox next starts |
 | Qt | a colour scheme, `colors/enso.conf`, for qt5ct and qt6ct | choose the custom colour scheme `enso` in the tool's Appearance tab | within a few seconds |
@@ -540,11 +541,54 @@ To have enso leave a program alone, drop it from the list:
 
 ```toml
 [ctl]
-theme_targets = ["niri", "alacritty", "neovim", "gtk", "firefox", "qt", "flatpak"]
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "cursor", "firefox", "qt", "flatpak"]
 ```
 
 A new target is one file in `crates/enso-ctl/src/theme/` — a function from
 the theme to an outcome — and one more `Place`.
+
+### The cursor
+
+One XCursor theme, at one size, for every program. Choose it in
+`config.toml`, or try one without editing anything:
+
+```toml
+[appearance]
+cursor = "Bibata-Modern-Ice"   # a directory in ~/.local/share/icons, /usr/share/icons, …
+cursor_size = 24
+```
+
+```
+$ enso-ctl cursor
+  Adwaita            /usr/share/icons
+● Bibata-Modern-Ice  ~/.local/share/icons  24 px
+$ enso-ctl cursor set bibata-modern-ice 32
+Bibata-Modern-Ice, 32 px
+  niri       colours updated
+  cursor     Bibata-Modern-Ice, 32 px
+$ enso-ctl cursor size 24
+```
+
+`cursor set` records the choice in `~/.local/state/enso/cursor`, which wins
+over `config.toml` as `theme set` does over `theme`. enso installs no
+cursors: put the theme's directory in `~/.local/share/icons` first. One
+that is chosen but missing is reported, and Niri is not pointed at it.
+
+Programs learn the cursor three ways, and all three are told:
+
+- **Niri** draws the pointer for its own surfaces and for every program that
+  asks for a cursor by shape — enso's tools, Alacritty, Firefox, GTK 4 — and
+  hands `XCURSOR_THEME` and `XCURSOR_SIZE` to whatever it starts. It reads
+  the theme from `niri.kdl`, the file it already includes. Niri merges the
+  `cursor` section across files, so a `hide-when-typing` of yours stays; an
+  `xcursor-theme` of yours included after `niri.kdl` wins over enso's.
+- **GTK** reads dconf (GTK 4 by way of the portal) and changes cursor while
+  running; GTK 3 off Wayland reads `settings.ini`, where enso sets its two
+  cursor keys and nothing else.
+- **Everything else** that draws a cursor without being told falls back on
+  the theme called `default`. enso writes
+  `~/.local/share/icons/default/index.theme` to inherit the chosen theme —
+  unless that file is yours, in which case it says what line to put there.
 
 ## Design language
 

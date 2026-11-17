@@ -8,7 +8,8 @@
 //!
 //! A change travels as one byte array: a GVariant of type `a{smv}` — path to
 //! new value — in GVariant's own serialisation, which is not the D-Bus one.
-//! Only strings are written here, so only that much of the format is.
+//! Only strings and 32-bit integers are written here, so only that much of
+//! the format is.
 
 use crate::bus::{Result, Service};
 
@@ -16,12 +17,30 @@ const WRITER: &str = "ca.desrt.dconf.Writer";
 /// The writer of the `user` database, the one the default profile names.
 const USER: &str = "/ca/desrt/dconf/Writer/user";
 
+/// A value to write: the two kinds desktop settings come in here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Value<'a> {
+    /// A GSettings `s`: `color-scheme`, `cursor-theme`.
+    Str(&'a str),
+    /// A GSettings `i`: `cursor-size`.
+    Int(i32),
+}
+
 /// Set string keys, all in one change. Each is a full path and its value:
 /// `("/org/gnome/desktop/interface/color-scheme", "prefer-dark")`.
 ///
 /// `dconf-service` is started on demand; where it is not installed the
 /// error [`is_unavailable`](crate::Error::is_unavailable).
 pub fn set_strings(entries: &[(&str, &str)]) -> Result<()> {
+    let entries: Vec<(&str, Value<'_>)> = entries
+        .iter()
+        .map(|&(path, value)| (path, Value::Str(value)))
+        .collect();
+    set(&entries)
+}
+
+/// Set keys of either kind, all in one change; see [`set_strings`].
+pub fn set(entries: &[(&str, Value<'_>)]) -> Result<()> {
     // The reply is a tag naming the change, of use only to a program that
     // also watches for its own writes.
     let _tag: String =
@@ -33,10 +52,10 @@ pub fn set_strings(entries: &[(&str, &str)]) -> Result<()> {
 const ALIGN: usize = 8;
 
 /// `entries` as a serialised `a{smv}`.
-fn changeset(entries: &[(&str, &str)]) -> Vec<u8> {
+fn changeset(entries: &[(&str, Value<'_>)]) -> Vec<u8> {
     let mut array = Vec::new();
     let mut ends = Vec::with_capacity(entries.len());
-    for (path, value) in entries {
+    for &(path, value) in entries {
         pad(&mut array);
         array.extend(entry(path, value));
         ends.push(array.len());
@@ -50,15 +69,26 @@ fn changeset(entries: &[(&str, &str)]) -> Vec<u8> {
 }
 
 /// One `{smv}`: the key, then — aligned — the value, then where the key ends.
-fn entry(path: &str, value: &str) -> Vec<u8> {
-    let mut entry = Vec::with_capacity(path.len() + value.len() + 16);
+fn entry(path: &str, value: Value<'_>) -> Vec<u8> {
+    let mut entry = Vec::with_capacity(path.len() + 32);
     entry.extend_from_slice(path.as_bytes());
     entry.push(0);
     let key_end = entry.len();
+    // Eight, a variant's alignment, is also enough for anything inside one.
     pad(&mut entry);
-    // The string, then what makes it a variant: a separator and its type.
-    entry.extend_from_slice(value.as_bytes());
-    entry.extend_from_slice(&[0, 0, b's']);
+    // The value, then what makes it a variant: a separator and its type.
+    let kind = match value {
+        Value::Str(text) => {
+            entry.extend_from_slice(text.as_bytes());
+            entry.push(0);
+            b's'
+        }
+        Value::Int(number) => {
+            entry.extend_from_slice(&number.to_ne_bytes());
+            b'i'
+        }
+    };
+    entry.extend_from_slice(&[0, kind]);
     // A maybe that holds something of no fixed size ends with one zero.
     entry.push(0);
     let width = offset_width(entry.len(), 1);
@@ -99,13 +129,21 @@ mod tests {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
+    fn strings(entries: &[(&str, &str)]) -> Vec<u8> {
+        let entries: Vec<(&str, Value<'_>)> = entries
+            .iter()
+            .map(|&(path, value)| (path, Value::Str(value)))
+            .collect();
+        changeset(&entries)
+    }
+
     /// What GLib itself serialises the same changesets to
     /// (`g_variant_builder_add (&b, "{smv}", path, g_variant_new_string (…))`).
     #[test]
     #[cfg(target_endian = "little")]
     fn changesets_match_glib() {
         assert_eq!(
-            hex(&changeset(&[(
+            hex(&strings(&[(
                 "/org/gnome/desktop/interface/color-scheme",
                 "prefer-dark"
             )])),
@@ -114,7 +152,7 @@ mod tests {
         );
         // Two entries: the second starts on a multiple of eight.
         assert_eq!(
-            hex(&changeset(&[
+            hex(&strings(&[
                 ("/a/b", "x"),
                 ("/org/gnome/desktop/interface/gtk-theme", "Adwaita-dark"),
             ])),
@@ -122,6 +160,34 @@ mod tests {
              6163652f67746b2d7468656d650000416477616974612d6461726b00007300270e49"
         );
         assert!(changeset(&[]).is_empty());
+    }
+
+    /// Integers too (`g_variant_new_int32`), alone and among strings.
+    #[test]
+    #[cfg(target_endian = "little")]
+    fn integers_match_glib() {
+        assert_eq!(
+            hex(&changeset(&[(
+                "/org/gnome/desktop/interface/cursor-size",
+                Value::Int(24)
+            )])),
+            "2f6f72672f676e6f6d652f6465736b746f702f696e746572666163652f637572736f722d73697a65\
+             0000000000000000180000000069002938"
+        );
+        assert_eq!(
+            hex(&changeset(&[
+                (
+                    "/org/gnome/desktop/interface/cursor-theme",
+                    Value::Str("Bibata-Modern-Ice")
+                ),
+                ("/org/gnome/desktop/interface/cursor-size", Value::Int(32)),
+                ("/a", Value::Str("x")),
+            ])),
+            "2f6f72672f676e6f6d652f6465736b746f702f696e746572666163652f637572736f722d7468656d65\
+             000000000000004269626174612d4d6f6465726e2d496365000073002a00002f6f72672f676e6f6d65\
+             2f6465736b746f702f696e746572666163652f637572736f722d73697a65000000000000000020000000\
+             006900292f6100000000000078000073000346808e"
+        );
     }
 
     /// Past 255 bytes the array's offsets take two bytes each; the entries,
@@ -136,7 +202,7 @@ mod tests {
             .iter()
             .map(|key| (key.as_str(), "a-reasonably-long-value"))
             .collect();
-        let bytes = changeset(&entries);
+        let bytes = strings(&entries);
         assert_eq!(bytes.len(), 6 * 80 - 4 + 6 * 2);
         assert_eq!(hex(&bytes[..76]), {
             let mut first = hex(b"/org/gnome/desktop/interface/key-number-0");

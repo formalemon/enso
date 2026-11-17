@@ -42,6 +42,12 @@ fn main() -> ExitCode {
             ctx.report_warnings("enso-ctl");
             theme::run(&ctx, &config.theme_targets, &command, &mut out)
         }
+        Command::Cursor(command) => {
+            let mut ctx = Context::load();
+            let config: panel::CtlConfig = ctx.section("ctl");
+            ctx.report_warnings("enso-ctl");
+            theme::cursor::run(&ctx, &config.theme_targets, &command, &mut out)
+        }
         Command::Power => commands::power(&mut out),
         Command::Brightness(light, level) => commands::brightness(light, level, &mut out),
         Command::Profile(command) => commands::profile(&command, &mut out),

@@ -35,6 +35,12 @@ pub struct Appearance {
     pub font_size: f32,
     /// Whether to draw Nerd Font glyphs or plain-text stand-ins.
     pub icons: IconMode,
+    /// Pointer cursor theme, by its directory name under an `icons`
+    /// directory, until one is chosen with `enso-ctl cursor set`. Empty
+    /// leaves every program's cursor alone.
+    pub cursor: String,
+    /// Cursor size in logical pixels.
+    pub cursor_size: u32,
 }
 
 impl Default for Appearance {
@@ -44,6 +50,8 @@ impl Default for Appearance {
             font: "sans-serif".to_owned(),
             font_size: 14.0,
             icons: IconMode::Auto,
+            cursor: String::new(),
+            cursor_size: 24,
         }
     }
 }
