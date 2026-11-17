@@ -1,10 +1,16 @@
 //! The bar itself: three floating islands — windows, clock, status.
 //!
-//! The right island is a small cluster of glyphs — network, volume, battery
-//! where there is one, and a bell — that warms a shade under the pointer,
-//! because resting there opens the control center and clicking it opens the
-//! notification history. The bell is always there, so a desktop with no
-//! battery and no Wi-Fi still has an island to rest on.
+//! The right island is a small cluster — network and volume glyphs, the
+//! battery where there is one, and a bell — that warms a shade under the
+//! pointer, because resting there opens the control center and clicking it
+//! opens the notification history. The bell is always there, so a desktop
+//! with no battery and no Wi-Fi still has an island to rest on.
+//!
+//! Its icons are drawn, not taken from a font (see [`icons`]): Wi-Fi or a
+//! cable, the speaker, the battery — a pill holding its percentage, filled
+//! as far as it is charged — and the bell, which rings when something new
+//! arrives. They are sized from the bar's height, so a taller or shorter bar
+//! keeps the same island, larger or smaller.
 //!
 //! The left island is workspace-centric. At rest it shows one dot per window
 //! on the current workspace, the focused one stretched into a pill. Resting
@@ -12,13 +18,13 @@
 //! with a soft capsule behind the current one.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
 use enso_core::{
-    Context, Icon, Notices, Rgba, Transition, Tween,
-    style::{icon, space, type_scale},
+    Context, Notices, Rgba, Transition, Tween,
+    style::{edge, space, type_scale},
 };
 use enso_sys::{
     net::{self, Link},
@@ -32,14 +38,15 @@ use enso_ui::{
 use crate::{
     config::{BarConfig, DEFAULT_CLOCK, Position},
     dropdown::{Dropdown, History},
+    icons::{self, Charge},
     niri::{self, Workspace},
     sound::{self, Level},
 };
 
 /// Gap between the islands and the screen edges.
-const EDGE: f32 = space::SM;
+const EDGE: f32 = edge::SCREEN;
 /// Vertical inset of the islands inside the bar.
-const INSET: f32 = 4.0;
+const INSET: f32 = edge::ISLAND_INSET;
 /// Diameter of a window dot, and height of the focused window's pill.
 const DOT: f32 = 8.0;
 /// Width of the focused window's pill.
@@ -59,7 +66,6 @@ const GROUP_GAP: f32 = space::XS;
 const HOVER_INTENT: Duration = Duration::from_millis(150);
 /// How often the readings nothing announces (network, battery) are looked at.
 const POLL: Duration = Duration::from_secs(5);
-
 /// Messages from background threads.
 #[derive(Debug)]
 pub enum Message {
@@ -67,6 +73,18 @@ pub enum Message {
     /// The output's volume changed (`None`: no output).
     Sound(Option<Level>),
     ThemeChanged,
+}
+
+/// How long the bell rings when something new arrives.
+const RING: Duration = Duration::from_millis(900);
+
+/// One thing the status island shows, left to right.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Item {
+    Network(Link),
+    Sound(Level),
+    Battery(Charge),
+    Bell,
 }
 
 /// What a click on the workspace island does.
@@ -155,6 +173,8 @@ pub struct Bar {
     /// The island was clicked: resting on it opens nothing more until the
     /// pointer has left and come back.
     clicked: bool,
+    /// When the bell began ringing, if it is.
+    ringing: Option<Instant>,
 }
 
 impl Bar {
@@ -188,6 +208,7 @@ impl Bar {
             history: History::new(),
             notices: Notices::default(),
             clicked: false,
+            ringing: None,
         };
         bar.notices = Notices::read(&bar.ctx.paths);
         bar.refresh_clock();
@@ -296,13 +317,15 @@ impl Bar {
                 settle(&mut self.activity, window.id, ws.active && window.active);
             }
         }
-        self.current
-            .retain(|id, _| workspaces.iter().any(|ws| ws.id == *id));
-        self.activity.retain(|id, _| {
-            workspaces
-                .iter()
-                .any(|ws| ws.windows.iter().any(|window| window.id == *id))
-        });
+        // Forget what has gone: one pass to collect what is here, one to
+        // drop the rest — not a search of every workspace per entry.
+        let here: HashSet<u64> = workspaces.iter().map(|ws| ws.id).collect();
+        self.current.retain(|id, _| here.contains(id));
+        let here: HashSet<u64> = workspaces
+            .iter()
+            .flat_map(|ws| ws.windows.iter().map(|window| window.id))
+            .collect();
+        self.activity.retain(|id, _| here.contains(id));
         self.workspaces = workspaces;
         // The island may have changed size under a pointer that is not moving.
         self.hover(self.pointer);
@@ -487,126 +510,149 @@ impl Bar {
         canvas.text_in(&text, island, Align::Center);
     }
 
-    /// The glyphs of the status island, left to right, each with its tint.
-    fn status_glyphs(&self) -> Vec<(Icon, Rgba)> {
+    /// The battery, if there is one: on power it fills in foam, and as it
+    /// runs low in gold and then love.
+    fn charge(&self) -> Option<Charge> {
         let colors = &self.ctx.theme.colors;
-        let mut glyphs = Vec::new();
-        if let Some(link) = self.link {
-            glyphs.push(match link {
-                Link::Wired => (icon::ETHERNET, colors.subtle),
-                Link::Offline => (icon::WIFI_OFF, colors.muted),
-                Link::Wifi { bars: 0 | 1 } => (icon::WIFI_1, colors.subtle),
-                Link::Wifi { bars: 2 } => (icon::WIFI_2, colors.subtle),
-                Link::Wifi { bars: 3 } => (icon::WIFI_3, colors.subtle),
-                Link::Wifi { .. } => (icon::WIFI_4, colors.subtle),
-            });
-        }
-        if let Some(sound) = self.sound {
-            glyphs.push(match sound {
-                Level { muted: true, .. } | Level { volume: 0, .. } => {
-                    (icon::VOLUME_MUTED, colors.muted)
-                }
-                Level { volume: ..34, .. } => (icon::VOLUME_LOW, colors.subtle),
-                Level { volume: ..67, .. } => (icon::VOLUME_MEDIUM, colors.subtle),
-                Level { .. } => (icon::VOLUME, colors.subtle),
-            });
-        }
-        if let Some(battery) = &self.battery {
-            glyphs.push(match (battery.is_plugged_in(), battery.percent) {
-                (true, _) => (icon::BATTERY_CHARGING, colors.foam),
-                (false, ..=15) => (icon::BATTERY, colors.love),
-                (false, ..=30) => (icon::BATTERY, colors.gold),
-                (false, _) => (icon::BATTERY, colors.subtle),
-            });
-        }
-        // Always last, and always there. It brightens when something went
-        // by unattended.
-        glyphs.push(if self.notices.unseen > 0 {
-            (icon::BELL, colors.text)
-        } else {
-            (icon::BELL, colors.subtle)
-        });
-        glyphs
+        let battery = self.battery.as_ref()?;
+        let plugged = battery.is_plugged_in();
+        let fill = match (plugged, battery.percent) {
+            (true, _) => colors.foam,
+            (false, ..=15) => colors.love,
+            (false, ..=30) => colors.gold,
+            (false, _) => colors.subtle,
+        };
+        Some(Charge {
+            percent: battery.percent.min(100),
+            plugged,
+            fill,
+        })
     }
 
-    /// The status island: a glyph each for network, volume, and battery, the
-    /// battery's charge in figures, and the bell. Returns whether it is still
-    /// animating.
-    fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32, now: Instant) -> bool {
-        self.status = None;
-        let colors = &self.ctx.theme.colors;
-        let mut glyphs = self.status_glyphs();
-        // Without a glyph font a row of words would crowd the bar: only the
-        // battery and the bell speak, as text.
-        if !canvas.glyphs() {
-            glyphs.drain(
-                ..glyphs
-                    .len()
-                    .saturating_sub(1 + usize::from(self.battery.is_some())),
-            );
-        }
-        let label = self
-            .battery
-            .as_ref()
-            .map(|battery| format!("{}%", battery.percent));
+    /// What the status island shows, left to right: the network and the
+    /// sound where there are such, the battery where there is one, and the
+    /// bell, always — so there is always an island to rest on.
+    fn status_items(&self) -> Vec<Item> {
+        let mut items = Vec::with_capacity(4);
+        items.extend(self.link.map(Item::Network));
+        items.extend(self.sound.map(Item::Sound));
+        items.extend(self.charge().map(Item::Battery));
+        items.push(Item::Bell);
+        items
+    }
 
-        let text = label
+    /// An item's colour: quiet when all is well, muted when off, and the
+    /// bell bright when something went by unattended.
+    fn tint(&self, item: Item) -> Rgba {
+        let colors = &self.ctx.theme.colors;
+        match item {
+            Item::Network(Link::Offline) | Item::Sound(Level { muted: true, .. }) => colors.muted,
+            Item::Sound(Level { volume: 0, .. }) => colors.muted,
+            Item::Bell if self.notices.unseen > 0 => colors.text,
+            Item::Battery(charge) => charge.fill,
+            Item::Network(_) | Item::Sound(_) | Item::Bell => colors.subtle,
+        }
+    }
+
+    /// Where the bell is in its ring, and whether it is still ringing.
+    fn swing(&self, now: Instant) -> (f32, bool) {
+        let Some(started) = self.ringing else {
+            return (0.0, false);
+        };
+        let length = self.ctx.motion.apply(Transition::new(
+            RING.as_millis() as u64,
+            enso_core::Easing::Linear,
+        ));
+        let elapsed = now.saturating_duration_since(started);
+        if length.duration.is_zero() || elapsed >= length.duration {
+            return (0.0, false);
+        }
+        let t = elapsed.as_secs_f32() / length.duration.as_secs_f32();
+        (icons::ring(t), true)
+    }
+
+    /// The status island: Wi-Fi (or a cable) and the speaker, the battery,
+    /// and the bell, every one drawn at the bar's scale. Returns whether it
+    /// is still animating.
+    fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, now: Instant) -> bool {
+        self.status = None;
+        let scale = icons::Scale::new(bar.h);
+        let battery = icons::Battery::new(scale);
+        let items = self.status_items();
+        let colors = &self.ctx.theme.colors;
+
+        let figures = items.iter().find_map(|item| match item {
+            Item::Battery(charge) => Some(charge.percent.to_string()),
+            _ => None,
+        });
+        let label = figures
             .as_deref()
-            .map(|label| Text::new(label, size, colors.text).medium());
-        let text_width = match &text {
-            Some(text) => canvas.measure(text).w + space::SM,
-            None => 0.0,
+            .map(|figures| Text::new(figures, battery.figures(), colors.text).bold());
+        let width_of = |item: &Item, canvas: &mut Canvas<'_>| match item {
+            Item::Network(Link::Wired) => scale.width(icons::Icon::Wired),
+            Item::Network(_) => scale.width(icons::Icon::Wifi),
+            Item::Sound(_) => scale.width(icons::Icon::Speaker),
+            Item::Bell => scale.width(icons::Icon::Bell),
+            Item::Battery(charge) => label.as_ref().map_or(0.0, |label| {
+                battery.width(canvas.measure(label).w, charge.plugged)
+            }),
         };
-        let slot = if canvas.glyphs() {
-            size + space::XS
-        } else {
-            size * 1.9
-        };
-        let gap = space::SM + 2.0;
-        let width = glyphs.len() as f32 * slot
-            + (glyphs.len() - 1) as f32 * gap
-            + text_width
-            + 2.0 * space::MD;
+        let widths: Vec<f32> = items.iter().map(|item| width_of(item, canvas)).collect();
+        let width =
+            widths.iter().sum::<f32>() + (items.len() - 1) as f32 * scale.gap() + 2.0 * scale.pad();
         let island = Rect::new(bar.right() - width, bar.y, width, bar.h);
         self.status = Some(island);
+
         // It warms a shade under the pointer: there is something behind it.
         let glow = self.status_glow.get(now);
-        canvas.pill(island, colors.base.mix(colors.overlay, glow));
+        let ground = colors.base.mix(colors.overlay, glow);
+        canvas.pill(island, ground);
+        let (swing, ringing) = self.swing(now);
+        let accent = self.ctx.accent();
 
-        // Glyphs, then the battery's figures, then the bell at the very end:
-        // the charge reads with its battery, and the bell keeps the corner.
-        let inner = island.inset_xy(space::MD, 0.0);
-        let bell = glyphs.len() - 1;
-        for (i, (glyph, tint)) in glyphs.into_iter().enumerate() {
-            let after_text = if i == bell { text_width } else { 0.0 };
-            let x = inner.x + i as f32 * (slot + gap) + after_text;
-            let cell = Rect::new(x, inner.y, slot, inner.h);
-            canvas.icon(
-                glyph,
-                size + 2.0,
-                tint.mix(colors.text, glow * 0.5),
-                cell,
-                Align::Center,
+        let icon_h = scale.icon();
+        let mut x = island.x + scale.pad();
+        for (item, width) in items.into_iter().zip(widths) {
+            let tint = self.tint(item);
+            let ink = icons::Ink {
+                on: tint.mix(colors.text, glow * 0.5),
+                ground,
+            };
+            let slot = Rect::new(x, island.y, width, island.h);
+            let icon = Rect::new(
+                x,
+                island.y + ((island.h - icon_h) / 2.0).round(),
+                width,
+                icon_h,
             );
-            // A small dot on the bell's shoulder: something is waiting.
-            if i == bell && self.notices.unseen > 0 {
-                let (cx, cy) = cell.center();
-                let reach = (size + 2.0) * 0.36;
-                canvas.circle(
-                    cx + reach,
-                    cy - reach,
-                    3.5,
-                    colors.base.mix(colors.overlay, glow),
-                );
-                canvas.circle(cx + reach, cy - reach, 2.5, self.ctx.accent());
+            match item {
+                Item::Network(Link::Wired) => icons::wired(canvas, icon, ink),
+                Item::Network(Link::Offline) => icons::wifi(canvas, icon, None, ink),
+                Item::Network(Link::Wifi { bars }) => icons::wifi(canvas, icon, Some(bars), ink),
+                Item::Sound(level) => icons::speaker(canvas, icon, waves(level), ink),
+                Item::Battery(charge) => {
+                    if let Some(label) = &label {
+                        battery.draw(canvas, slot, charge, label, glow, colors);
+                    }
+                }
+                Item::Bell => {
+                    let dot = (self.notices.unseen > 0).then_some(accent);
+                    icons::bell(canvas, icon, swing, dot, ink);
+                }
             }
+            x += width + scale.gap();
         }
-        if let Some(text) = &text {
-            let before_bell = slot + gap;
-            let figures = Rect::new(inner.x, inner.y, inner.w - before_bell, inner.h);
-            canvas.text_in(text, figures, Align::End);
-        }
-        self.status_glow.is_animating(now)
+        self.status_glow.is_animating(now) || ringing
+    }
+}
+
+/// How many of the speaker's waves a level lights: none when muted.
+fn waves(level: Level) -> Option<u8> {
+    match level {
+        Level { muted: true, .. } | Level { volume: 0, .. } => None,
+        Level { volume: ..34, .. } => Some(1),
+        Level { volume: ..67, .. } => Some(2),
+        Level { .. } => Some(3),
     }
 }
 
@@ -655,6 +701,10 @@ impl App for Bar {
             Event::Message(Message::ThemeChanged) => {
                 let notices = Notices::read(&self.ctx.paths);
                 let changed = notices != self.notices;
+                // Something new came in unattended: the bell rings.
+                if notices.unseen > self.notices.unseen && self.ctx.motion.is_enabled() {
+                    self.ringing = Some(Instant::now());
+                }
                 self.notices = notices;
                 if self.ctx.reload_theme() || changed {
                     cx.redraw();
@@ -738,7 +788,7 @@ impl App for Bar {
 
         let animating = self.draw_workspaces(canvas, strip, now);
         self.draw_clock(canvas, strip, size);
-        let glowing = self.draw_status(canvas, strip, size, now);
+        let glowing = self.draw_status(canvas, strip, now);
         Paint::when(animating || glowing)
     }
 }
@@ -1086,14 +1136,11 @@ mod tests {
     fn the_bell_says_when_something_is_waiting() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
-        assert_eq!(
-            bar.status_glyphs().last(),
-            Some(&(icon::BELL, colors.subtle))
-        );
+        assert_eq!(bar.tint(Item::Bell), colors.subtle);
         let (quiet, _) = frame(&mut bar, later());
 
         bar.notices.unseen = 2;
-        assert_eq!(bar.status_glyphs().last(), Some(&(icon::BELL, colors.text)));
+        assert_eq!(bar.tint(Item::Bell), colors.text);
         let (waiting, _) = frame(&mut bar, later());
         snapshot(&waiting, "bar-status-unseen");
 
@@ -1113,20 +1160,53 @@ mod tests {
         assert!(!has_accent(&quiet));
     }
 
+    /// Something new arriving rings the bell — a swing that dies away — and
+    /// then the island is still again.
+    #[test]
+    fn the_bell_rings_when_something_new_arrives() {
+        let mut bar = sample("rose-pine-moon");
+        assert_eq!(bar.swing(Instant::now()), (0.0, false));
+        let start = Instant::now();
+        bar.ringing = Some(start);
+        let (_, paint) = frame(&mut bar, start + Duration::from_millis(80));
+        assert_eq!(paint, Paint::Animating);
+        assert!(bar.swing(start + Duration::from_millis(80)).0.abs() > 0.05);
+        assert_eq!(bar.swing(start + RING), (0.0, false));
+        assert_eq!(frame(&mut bar, start + RING).1, Paint::Idle);
+
+        // With motion switched off, it does not ring at all.
+        bar.ctx.motion = enso_core::Motion::none();
+        assert_eq!(bar.swing(start + Duration::from_millis(80)), (0.0, false));
+    }
+
     #[test]
     fn the_status_island_shows_network_volume_battery_and_bell() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
-        let glyphs = |bar: &Bar| -> Vec<Icon> {
-            bar.status_glyphs()
+        let kinds = |bar: &Bar| -> Vec<&'static str> {
+            bar.status_items()
                 .into_iter()
-                .map(|(icon, _)| icon)
+                .map(|item| match item {
+                    Item::Network(Link::Wired) => "cable",
+                    Item::Network(_) => "wifi",
+                    Item::Sound(_) => "speaker",
+                    Item::Battery(_) => "battery",
+                    Item::Bell => "bell",
+                })
+                .collect()
+        };
+        assert_eq!(kinds(&bar), ["wifi", "speaker", "battery", "bell"]);
+        let tints = |bar: &Bar| -> Vec<Rgba> {
+            bar.status_items()
+                .into_iter()
+                .map(|item| bar.tint(item))
                 .collect()
         };
         assert_eq!(
-            glyphs(&bar),
-            [icon::WIFI_3, icon::VOLUME_MEDIUM, icon::BATTERY, icon::BELL]
+            tints(&bar),
+            [colors.subtle, colors.subtle, colors.subtle, colors.subtle]
         );
+        assert_eq!(waves(bar.sound.unwrap()), Some(2));
 
         bar.link = Some(Link::Offline);
         bar.sound = Some(Level {
@@ -1135,14 +1215,11 @@ mod tests {
         });
         bar.battery.as_mut().unwrap().percent = 12;
         assert_eq!(
-            bar.status_glyphs(),
-            [
-                (icon::WIFI_OFF, colors.muted),
-                (icon::VOLUME_MUTED, colors.muted),
-                (icon::BATTERY, colors.love),
-                (icon::BELL, colors.subtle),
-            ]
+            tints(&bar),
+            [colors.muted, colors.muted, colors.love, colors.subtle]
         );
+        assert_eq!(waves(bar.sound.unwrap()), None);
+        snapshot(&frame(&mut bar, later()).0, "bar-status-offline-muted");
 
         bar.link = Some(Link::Wired);
         bar.sound = Some(Level {
@@ -1150,7 +1227,8 @@ mod tests {
             muted: false,
         });
         bar.battery = None;
-        assert_eq!(glyphs(&bar), [icon::ETHERNET, icon::VOLUME, icon::BELL]);
+        assert_eq!(kinds(&bar), ["cable", "speaker", "bell"]);
+        assert_eq!(waves(bar.sound.unwrap()), Some(3));
 
         // Under the pointer the island warms, then settles lit.
         frame(&mut bar, Instant::now());
@@ -1165,6 +1243,118 @@ mod tests {
             [colors.overlay.r, colors.overlay.g, colors.overlay.b, 255]
         );
         snapshot(&lit, "bar-status-hovered");
+    }
+
+    /// Signal and volume light their arcs from the inside out; the rest stay
+    /// whole, in a whisper of the same colour.
+    #[test]
+    fn strength_lights_arcs_and_leaves_the_rest_faint() {
+        let mut bar = sample("rose-pine-moon");
+        let colors = bar.ctx.theme.colors.clone();
+        let faint = colors.subtle.mix(colors.base, 0.72);
+        let count = |frame: &Offscreen, bar: &Bar, color: Rgba| {
+            let island = bar.status.unwrap();
+            let xs = (island.x * 2.0) as u32..(island.right() * 2.0) as u32;
+            xs.flat_map(|x| (0..frame.height).map(move |y| (x, y)))
+                .filter(|&(x, y)| frame.pixel(x, y) == [color.r, color.g, color.b, 255])
+                .count()
+        };
+        bar.link = Some(Link::Wifi { bars: 4 });
+        bar.sound = Some(Level {
+            volume: 100,
+            muted: false,
+        });
+        let (full, _) = frame(&mut bar, later());
+        assert_eq!(count(&full, &bar, faint), 0, "everything is lit");
+
+        bar.link = Some(Link::Wifi { bars: 1 });
+        bar.sound = Some(Level {
+            volume: 10,
+            muted: false,
+        });
+        let (weak, _) = frame(&mut bar, later());
+        assert!(
+            count(&weak, &bar, faint) > 40,
+            "unlit arcs are drawn faintly"
+        );
+        assert!(count(&weak, &bar, colors.subtle) < count(&full, &bar, colors.subtle));
+        snapshot(&weak, "bar-status-weak");
+    }
+
+    /// A taller bar (`height` under `[bar]`) gets a larger island: every
+    /// icon, and the battery, scale with it.
+    #[test]
+    fn the_status_island_grows_with_the_bar() {
+        let mut bar = sample("rose-pine-moon");
+        frame(&mut bar, later());
+        let normal = bar.status.unwrap();
+
+        bar.config.height = 56;
+        let mut text = TextEngine::new(&bar.ctx.config.appearance);
+        let tall = Offscreen::render(&mut text, (900, 56), 2, |canvas| {
+            bar.draw(canvas, later());
+        });
+        let large = bar.status.unwrap();
+        let ratio = (56.0 - 2.0 * INSET) / (36.0 - 2.0 * INSET);
+        assert!((large.h / normal.h - ratio).abs() < 0.01);
+        assert!(
+            (large.w / normal.w - ratio).abs() < 0.15,
+            "{} vs {}",
+            large.w,
+            normal.w
+        );
+        snapshot(&tall, "bar-status-tall");
+    }
+
+    /// The battery is a pill filled to its charge, the figures cut out of
+    /// the fill; on power it fills in foam and a bolt comes before them.
+    #[test]
+    fn the_battery_is_a_pill_filled_to_its_charge() {
+        let mut bar = sample("rose-pine-moon");
+        let colors = bar.ctx.theme.colors.clone();
+        let rgba = |c: Rgba| [c.r, c.g, c.b, 255];
+        // The pill's middle row, in physical pixels (the frame is at 2x).
+        let row = |frame: &Offscreen, bar: &Bar| -> Vec<[u8; 4]> {
+            let island = bar.status.unwrap();
+            let y = (36.0 / 2.0 * 2.0) as u32;
+            ((island.x * 2.0) as u32..(island.right() * 2.0) as u32)
+                .map(|x| frame.pixel(x, y))
+                .collect()
+        };
+
+        let (discharging, _) = frame(&mut bar, later());
+        let pixels = row(&discharging, &bar);
+        let count = |pixels: &[[u8; 4]], color: Rgba| {
+            pixels.iter().filter(|pixel| **pixel == rgba(color)).count()
+        };
+        assert_eq!(bar.charge().unwrap().fill, colors.subtle);
+        assert!(count(&pixels, colors.subtle) > 20, "no fill");
+        assert!(count(&pixels, colors.highlight_med) > 4, "no track");
+        let width = bar.status.unwrap().w;
+        snapshot(&discharging, "bar-battery-82");
+
+        // On power: foam, and a bolt that widens the pill.
+        bar.battery.as_mut().unwrap().status = BatteryStatus::Charging;
+        let (charging, _) = frame(&mut bar, later());
+        assert_eq!(bar.charge().unwrap().fill, colors.foam);
+        assert!(count(&row(&charging, &bar), colors.foam) > 20);
+        assert!(bar.status.unwrap().w > width);
+        snapshot(&charging, "bar-battery-charging");
+
+        // Nearly empty: a sliver of love, and the figures over the track.
+        bar.battery.as_mut().unwrap().status = BatteryStatus::Discharging;
+        bar.battery.as_mut().unwrap().percent = 9;
+        let (low, _) = frame(&mut bar, later());
+        assert_eq!(bar.charge().unwrap().fill, colors.love);
+        let pixels = row(&low, &bar);
+        assert!(count(&pixels, colors.love) > 0);
+        assert!(count(&pixels, colors.highlight_med) > count(&pixels, colors.love));
+        snapshot(&low, "bar-battery-low");
+
+        // Without a battery, no pill: the island is glyphs and the bell.
+        bar.battery = None;
+        frame(&mut bar, later());
+        assert!(bar.status.unwrap().w < width);
     }
 
     #[test]

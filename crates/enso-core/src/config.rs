@@ -31,6 +31,8 @@ pub struct Appearance {
     pub accent: Role,
     /// Font family for interface text.
     pub font: String,
+    /// Font family for monospaced text: the terminal, and code.
+    pub mono_font: String,
     /// Base text size in logical pixels.
     pub font_size: f32,
     /// Whether to draw Nerd Font glyphs or plain-text stand-ins.
@@ -48,6 +50,7 @@ impl Default for Appearance {
         Self {
             accent: Role::Rose,
             font: "sans-serif".to_owned(),
+            mono_font: "monospace".to_owned(),
             font_size: 14.0,
             icons: IconMode::Auto,
             cursor: String::new(),

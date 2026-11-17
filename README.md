@@ -10,7 +10,7 @@ and one way of moving.
 | `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, volume, battery, notification bell | working |
 | `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
 | `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
-| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, the cursor, Firefox, Qt, Flatpak | working |
+| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, fonts, the cursor, Firefox, Qt, Flatpak | working |
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
@@ -156,9 +156,26 @@ titles — with a soft capsule behind the current one. An empty workspace keeps
 a single quiet dot. Click a dot to focus that window, or a group to switch to
 that workspace.
 
-The right island is the state of the machine in a few glyphs: network (a
-cable, or Wi-Fi with its signal), volume, battery with its charge, and a
-bell. Each is there only if the machine has it — a desktop shows no battery —
+The right island is the state of the machine at a glance, in icons enso
+draws itself rather than takes from a font — thick round strokes, soft
+corners, one hand for all of them:
+
+- **Wi-Fi**, a dot and three arcs lit from the inside out with the signal
+  (the rest stay, faintly); offline, all faint and struck through. A cable
+  when wired.
+- **The speaker**, its three waves lit with the volume the same way; muted,
+  a small cross where the waves were.
+- **The battery**, a pill holding its percentage, filled from the left as far
+  as it is charged — in foam on power, gold below 30 %, love below 15 % — with
+  a small lightning bolt before the figures while it charges. Where the fill
+  runs under the figures they are cut out of it.
+- **The bell**, which rings — a little swing that dies away — when something
+  new arrives unattended, and keeps a dot in the accent until it is seen.
+
+Every size is taken from the bar's `height`, so a taller or shorter bar gets
+the same island, larger or smaller. And the island, the control center, the
+notification history, and toasts all keep the same distance from the side
+of the screen, so their right edges line up. Each is there only if the machine has it — a desktop shows no battery —
 except the bell, which always is, so there is always an island to rest on.
 The bell brightens and grows a dot when notifications went by unattended.
 
@@ -170,6 +187,12 @@ The island warms a shade under the pointer, and does three things:
   `PATH`. `control_center = false` under `[bar]` turns it off.
 - **Click** it and the notification history opens in the control center's
   place (`enso-notify history`); click again to close it.
+
+The control center and the history take turns: whichever opens sends the
+other away, however each was opened. And there is only ever one control
+center — `enso-ctl` keeps to one copy — so `Mod+C` toggles it: pressed while
+one is open, from the key or from the bar, it closes it; resting on the bar
+while one is open leaves it as it is.
 - **Scroll** on it to turn the volume, 5 % a notch.
 
 Without `enso-ctl` or `enso-notify` installed the island is simply a readout.
@@ -498,6 +521,7 @@ which is the thing to run after installing one, or after adding a line.
 | Alacritty | `alacritty.toml`: Rosé Pine's own mapping to the terminal colours, and the accent for the cursor, as enso's carets have it | `import = ["~/.local/state/enso/alacritty.toml"]` under `[general]` in `alacritty.toml` | at once |
 | Neovim | `nvim.lua`: the palette, handed to [`rose-pine/neovim`](https://github.com/rose-pine/neovim) | `dofile(vim.fn.expand("~/.local/state/enso/nvim.lua"))` in `init.lua`, after the plugin is loaded | at once, in every running Neovim |
 | GTK, and the system | the dark-or-light preference (dconf's `color-scheme`); `gtk-application-prefer-dark-theme` for GTK 3 | nothing | at once — GTK 3 programs when next started |
+| Fonts | `fonts.conf`: the configured `font` and `mono_font` first for `sans-serif`, `system-ui`, and `monospace`; `font-name` and `monospace-font-name` in dconf; GTK 3's `gtk-font-name` | `<include ignore_missing="yes">~/.local/state/enso/fonts.conf</include>` in `~/.config/fontconfig/fonts.conf` | at once — fontconfig programs when next started |
 | The cursor | `cursor-theme` and `cursor-size` in dconf; GTK 3's two cursor keys; `~/.local/share/icons/default` inheriting the chosen theme; and a `cursor` section in `niri.kdl` | nothing — choose one (see [The cursor](#the-cursor)) | at once |
 | GTK's palette | `gtk-4.0.css`: the colours libadwaita is built from; `gtk-3.0.css`: the same, and GTK 3's stock widgets recoloured | `@import url("file:///home/you/.local/state/enso/gtk-4.0.css");` in `~/.config/gtk-4.0/gtk.css`, and likewise for `gtk-3.0` | when a program next starts |
 | Firefox | `firefox.css`: tabs, toolbars, address bar, menus | the same kind of `@import` in a profile's `chrome/userChrome.css`, with `toolkit.legacyUserProfileCustomizations.stylesheets` on in `about:config` | when Firefox next starts |
@@ -541,11 +565,30 @@ To have enso leave a program alone, drop it from the list:
 
 ```toml
 [ctl]
-theme_targets = ["niri", "alacritty", "neovim", "gtk", "cursor", "firefox", "qt", "flatpak"]
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "fonts", "cursor", "firefox", "qt", "flatpak"]
 ```
 
 A new target is one file in `crates/enso-ctl/src/theme/` — a function from
 the theme to an outcome — and one more `Place`.
+
+### Fonts
+
+enso draws with the families named under `[appearance]`, and takes them to
+the rest of the desktop with the theme:
+
+```toml
+[appearance]
+font = "Google Sans Flex"        # the interface
+mono_font = "Google Sans Code"   # the terminal, and code
+```
+
+GTK is told through dconf (`font-name`, `monospace-font-name`, sized from
+`font_size`), and everything that asks fontconfig for `sans-serif` or
+`monospace` — Alacritty, Firefox, web pages — through a generated
+`fonts.conf` that puts these first, with Symbols Nerd Font behind them.
+Preferences of your own after the include line come after enso's: the place
+for fallbacks. A family left generic (the default) is the system's to choose,
+and one that is not installed falls back to its kind, with a word on stderr.
 
 ### The cursor
 

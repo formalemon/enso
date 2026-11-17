@@ -89,9 +89,9 @@ fn main() -> ExitCode {
 
     // One lock screen at a time: a second would find the session locked
     // already, and would undo the first one's power saving on its way out.
-    let _only = match only(runtime_dir.as_deref()) {
-        Ok(guard) => guard,
-        Err(()) => return ExitCode::SUCCESS,
+    let _only = match enso_core::ipc::only("enso-lock") {
+        enso_core::ipc::Only::Mine(guard) => guard,
+        enso_core::ipc::Only::Taken => return ExitCode::SUCCESS,
     };
 
     let saver = config
@@ -111,23 +111,6 @@ fn main() -> ExitCode {
             eprintln!("enso-lock: {err}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// Hold the file that marks a lock screen as running, for as long as the
-/// returned guard lives. `Err` means another lock screen holds it. Where
-/// there is nowhere to keep such a file, nothing is held and nothing stops.
-fn only(runtime_dir: Option<&std::path::Path>) -> Result<Option<std::fs::File>, ()> {
-    let Some(dir) = runtime_dir else {
-        return Ok(None);
-    };
-    let Ok(file) = std::fs::File::create(dir.join("enso-lock.lock")) else {
-        return Ok(None);
-    };
-    match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
-        Err(std::fs::TryLockError::WouldBlock) => Err(()),
-        Err(std::fs::TryLockError::Error(_)) => Ok(None),
     }
 }
 

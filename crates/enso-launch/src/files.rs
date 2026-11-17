@@ -358,13 +358,24 @@ fn search_chunk<'a>(chunk: &'a str, query: &Query, limit: usize) -> Vec<(i32, &'
 
 /// Sort best first and cut to `limit`. Ties go to the shorter path, then
 /// alphabetically, so the order never depends on how the index was walked.
+///
+/// The best `limit` are picked out first (a selection: linear time), and
+/// only they are sorted — the pile is many times larger than what is kept.
 fn keep_best(found: &mut Vec<(i32, &str)>, limit: usize) {
-    found.sort_unstable_by(|a, b| {
+    let order = |a: &(i32, &str), b: &(i32, &str)| {
         b.0.cmp(&a.0)
             .then(a.1.len().cmp(&b.1.len()))
             .then(a.1.cmp(b.1))
-    });
-    found.truncate(limit);
+    };
+    if limit == 0 {
+        found.clear();
+        return;
+    }
+    if found.len() > limit {
+        found.select_nth_unstable_by(limit - 1, order);
+        found.truncate(limit);
+    }
+    found.sort_unstable_by(order);
 }
 
 /// A query prepared once and scored against every path.

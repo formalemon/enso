@@ -14,6 +14,10 @@ theme = "rose-pine-moon"
 accent = "rose"
 # Interface font family ("sans-serif" picks a sensible installed one).
 font = "sans-serif"
+# Monospaced font family, for the terminal and code ("monospace" likewise).
+# A family named in either is also given to GTK and fontconfig by
+# `enso-ctl theme apply` (the "fonts" theme target), so every program agrees.
+mono_font = "monospace"
 # Base text size in logical pixels.
 font_size = 14.0
 # "auto" draws Nerd Font glyphs when a Nerd Font is installed and plain text
@@ -92,10 +96,10 @@ history_keep = true
 
 [ctl]
 width = 340
-# The programs `enso-ctl theme set` takes the palette (and the cursor) to,
+# The programs `enso-ctl theme set` takes the palette (and fonts, cursor) to,
 # besides enso's own tools. One that is not installed is passed over; drop a
 # name to have enso leave that program alone.
-theme_targets = ["niri", "alacritty", "neovim", "gtk", "cursor", "firefox", "qt", "flatpak"]
+theme_targets = ["niri", "alacritty", "neovim", "gtk", "fonts", "cursor", "firefox", "qt", "flatpak"]
 
 [wall]
 # How a picture meets a screen of another shape: "cover" fills the screen

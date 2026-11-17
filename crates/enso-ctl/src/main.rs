@@ -19,7 +19,7 @@ mod theme;
 use std::{io::Write, process::ExitCode};
 
 use cli::Command;
-use enso_core::Context;
+use enso_core::{Context, ipc};
 
 fn main() -> ExitCode {
     let command = match cli::parse(std::env::args_os().skip(1)) {
@@ -74,6 +74,22 @@ fn main() -> ExitCode {
 }
 
 fn open_panel(mode: cli::PanelMode) -> Result<(), String> {
+    // One control center at a time. Asked for again from the keyboard, the
+    // one that is open closes — the key toggles it; asked for by resting on
+    // the bar, the one that is open is left as it is.
+    let _only = match ipc::only(panel::NAME) {
+        ipc::Only::Mine(guard) => guard,
+        ipc::Only::Taken => {
+            if mode == cli::PanelMode::Modal {
+                ipc::tell(panel::NAME, "close");
+            }
+            return Ok(());
+        }
+    };
+    // The notification history hangs from the same corner of the bar: it
+    // goes when the control center comes (and the other way about).
+    ipc::tell("enso-notify", "close");
+
     let mut ctx = Context::load();
     let config = ctx.section("ctl");
     ctx.report_warnings("enso-ctl");

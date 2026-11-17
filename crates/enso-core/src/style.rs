@@ -18,6 +18,23 @@ pub mod radius {
     }
 }
 
+/// Where floating things sit. The bar's islands and every card that drops
+/// from the bar — the control center, the notification history, toasts —
+/// take their place from these, so their edges line up.
+pub mod edge {
+    use super::space;
+
+    /// Between the side of the screen and an island or a card.
+    pub const SCREEN: f32 = space::SM;
+    /// Between the bar's surface and a card hanging from it. The islands are
+    /// inset [`ISLAND_INSET`] within the bar, so the card is
+    /// `ISLAND_INSET + BELOW_BAR` — [`SCREEN`] — from its island: the same
+    /// breath in both directions.
+    pub const BELOW_BAR: f32 = space::XS;
+    /// Between the bar's edges and its islands, above and below.
+    pub const ISLAND_INSET: f32 = space::XS;
+}
+
 /// Spacing scale. Favour the larger steps: breathing room is the point.
 pub mod space {
     pub const XS: f32 = 4.0;

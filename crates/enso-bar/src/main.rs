@@ -13,6 +13,7 @@
 mod bar;
 mod config;
 mod dropdown;
+mod icons;
 mod niri;
 mod sound;
 
@@ -36,7 +37,8 @@ and battery; resting the pointer on it opens the control center, if enso-ctl
 is installed.
 
 Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
-  height   = 36                    bar height in pixels
+  height   = 36                    bar height in pixels; the status icons
+                                   scale with it
   position = \"top\"                 \"top\" or \"bottom\"
   clock    = \"%a %-d %b  %H:%M\"    strftime format
   control_center = true            open enso-ctl while the pointer rests on

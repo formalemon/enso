@@ -293,6 +293,7 @@ impl Launcher {
     /// lists nothing.
     fn rank_apps(&mut self) {
         let now = history::now();
+        let pattern = fuzzy::Pattern::new(&self.query);
         let mut ranked: Vec<(i32, usize)> = self
             .apps
             .iter()
@@ -300,7 +301,7 @@ impl Launcher {
             .filter(|_| !self.is_idle())
             .filter_map(|(index, app)| {
                 let boost = self.history.boost(&app_key(&app.id), now);
-                rank(&self.query, app).map(|score| (score + boost, index))
+                rank(&pattern, app).map(|score| (score + boost, index))
             })
             .collect();
         // Stable sort: ties keep the alphabetical order of `apps`.
@@ -437,20 +438,20 @@ fn file_key(path: &str) -> String {
 
 /// Best score for an application across its searchable fields. The name
 /// counts most; description, keywords, and id are progressively discounted.
-fn rank(query: &str, app: &App) -> Option<i32> {
-    let name = fuzzy::score(query, &app.name);
+fn rank(pattern: &fuzzy::Pattern, app: &App) -> Option<i32> {
+    let name = pattern.score(&app.name);
     let description = app
         .description
         .as_deref()
-        .and_then(|d| fuzzy::score(query, d))
+        .and_then(|d| pattern.score(d))
         .map(|s| s - 25);
     let keywords = app
         .keywords
         .iter()
-        .filter_map(|k| fuzzy::score(query, k))
+        .filter_map(|k| pattern.score(k))
         .max()
         .map(|s| s - 30);
-    let id = fuzzy::score(query, &app.id).map(|s| s - 35);
+    let id = pattern.score(&app.id).map(|s| s - 35);
     [name, description, keywords, id]
         .into_iter()
         .flatten()

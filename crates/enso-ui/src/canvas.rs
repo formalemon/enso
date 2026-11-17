@@ -6,8 +6,8 @@ use enso_core::{
     style::{Shadow, radius},
 };
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, Mask, Paint, Path, PathBuilder, Pattern, PixmapMut,
-    PixmapRef, SpreadMode, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, LineCap, LineJoin, Mask, Paint, Path, PathBuilder,
+    Pattern, PixmapMut, PixmapRef, SpreadMode, Stroke, Transform,
 };
 
 use crate::{
@@ -173,6 +173,63 @@ impl<'a> Canvas<'a> {
         let transform = self.transform();
         let stroke = Stroke {
             width,
+            ..Stroke::default()
+        };
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.stroke_path(&path, &paint, &stroke, transform, mask);
+        }
+    }
+
+    /// Fill the closed shape through `points`, in logical pixels: the way a
+    /// small icon of its own — a lightning bolt — is drawn without a font
+    /// or an image file.
+    pub fn polygon(&mut self, points: &[(f32, f32)], color: Rgba) {
+        let Some((&(x, y), rest)) = points.split_first() else {
+            return;
+        };
+        let mut path = PathBuilder::new();
+        path.move_to(x, y);
+        for &(x, y) in rest {
+            path.line_to(x, y);
+        }
+        path.close();
+        let Some(path) = path.finish() else {
+            return;
+        };
+        let paint = self.paint(color);
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+        }
+    }
+
+    /// Fill a [`Shape`].
+    pub fn fill_shape(&mut self, shape: &Shape, color: Rgba) {
+        let Some(path) = shape.path() else {
+            return;
+        };
+        let paint = self.paint(color);
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+        }
+    }
+
+    /// Draw the lines of a [`Shape`], `width` thick, with round ends and
+    /// round corners: soft, like everything else here.
+    pub fn stroke_shape(&mut self, shape: &Shape, width: f32, color: Rgba) {
+        let Some(path) = shape.path() else {
+            return;
+        };
+        let paint = self.paint(color);
+        let transform = self.transform();
+        let stroke = Stroke {
+            width,
+            line_cap: LineCap::Round,
+            line_join: LineJoin::Round,
             ..Stroke::default()
         };
         let (pixmap, mask) = self.target();
@@ -394,6 +451,92 @@ fn blend(dst: &mut [u8], src: [u8; 4]) {
     let inverse = 255 - u32::from(src[3]);
     for (d, s) in dst.iter_mut().zip(src) {
         *d = (u32::from(s) + (u32::from(*d) * inverse + 127) / 255).min(255) as u8;
+    }
+}
+
+/// A figure of an interface's own — lines, curves, arcs, circles — to fill
+/// or stroke on a [`Canvas`]: how an icon is drawn without a font or an
+/// image file. Coordinates are logical pixels; the canvas scales them, so a
+/// shape is as sharp on a HiDPI screen as anywhere.
+#[derive(Clone, Debug, Default)]
+pub struct Shape {
+    builder: PathBuilder,
+}
+
+impl Shape {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Begin a new piece of the figure at `(x, y)`.
+    pub fn move_to(&mut self, x: f32, y: f32) -> &mut Self {
+        self.builder.move_to(x, y);
+        self
+    }
+
+    pub fn line_to(&mut self, x: f32, y: f32) -> &mut Self {
+        self.builder.line_to(x, y);
+        self
+    }
+
+    /// A cubic Bézier curve to `(x, y)`, pulled toward the two controls.
+    pub fn cubic_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) -> &mut Self {
+        self.builder.cubic_to(x1, y1, x2, y2, x, y);
+        self
+    }
+
+    /// Join the current piece back to where it began.
+    pub fn close(&mut self) -> &mut Self {
+        self.builder.close();
+        self
+    }
+
+    /// A circular arc around `(cx, cy)`, as a piece of its own: from the
+    /// angle `start`, turning through `sweep` (radians; positive turns
+    /// clockwise on screen, and 0 points right).
+    pub fn arc(&mut self, (cx, cy): (f32, f32), r: f32, start: f32, sweep: f32) -> &mut Self {
+        // Each quarter turn or less is one cubic, whose controls sit
+        // 4/3·tan(θ/4) of the radius along the tangents.
+        let pieces = (sweep.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0);
+        let step = sweep / pieces;
+        let k = 4.0 / 3.0 * (step / 4.0).tan();
+        let at = |angle: f32| (cx + r * angle.cos(), cy + r * angle.sin());
+        let (x, y) = at(start);
+        self.builder.move_to(x, y);
+        let mut angle = start;
+        for _ in 0..pieces as usize {
+            let next = angle + step;
+            let (x0, y0) = at(angle);
+            let (x3, y3) = at(next);
+            self.builder.cubic_to(
+                x0 - k * r * angle.sin(),
+                y0 + k * r * angle.cos(),
+                x3 + k * r * next.sin(),
+                y3 - k * r * next.cos(),
+                x3,
+                y3,
+            );
+            angle = next;
+        }
+        self
+    }
+
+    /// A whole circle, as a piece of its own.
+    pub fn circle(&mut self, (cx, cy): (f32, f32), r: f32) -> &mut Self {
+        self.builder.push_circle(cx, cy, r);
+        self
+    }
+
+    /// A rectangle with rounded corners, as a piece of its own.
+    pub fn rounded_rect(&mut self, rect: Rect, radius: f32) -> &mut Self {
+        if let Some(path) = rounded_rect(rect, radius) {
+            self.builder.push_path(&path);
+        }
+        self
+    }
+
+    fn path(&self) -> Option<Path> {
+        self.builder.clone().finish()
     }
 }
 

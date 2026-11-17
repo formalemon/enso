@@ -84,12 +84,9 @@ fn main() -> ExitCode {
 
 /// Pass an ask to the running daemon.
 fn send(ask: daemon::Ask) -> ExitCode {
-    use std::{io::Write, os::unix::net::UnixStream};
-
-    let sent = daemon::socket_path()
+    let sent = enso_core::ipc::socket(daemon::NAME)
         .ok_or_else(|| std::io::Error::other("XDG_RUNTIME_DIR is not set"))
-        .and_then(UnixStream::connect)
-        .and_then(|mut stream| writeln!(stream, "{}", ask.word()));
+        .and_then(|path| enso_core::ipc::say(&path, ask.word()));
     match sent {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {

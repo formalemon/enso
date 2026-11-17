@@ -5,6 +5,11 @@
 //! island (`enter`, `leave`). The panel closes itself once the pointer is on
 //! neither the island nor the panel. Without `enso-ctl` installed, hovering
 //! simply does nothing — the bar stays a complete tool on its own.
+//!
+//! There is only ever one control center (enso-ctl keeps to one copy), and
+//! it and the notification history take turns: each closes the other as it
+//! opens. So a click on the island, which opens the history, also sends the
+//! control center away, and resting there opens nothing while either is up.
 
 use std::{
     env,
@@ -57,7 +62,9 @@ impl Dropdown {
         if self.is_open() {
             return self.tell(true);
         }
-        if self.missing {
+        // A control center opened from the keyboard is already up: there is
+        // only ever one, so resting here leaves it be.
+        if self.missing || enso_core::ipc::is_listening("enso-ctl") {
             return;
         }
         let edge = match position {

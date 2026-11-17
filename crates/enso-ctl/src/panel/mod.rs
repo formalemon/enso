@@ -62,10 +62,10 @@ impl Default for CtlConfig {
     }
 }
 
-/// Gap between the card and the screen edge.
-const MARGIN: f32 = space::SM;
+/// Gap between the card and the screen edge: the bar's, so they line up.
+const MARGIN: f32 = enso_core::style::edge::SCREEN;
 /// Gap between the bar and a dropdown card.
-const DROP_GAP: f32 = space::XS;
+const DROP_GAP: f32 = enso_core::style::edge::BELOW_BAR;
 /// Room a dropdown's surface keeps around the card for its shadow.
 const SHADOW_ROOM: f32 = 28.0;
 const PAD: f32 = space::LG;
@@ -82,6 +82,10 @@ const MAX_APPS: usize = 6;
 const VOLUME_STEP: u8 = 5;
 /// Scroll distance that moves a list by one row.
 const SCROLL_STEP: f32 = 30.0;
+/// The name the control center listens under, and holds its one-copy lock
+/// by (see [`enso_core::ipc`]).
+pub const NAME: &str = "enso-ctl";
+
 /// How long a dropdown outlives the pointer leaving it, so that crossing the
 /// gap between the bar and the card does not close it.
 const GRACE: Duration = Duration::from_millis(300);
@@ -92,7 +96,9 @@ pub enum Message {
     ThemeChanged,
     /// From the bar: whether the pointer is on the island that opened us.
     Owner(bool),
-    /// From the bar: something else is opening in this panel's place.
+    /// From the bar, a second `enso-ctl`, or the notification history:
+    /// something else is opening in this panel's place, or the key that
+    /// opened it was pressed again.
     Dismiss,
 }
 
@@ -1280,6 +1286,13 @@ impl App for Panel {
             move || proxy.send(Message::ThemeChanged)
         }) {
             eprintln!("enso-ctl: live theme switching unavailable: {err}");
+        }
+        // Told to go by whoever wants its place: see `main::open_panel`.
+        if let Err(err) = enso_core::ipc::listen(NAME, {
+            let proxy = proxy.clone();
+            move |word| word != "close" || proxy.send(Message::Dismiss)
+        }) {
+            eprintln!("enso-ctl: a second Super+C cannot close this one: {err}");
         }
         if self.mode != PanelMode::Modal {
             // Without the bar's word, the pointer on the card decides alone.

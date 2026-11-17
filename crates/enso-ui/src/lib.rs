@@ -27,7 +27,7 @@ pub mod shell;
 pub mod text;
 pub mod watch;
 
-pub use canvas::{Canvas, Offscreen};
+pub use canvas::{Canvas, Offscreen, Shape};
 pub use geom::{Align, Rect, Size};
 pub use image::Image;
 pub use input::{Button, Key, KeyEvent, Mods, Nav, PointerEvent};

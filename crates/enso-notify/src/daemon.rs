@@ -4,8 +4,6 @@
 //! soon as the last toast has glided away.
 
 use std::{
-    io::{BufRead, BufReader},
-    os::unix::net::{UnixListener, UnixStream},
     path::PathBuf,
     sync::{
         Arc,
@@ -15,8 +13,8 @@ use std::{
 };
 
 use enso_core::{
-    Context, Notices, Rgba,
-    style::{Shadow, radius, space, stroke, type_scale},
+    Context, Notices, Rgba, ipc,
+    style::{Shadow, edge, radius, space, stroke, type_scale},
 };
 use enso_ui::{
     Align, Anchor, App, Button, Canvas, Cx, Event, Key, Keyboard, Layer, Paint, PointerEvent,
@@ -64,8 +62,29 @@ impl Default for NotifyConfig {
     }
 }
 
-/// Room around the column for shadows, and the gap to the screen edge.
-const MARGIN: f32 = space::LG;
+/// Room left of and below the column for its shadows.
+const SHADOW: f32 = space::LG;
+/// Between the column and the side of the screen: the bar's own, so a card
+/// lines up with the bar's islands and with the control center.
+const EDGE: f32 = edge::SCREEN;
+
+/// Just enough of the bar's settings to know which edge it is on.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct BarSide {
+    position: String,
+}
+
+/// Between the top of the surface and the first card: the bar's gap when the
+/// bar is above (its space is kept clear already), else the screen's.
+fn top_gap(ctx: &Context) -> f32 {
+    let bar: BarSide = ctx.config.section("bar").unwrap_or_default();
+    if bar.position == "bottom" {
+        edge::SCREEN
+    } else {
+        edge::BELOW_BAR
+    }
+}
 /// Padding inside a toast.
 const PAD: f32 = 14.0;
 const BODY_LINES: usize = 3;
@@ -127,45 +146,16 @@ impl Ask {
     }
 }
 
-/// The socket a running daemon listens on for [`Ask`]s.
-pub fn socket_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR").map(|dir| PathBuf::from(dir).join("enso-notify.sock"))
-}
+/// The tool name the daemon listens under (see [`enso_core::ipc`]).
+pub const NAME: &str = "enso-notify";
 
 /// Listen for asks on a background thread. Failing to only costs the
 /// history its way of being opened from outside.
 fn listen(proxy: Proxy<Message>) {
-    let Some(path) = socket_path() else {
-        return;
-    };
-    // A socket nobody answers on is left over from a daemon that died.
-    if UnixStream::connect(&path).is_err() {
-        let _ = std::fs::remove_file(&path);
-    }
-    let listener = match UnixListener::bind(&path) {
-        Ok(listener) => listener,
-        Err(err) => {
-            eprintln!("enso-notify: cannot listen for `enso-notify history`: {err}");
-            return;
-        }
-    };
-    let served = std::thread::Builder::new()
-        .name("enso-asks".to_owned())
-        .spawn(move || {
-            for stream in listener.incoming().flatten() {
-                // Whoever connects says one word and hangs up; nobody gets
-                // to hold the line.
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let mut line = String::new();
-                if BufReader::new(stream).read_line(&mut line).is_ok()
-                    && let Some(ask) = Ask::parse(&line)
-                    && !proxy.send(Message::History(ask))
-                {
-                    return;
-                }
-            }
-        });
-    if let Err(err) = served {
+    let listening = ipc::listen(NAME, move |word| {
+        Ask::parse(word).is_none_or(|ask| proxy.send(Message::History(ask)))
+    });
+    if let Err(err) = listening {
         eprintln!("enso-notify: cannot listen for `enso-notify history`: {err}");
     }
 }
@@ -229,6 +219,8 @@ pub struct Daemon {
     center: Center,
     /// What the rest of the suite was last told.
     told: Option<Notices>,
+    /// Space above the first card (see [`top_gap`]).
+    top: f32,
 }
 
 impl Daemon {
@@ -243,6 +235,7 @@ impl Daemon {
             center.restore(read_history(&ctx.paths), Instant::now(), unix_now());
         }
         Self {
+            top: top_gap(&ctx),
             center,
             told: None,
             stack: Stack::new(options, ctx.motion),
@@ -335,9 +328,9 @@ impl Daemon {
     /// change: the history card if it is up, otherwise the toasts.
     fn sync(&mut self, cx: &mut Cx<'_>) {
         let now = Instant::now();
-        let width = self.config.width + 2 * MARGIN as u32;
+        let width = self.config.width + (SHADOW + EDGE) as u32;
         if self.center.is_showing() {
-            let height = (self.center.full_height() + 2.0 * MARGIN).ceil() as u32;
+            let height = (self.center.full_height() + self.top + SHADOW).ceil() as u32;
             cx.resize(width, height);
             // The surface is as tall as the card can get; only the card
             // itself takes the pointer.
@@ -351,7 +344,7 @@ impl Daemon {
             self.stack.resume(now);
             cx.set_visible(false);
         } else {
-            let height = (self.stack.height(now) + 2.0 * MARGIN).ceil() as u32;
+            let height = (self.stack.height(now) + self.top + SHADOW).ceil() as u32;
             cx.resize(width, height);
             cx.set_visible(true);
             cx.redraw();
@@ -376,7 +369,7 @@ impl Daemon {
             accent: self.ctx.accent(),
             size: self.size(),
             width: self.config.width as f32,
-            origin: (MARGIN, MARGIN / 2.0),
+            origin: (SHADOW, self.top),
         }
     }
 
@@ -408,6 +401,9 @@ impl Daemon {
             return;
         }
         if open {
+            // The control center hangs from the same corner of the bar: it
+            // goes when the history comes (and the other way about).
+            ipc::tell("enso-ctl", "close");
             // Whatever was showing is in the history, where it is about to
             // be read.
             for id in self.stack.clear() {
@@ -452,9 +448,9 @@ impl Daemon {
         if let Some(hot) = self.buttons.iter().find(|hot| hot.rect.contains(x, y)) {
             return Some((hot.id, Some(&hot.key)));
         }
-        let inside = x >= MARGIN && x < MARGIN + self.config.width as f32;
+        let inside = x >= SHADOW && x < SHADOW + self.config.width as f32;
         self.stack
-            .hit(y - MARGIN / 2.0, now)
+            .hit(y - self.top, now)
             .filter(|_| inside)
             .map(|id| (id, None))
     }
@@ -476,8 +472,8 @@ impl Daemon {
             ((1.0 - presence) * TRAVEL, 0.0)
         };
         let card = Rect::new(
-            MARGIN + dx,
-            MARGIN / 2.0 + toast.y(now) + dy,
+            SHADOW + dx,
+            self.top + toast.y(now) + dy,
             self.config.width as f32,
             toast.height,
         );
@@ -576,7 +572,7 @@ impl App for Daemon {
 
     fn surface(&self) -> SurfaceSpec {
         SurfaceSpec {
-            width: self.config.width + 2 * MARGIN as u32,
+            width: self.config.width + (SHADOW + EDGE) as u32,
             height: 1,
             // Nothing to show until the first notification arrives.
             visible: false,
@@ -754,7 +750,7 @@ impl App for Daemon {
                 accent: self.ctx.accent(),
                 size: self.ctx.config.appearance.font_size,
                 width: self.config.width as f32,
-                origin: (MARGIN, MARGIN / 2.0),
+                origin: (SHADOW, self.top),
             };
             return Paint::when(self.center.draw(canvas, &look, now));
         }
@@ -781,6 +777,24 @@ mod tests {
         Daemon::new(ctx, NotifyConfig::default(), Arc::default())
     }
 
+    /// Toasts and the history line up with the bar: the same gap to the
+    /// side of the screen as its islands and the control center, and hung
+    /// as far below the bar as the control center is.
+    #[test]
+    fn cards_line_up_with_the_bar() {
+        let daemon = daemon();
+        let surface = daemon.surface().width as f32;
+        let card = daemon.center.card_at_rest(&daemon.look());
+        assert_eq!(surface - card.right(), edge::SCREEN);
+        assert_eq!(card.y, edge::BELOW_BAR);
+
+        // With the bar at the bottom, there is the screen's edge above.
+        let mut ctx = Context::load_from(Paths::rooted("/nonexistent/enso-notify-test"));
+        ctx.config = enso_core::Config::parse("[bar]\nposition = \"bottom\"\n", "test").unwrap();
+        let low = Daemon::new(ctx, NotifyConfig::default(), Arc::default());
+        assert_eq!(low.top, edge::SCREEN);
+    }
+
     /// Push `notes` with the heights the daemon would give them (bodies
     /// taken as `lines` lines each) and draw the stack at rest.
     fn render(daemon: &mut Daemon, notes: Vec<(Notification, usize)>) -> Offscreen {
@@ -791,7 +805,7 @@ mod tests {
             let height = daemon.card_height(&note, body);
             daemon.stack.push(note, height, t0);
         }
-        let height = daemon.stack.height(t0) as u32 + 2 * MARGIN as u32;
+        let height = (daemon.stack.height(t0) + daemon.top + SHADOW) as u32;
         let settled = t0 + Duration::from_secs(1);
         Offscreen::render(&mut text, (392, height), 2, |canvas| {
             daemon.draw(canvas, settled);
@@ -866,7 +880,7 @@ mod tests {
         daemon.center.open(t0);
 
         let mut text = TextEngine::new(&daemon.ctx.config.appearance);
-        let height = daemon.center.full_height() as u32 + 2 * MARGIN as u32;
+        let height = (daemon.center.full_height() + daemon.top + SHADOW) as u32;
         let snapshot = |name: &str, frame: &Offscreen| {
             frame
                 .save_png(format!(
@@ -988,7 +1002,7 @@ mod tests {
         // The picture is drawn where the text column would otherwise start,
         // each half in its own colour.
         let at = |x: f32, y: f32| frame.pixel((x * 2.0) as u32, (y * 2.0) as u32);
-        let (left, top) = (MARGIN + PAD, MARGIN / 2.0 + PAD);
+        let (left, top) = (SHADOW + PAD, daemon.top + PAD);
         assert_eq!(at(left + 10.0, top + 20.0), [235, 111, 146, 255]);
         assert_eq!(at(left + 30.0, top + 20.0), [62, 143, 176, 255]);
 
@@ -1000,7 +1014,7 @@ mod tests {
         assert_eq!(reply.y, read.y);
         assert!(reply.right() < read.x);
         let first = &daemon.stack.toasts()[0];
-        assert!(reply.bottom() <= MARGIN / 2.0 + first.height - PAD + 0.5);
+        assert!(reply.bottom() <= daemon.top + first.height - PAD + 0.5);
 
         // Clicks: a button, the toast around it, the gap, the margin.
         let now = Instant::now() + Duration::from_secs(1);
@@ -1008,7 +1022,7 @@ mod tests {
         assert_eq!(daemon.target(bx, by, now), Some((1, Some("reply"))));
         assert_eq!(daemon.target(left, top, now), Some((1, None)));
         assert_eq!(daemon.target(2.0, top, now), None);
-        let second_top = MARGIN / 2.0 + first.height + 10.0;
+        let second_top = daemon.top + first.height + 10.0;
         assert_eq!(daemon.target(left, second_top - 5.0, now), None);
         assert_eq!(daemon.target(left, second_top + 5.0, now), Some((2, None)));
 
@@ -1078,7 +1092,7 @@ mod tests {
             daemon.stack.push(note, height, t0);
         }
 
-        let height = daemon.stack.height(t0) as u32 + 2 * MARGIN as u32;
+        let height = (daemon.stack.height(t0) + daemon.top + SHADOW) as u32;
         let settled = t0 + Duration::from_secs(1);
         let frame = Offscreen::render(&mut text, (392, height), 2, |canvas| {
             assert_eq!(daemon.draw(canvas, t0), Paint::Animating);
@@ -1087,7 +1101,7 @@ mod tests {
         });
 
         let surface = daemon.ctx.theme.colors.surface;
-        let inside = frame.pixel((MARGIN as u32 + 6) * 2, (MARGIN as u32 / 2 + 50) * 2);
+        let inside = frame.pixel((SHADOW as u32 + 6) * 2, (daemon.top as u32 + 50) * 2);
         assert_eq!(inside, [surface.r, surface.g, surface.b, 255]);
         frame
             .save_png(concat!(

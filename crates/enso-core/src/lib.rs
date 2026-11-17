@@ -16,6 +16,7 @@
 
 pub mod color;
 pub mod config;
+pub mod ipc;
 pub mod motion;
 pub mod notices;
 pub mod palette;

@@ -10,6 +10,8 @@
 //! - **GTK** is told dark or light through dconf, which is also what the
 //!   settings portal hands to Qt 6, Firefox, and Electron; its palette is a
 //!   generated stylesheet to import.
+//! - **Fonts**, when families are named, go to fontconfig through a
+//!   generated `fonts.conf` to include, and to GTK through dconf.
 //! - **The cursor**, when one is chosen, goes to GTK through dconf and to
 //!   whatever asks for no theme through the `default` one; Niri has it in
 //!   `niri.kdl`, and passes it on to what it starts.
@@ -26,6 +28,7 @@ mod alacritty;
 pub mod cursor;
 mod firefox;
 mod flatpak;
+mod fonts;
 mod gtk;
 mod keyfile;
 mod neovim;
@@ -52,6 +55,7 @@ pub enum Place {
     Alacritty,
     Neovim,
     Gtk,
+    Fonts,
     Cursor,
     Firefox,
     Qt,
@@ -61,11 +65,12 @@ pub enum Place {
 impl Place {
     /// Every place, in the order they are applied: Flatpak passes on what
     /// GTK was given, so it comes after.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Niri,
         Self::Alacritty,
         Self::Neovim,
         Self::Gtk,
+        Self::Fonts,
         Self::Cursor,
         Self::Firefox,
         Self::Qt,
@@ -79,6 +84,7 @@ impl Place {
             Self::Alacritty => "alacritty",
             Self::Neovim => "neovim",
             Self::Gtk => "gtk",
+            Self::Fonts => "fonts",
             Self::Cursor => "cursor",
             Self::Firefox => "firefox",
             Self::Qt => "qt",
@@ -92,6 +98,7 @@ impl Place {
             Self::Alacritty => alacritty::apply(job),
             Self::Neovim => neovim::apply(job),
             Self::Gtk => gtk::apply(job),
+            Self::Fonts => fonts::apply(job),
             Self::Cursor => cursor::apply(job),
             Self::Firefox => firefox::apply(job),
             Self::Qt => qt::apply(job),
