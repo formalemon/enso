@@ -946,6 +946,10 @@ impl Files {
         }
         match event {
             PointerEvent::Enter { x, y } | PointerEvent::Move { x, y } => {
+                if self.drag_band(x, y, now) {
+                    cx.redraw();
+                    return;
+                }
                 if self.sidebar.is_dragging() {
                     if self.sidebar.drag(x) {
                         cx.redraw();
@@ -1011,6 +1015,9 @@ impl Files {
                 cx.redraw();
             }
             PointerEvent::Release { .. } => {
+                if self.end_band() {
+                    cx.redraw();
+                }
                 if self.sidebar.is_dragging() || self.scroll.is_dragging() {
                     self.sidebar.release();
                     self.scroll.release();
@@ -1154,8 +1161,14 @@ impl Files {
                 }
             }
             Some(Hit::Empty) => {
-                if !mods.ctrl && !mods.shift {
+                let single = self
+                    .picker
+                    .as_ref()
+                    .is_some_and(|picker| !picker.request.multiple());
+                if single {
                     self.selection.clear_in(self.pane.location());
+                } else {
+                    self.begin_band(x, y, mods.ctrl, now);
                 }
             }
             Some(Hit::Crumb(path) | Hit::Place(path)) => self.navigate(path),

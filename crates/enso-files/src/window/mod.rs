@@ -8,6 +8,7 @@
 //! ([`input`]) asks "what is under me" of the last frame instead of laying
 //! everything out again.
 
+mod band;
 mod draw;
 mod grid;
 mod input;
@@ -237,6 +238,8 @@ pub struct Files {
     zoom: usize,
     thumbs: grid::Thumbs,
     thumbnailer: Option<crate::jobs::Thumbnailer>,
+    /// A box being dragged to choose with.
+    band: Option<band::Band>,
     /// The preview pane, and the quick look.
     previewing: bool,
     peek: bool,
@@ -302,6 +305,7 @@ impl Files {
             zoom: grid::ZOOM,
             thumbs: grid::Thumbs::default(),
             thumbnailer: None,
+            band: None,
             previewing: false,
             peek: false,
             shown: preview::Shown::default(),

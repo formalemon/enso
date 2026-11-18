@@ -63,14 +63,14 @@ impl Thumbs {
 }
 
 impl Files {
-    fn cell(&self) -> (f32, f32) {
+    pub(super) fn tile(&self) -> (f32, f32) {
         let zoom = ZOOMS[self.zoom];
         (zoom + 24.0, zoom + 56.0)
     }
 
     /// Tiles across.
     pub(super) fn columns(&self) -> usize {
-        let (width, _) = self.cell();
+        let (width, _) = self.tile();
         (((self.list.w - 2.0 * space::LG) / width).floor() as usize).max(1)
     }
 
@@ -80,7 +80,7 @@ impl Files {
         match self.config.view {
             View::List => (index as f32 * self.row_height(), self.row_height()),
             View::Grid => {
-                let (_, height) = self.cell();
+                let (_, height) = self.tile();
                 ((index / self.columns()) as f32 * height + space::SM, height)
             }
         }
@@ -113,7 +113,7 @@ impl Files {
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let small = self.font(type_scale::SMALL);
-        let (cell_w, cell_h) = self.cell();
+        let (cell_w, cell_h) = self.tile();
         let columns = self.columns();
         let rows = self.pane.len().div_ceil(columns);
         self.scroll

@@ -61,6 +61,7 @@ impl Files {
             list
         };
         animating |= self.draw_list(canvas, list, now);
+        self.draw_band(canvas, now);
         if let Some(bar) = bar {
             self.draw_bar(canvas, bar);
         }
@@ -1492,6 +1493,30 @@ mod tests {
         files.peek = true;
         snapshot(&render(&mut files, (1000, 600)), "enso-files-peek");
         assert!(files.hits.is_empty(), "the quick look takes every click");
+    }
+
+    #[test]
+    fn a_dragged_box_chooses_what_it_touches() {
+        let mut files = files();
+        render(&mut files, (900, 520));
+        let now = Instant::now();
+        let list = files.list;
+        let row = files.row_height();
+        // From the empty space below the rows, up over the last three.
+        files.begin_band(list.x + 300.0, list.bottom() - 4.0, false, now);
+        assert!(files.drag_band(list.x + 40.0, list.y + row * 6.5, now));
+        let chosen: Vec<String> = files
+            .selection
+            .paths()
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(chosen, ["Cargo.toml", "photo.png", "README.md"]);
+        // Smaller again: only what it still touches.
+        files.drag_band(list.x + 40.0, list.y + row * 8.5, now);
+        assert_eq!(files.selection.len(), 1);
+        assert!(files.end_band());
+        assert!(!files.end_band());
     }
 
     #[test]
