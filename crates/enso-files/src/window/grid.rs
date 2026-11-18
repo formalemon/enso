@@ -139,7 +139,9 @@ impl Files {
                 let path = self.pane.path(index);
                 let entry = *self.pane.entry(index);
                 let selected = self.selection.contains(&path);
-                if cursor == Some(index) {
+                if cursor == Some(index) && self.behind {
+                    canvas.stroke(tile, radius::CARD, 1.0, colors.highlight_high);
+                } else if cursor == Some(index) {
                     canvas.fill(tile, radius::CARD, accent.alpha(opacity::TINT));
                     canvas.stroke(tile, radius::CARD, 1.5, accent.alpha(0.6));
                 } else if selected {

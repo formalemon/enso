@@ -95,6 +95,14 @@ pub struct Pane {
     remembered: HashMap<PathBuf, Vec<u8>>,
 }
 
+/// A number for each listing asked for, never the same twice in this
+/// process: with several tabs, a listing's number says whose it is.
+fn next_generation() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Pane {
     /// A pane about to show `location`; load it with the returned request.
     pub fn new(location: PathBuf, sort: Sort, hidden: bool) -> (Self, Request) {
@@ -253,7 +261,7 @@ impl Pane {
     /// Read the same folder again, keeping the cursor where it is.
     pub fn reload(&mut self) -> Request {
         self.want = self.cursor_name();
-        self.generation += 1;
+        self.generation = next_generation();
         self.statted = 0;
         Request {
             path: self.location.clone(),
@@ -275,7 +283,7 @@ impl Pane {
         self.shown.clear();
         self.cursor = 0;
         self.load = Load::Loading;
-        self.generation += 1;
+        self.generation = next_generation();
         self.statted = 0;
         Request {
             path: self.location.clone(),

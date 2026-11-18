@@ -16,7 +16,7 @@ use enso_ui::{
     widget::{Button, Interaction, Kind, controls, field},
 };
 
-use super::{Files, Hit, preview};
+use super::{Files, Hit, preview, tabs};
 use crate::{pane::Load, pick::Choice, picker::Under};
 
 pub(super) const TITLE_HEIGHT: f32 = 52.0;
@@ -52,29 +52,15 @@ impl Files {
         } else {
             body
         };
-        // The preview pane, where there's room for it beside the list (the
-        // columns have their own).
-        let columns = self.config.view == crate::config::View::Columns;
-        let list = if self.previewing && !columns && list.w > preview::PANE * 2.0 {
-            let pane = Rect::new(list.right() - preview::PANE, list.y, preview::PANE, list.h);
-            self.draw_preview(canvas, pane);
-            Rect::new(list.x, list.y, list.w - preview::PANE, list.h)
+        // More than one tab: their strip along the top.
+        let list = if self.tabs.len() > 1 {
+            let strip = Rect::new(list.x, list.y, list.w, tabs::STRIP);
+            self.draw_tabs(canvas, strip);
+            Rect::new(list.x, strip.bottom(), list.w, list.h - tabs::STRIP)
         } else {
             list
         };
-        // A folder just arrived slides in the way we went, and fades up.
-        let arrival = self.arrival.get(now);
-        let shifted = list.translate((1.0 - arrival) * 18.0 * self.sliding, 0.0);
-        let columns_view = self.config.view == crate::config::View::Columns && list.w > 640.0;
-        canvas.with_opacity(0.35 + 0.65 * arrival, |canvas| {
-            animating |= if columns_view {
-                self.draw_columns(canvas, shifted, now)
-            } else {
-                self.draw_list(canvas, shifted, now)
-            };
-        });
-        animating |= self.arrival.is_animating(now);
-        self.draw_band(canvas, now);
+        animating |= self.draw_split(canvas, list, now);
         if let Some(bar) = bar {
             self.draw_bar(canvas, bar);
         }
@@ -95,6 +81,44 @@ impl Files {
             self.draw_help(canvas, bounds);
         }
         Paint::when(animating)
+    }
+
+    /// A folder's part of the window: its list (or grid, or columns), and
+    /// the preview pane beside it when that's open and this is the side in
+    /// `front`. Returns whether anything is moving.
+    pub(super) fn draw_body(
+        &mut self,
+        canvas: &mut Canvas<'_>,
+        list: Rect,
+        now: Instant,
+        front: bool,
+    ) -> bool {
+        // The preview pane, where there's room for it beside the list (the
+        // columns have their own).
+        let columns = self.config.view == crate::config::View::Columns;
+        let list = if front && self.previewing && !columns && list.w > preview::PANE * 2.0 {
+            let pane = Rect::new(list.right() - preview::PANE, list.y, preview::PANE, list.h);
+            self.draw_preview(canvas, pane);
+            Rect::new(list.x, list.y, list.w - preview::PANE, list.h)
+        } else {
+            list
+        };
+        // A folder just arrived slides in the way we went, and fades up.
+        let arrival = self.arrival.get(now);
+        let shifted = list.translate((1.0 - arrival) * 18.0 * self.sliding, 0.0);
+        let columns_view = columns && list.w > 640.0;
+        let mut animating = false;
+        self.behind = !front;
+        canvas.with_opacity(0.35 + 0.65 * arrival, |canvas| {
+            animating = if columns_view {
+                self.draw_columns(canvas, shifted, now)
+            } else {
+                self.draw_list(canvas, shifted, now)
+            };
+        });
+        self.behind = false;
+        self.draw_band(canvas, now);
+        animating || self.arrival.is_animating(now)
     }
 
     fn draw_title(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
@@ -241,6 +265,10 @@ impl Files {
             ("Ctrl+L", "type a location"),
             ("i  ·  Shift+Space", "preview · quick look"),
             ("Ctrl+1 · 2 · 3", "list · grid · columns"),
+            ("Ctrl+T  ·  Ctrl+W", "new tab · close it"),
+            ("Ctrl+Tab  ·  Alt+1…9", "next tab · tab by number"),
+            ("F3  ·  Tab", "split view · the other side"),
+            ("F5  ·  F6", "copy · move across"),
             ("Ctrl+=  ·  Ctrl+−", "bigger · smaller tiles"),
             ("Ctrl+H  ·  .", "dotfiles"),
             ("~  ·  g h", "home"),
@@ -461,16 +489,26 @@ impl Files {
                     list.w - space::SM * 2.0,
                     row_height - 2.0,
                 );
-                canvas.fill(rect, radius::CONTROL, accent.alpha(opacity::TINT));
-                canvas.pill(
-                    Rect::new(
-                        rect.x + space::XS,
-                        rect.y + rect.h * 0.25,
-                        3.0,
-                        rect.h * 0.5,
-                    ),
-                    accent,
-                );
+                if self.behind {
+                    // The split's other side: where its cursor is, quietly.
+                    canvas.stroke(
+                        rect,
+                        radius::CONTROL,
+                        stroke::HAIRLINE,
+                        colors.highlight_high,
+                    );
+                } else {
+                    canvas.fill(rect, radius::CONTROL, accent.alpha(opacity::TINT));
+                    canvas.pill(
+                        Rect::new(
+                            rect.x + space::XS,
+                            rect.y + rect.h * 0.25,
+                            3.0,
+                            rect.h * 0.5,
+                        ),
+                        accent,
+                    );
+                }
             }
             for row in first..last {
                 let y = list.y + row as f32 * row_height - scroll;
@@ -1579,6 +1617,76 @@ mod tests {
         assert_eq!(sides.len(), 5, "{sides:?}");
         assert!(sides.contains(&&Hit::Side(root.join("dev/sumi"), false)));
         assert!(sides.contains(&&Hit::Side(here.join("crates/enso-ui"), true)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tabs_and_the_split() {
+        let root = std::env::temp_dir().join(format!("enso-files-tabs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["music/albums", "photos/2026", "photos/2025"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let now = Instant::now();
+        let mut files = Files::new(context(), FilesConfig::default(), root.join("music"));
+        files.places = Vec::new();
+        files.asked_git = true;
+        let first = files.pending.take().unwrap();
+        assert!(files.listed_now(
+            first.generation,
+            Ok(Listing::read(root.join("music")).unwrap()),
+            now
+        ));
+
+        // A second tab, behind: its listing finds it by its number.
+        assert!(files.new_tab(root.join("photos"), false));
+        assert_eq!((files.tabs.len(), files.active), (2, 0));
+        let generation = files.tabs[1].as_ref().unwrap().generation();
+        assert_ne!(
+            generation,
+            files.pane.generation(),
+            "numbers are never shared"
+        );
+        assert_eq!(files.tab_of(generation), Some(1));
+        let photos = Listing::read(root.join("photos")).unwrap();
+        assert!(files.with_tab(1, |files| files.listed_now(generation, Ok(photos), now)));
+        assert_eq!(
+            files.pane.location(),
+            root.join("music"),
+            "the tab in front is untouched"
+        );
+
+        files.switch_tab(1);
+        assert_eq!(files.pane.location(), root.join("photos"));
+        assert_eq!(files.pane.len(), 2);
+        assert_eq!(files.tab_location(0), root.join("music"));
+
+        // Side by side: the other side's rows answer as the other side's.
+        files.toggle_split();
+        assert_eq!(files.split, Some(0));
+        let frame = render(&mut files, (1100, 420));
+        snapshot(&frame, "enso-files-split");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Tabs(_)))
+        );
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Other(inner) if **inner == Hit::Row(0)))
+        );
+        files.other_side();
+        assert_eq!((files.active, files.split), (0, Some(1)));
+        assert_eq!(files.pane.location(), root.join("music"));
+
+        // Closing the one in front leaves the other, and no split.
+        assert!(files.close_tab(0));
+        assert_eq!((files.tabs.len(), files.active, files.split), (1, 0, None));
+        assert_eq!(files.pane.location(), root.join("photos"));
+        assert!(!files.close_tab(0), "the last tab is the window");
         std::fs::remove_dir_all(root).unwrap();
     }
 

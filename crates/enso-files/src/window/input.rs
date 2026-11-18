@@ -14,7 +14,7 @@ use enso_ui::{
     widget::{Item, Menu, TextField, field, menu},
 };
 
-use super::{Action, Files, Hit, MenuFor};
+use super::{Action, Files, Hit, MenuFor, tabs};
 use crate::{location, pane::Open, pick::Choice, picker::Under};
 
 /// Rows a wheel notch scrolls.
@@ -680,6 +680,59 @@ impl Files {
                 }
                 false
             }
+            Key::Enter if mods.ctrl && !mods.shift => {
+                // A folder, in a new tab behind this one.
+                if let Some(Open::Dir(path)) = self.pane.open() {
+                    self.open_tab(path, false, cx);
+                }
+                false
+            }
+            Key::Char('t') if mods.ctrl => {
+                let here = self.pane.location().to_owned();
+                self.open_tab(here, true, cx);
+                false
+            }
+            Key::Tab if mods.ctrl => {
+                self.step_tab(if mods.shift { -1 } else { 1 });
+                false
+            }
+            Key::PageDown if mods.ctrl => {
+                self.step_tab(1);
+                false
+            }
+            Key::PageUp if mods.ctrl => {
+                self.step_tab(-1);
+                false
+            }
+            Key::Char(digit @ '1'..='9') if mods.alt => {
+                let index = (digit as usize - '1' as usize).min(self.tabs.len() - 1);
+                // Alt+9 is always the last, as in browsers.
+                self.switch_tab(if digit == '9' {
+                    self.tabs.len() - 1
+                } else {
+                    index
+                });
+                false
+            }
+            Key::F(3) => {
+                self.toggle_split();
+                false
+            }
+            Key::F(5) if self.split.is_some() => {
+                self.send_across(false, cx);
+                false
+            }
+            Key::F(6) if self.split.is_some() => {
+                self.send_across(true, cx);
+                false
+            }
+            Key::Tab
+                if self.split.is_some()
+                    && self.picker.as_ref().is_none_or(|p| p.name.is_none()) =>
+            {
+                self.other_side();
+                false
+            }
             Key::Enter | Key::Right | Key::Char('l') if !mods.alt && !mods.ctrl => {
                 // Right and l only go into folders; they never open files.
                 if key.key == Key::Enter || matches!(self.pane.open(), Some(Open::Dir(_))) {
@@ -888,6 +941,10 @@ impl Files {
                 self.terminal_here(cx);
                 return;
             }
+            Key::Char('w') if mods.ctrl && self.tabs.len() > 1 => {
+                self.close_tab(self.active);
+                false
+            }
             Key::Char('q' | 'w') if mods.ctrl => {
                 self.cancel(cx);
                 return;
@@ -1030,6 +1087,13 @@ impl Files {
                 x, y, dy, wheel, ..
             } => {
                 if !self.list.contains(x, y) {
+                    // The split's other side scrolls where it is.
+                    if let Some(other) = self.split
+                        && self.split_rect.contains(x, y)
+                    {
+                        self.with_tab(other, |files| files.wheel(dy, wheel, now));
+                        cx.redraw();
+                    }
                     return;
                 }
                 // Ctrl and the wheel: the grid's tiles grow and shrink.
@@ -1041,17 +1105,22 @@ impl Files {
                     }
                     return;
                 }
-                let (_, height) = self.span_of(0);
-                let step = if self.config.view == crate::config::View::Grid {
-                    height
-                } else {
-                    WHEEL_ROWS * height
-                };
-                self.scroll
-                    .scroll(dy, wheel, step, self.transition(Transition::SELECT), now);
+                self.wheel(dy, wheel, now);
                 cx.redraw();
             }
         }
+    }
+
+    /// The wheel over the list: scroll it.
+    fn wheel(&mut self, dy: f32, wheel: bool, now: Instant) {
+        let (_, height) = self.span_of(0);
+        let step = if self.config.view == crate::config::View::Grid {
+            height
+        } else {
+            WHEEL_ROWS * height
+        };
+        self.scroll
+            .scroll(dy, wheel, step, self.transition(Transition::SELECT), now);
     }
 
     fn press(&mut self, x: f32, y: f32, button: Button, clicks: u8, cx: &mut Cx<'_>, now: Instant) {
@@ -1061,6 +1130,14 @@ impl Files {
             return;
         }
         let hit = self.hit(x, y);
+        // The split's other side comes in front; the press is then its.
+        let hit = match hit {
+            Some(Hit::Other(inner)) if self.settings.is_none() && self.vcs.is_none() => {
+                self.other_side();
+                Some(*inner)
+            }
+            hit => hit,
+        };
         if self.settings_press(hit.as_ref(), cx)
             || self.vcs_press(hit.as_ref(), cx)
             || self.ops_press(hit.as_ref(), cx)
@@ -1122,10 +1199,27 @@ impl Files {
             return;
         }
         if button == Button::Middle {
+            // A folder opens in a new tab; a tab closes.
+            match hit {
+                Some(Hit::Row(row)) if self.pane.entry(row).kind.is_dir() => {
+                    let path = self.pane.path(row);
+                    self.open_tab(path, false, cx);
+                }
+                Some(Hit::Tabs(tabs::TabHit::Tab(index))) => {
+                    self.close_tab(index);
+                }
+                _ => {}
+            }
             return;
         }
         let mods = cx.mods();
         match hit {
+            // Unwrapped above; a nested one is nothing.
+            Some(Hit::Other(_)) => {}
+            Some(Hit::Tabs(tabs::TabHit::Tab(index))) => self.switch_tab(index),
+            Some(Hit::Tabs(tabs::TabHit::Close(index))) => {
+                self.close_tab(index);
+            }
             Some(Hit::SidebarEdge) => {
                 self.sidebar.press(x);
             }

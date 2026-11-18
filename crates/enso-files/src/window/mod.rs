@@ -17,6 +17,7 @@ mod ops;
 mod preview;
 mod settings;
 mod sidebar;
+mod tabs;
 mod vcs;
 
 use std::{
@@ -102,6 +103,10 @@ enum Hit {
     Setting(usize),
     SortPill(crate::config::SortBy),
     ViewPill(crate::config::View),
+    /// The tab strip.
+    Tabs(tabs::TabHit),
+    /// Something on the split's other side: it comes in front first.
+    Other(Box<Hit>),
     /// The name being saved as, whose text starts at this `x`.
     Name(f32),
     FilterMenu,
@@ -259,6 +264,15 @@ pub struct Files {
     peek: bool,
     shown: preview::Shown,
     previewer: Option<crate::jobs::Previewer>,
+    /// The tabs, in order: `None` is the one in front, whose folder is the
+    /// window's own; the rest are parked.
+    tabs: Vec<Option<tabs::Tab>>,
+    active: usize,
+    /// The tab on the split's other side, and where it was drawn.
+    split: Option<usize>,
+    split_rect: Rect,
+    /// Drawing the split's other side.
+    behind: bool,
 }
 
 impl Files {
@@ -329,6 +343,11 @@ impl Files {
             peek: false,
             shown: preview::Shown::default(),
             previewer: None,
+            tabs: vec![None],
+            active: 0,
+            split: None,
+            split_rect: Rect::default(),
+            behind: false,
         }
     }
 
@@ -637,6 +656,57 @@ impl Files {
 }
 
 impl Files {
+    /// A listing arrived for the tab in front. Returns whether it was the
+    /// one waited for.
+    fn listed_now(
+        &mut self,
+        generation: u64,
+        result: Result<enso_fs::list::Listing, String>,
+        now: Instant,
+    ) -> bool {
+        if !self.pane.set_listing(generation, result) {
+            return false;
+        }
+        self.follow(generation);
+        self.listed();
+        // The side columns read again, in case they changed too.
+        self.side_parent = columns::Side::default();
+        self.side_child = columns::Side::default();
+        // A new folder arrives sliding the way we went.
+        if std::mem::take(&mut self.slide_pending) && self.sliding != 0.0 {
+            self.arrival.jump(0.0);
+            self.arrival
+                .set(1.0, self.transition(Transition::SELECT), now);
+        }
+        self.refresh_git(generation);
+        self.maybe_ask_git();
+        // Landing on a remembered row: be there, don't glide.
+        if let Some(row) = self.pane.cursor() {
+            let (top, height) = self.span_of(row);
+            self.highlight.jump(top);
+            let (_, last) = self.span_of(self.pane.len().saturating_sub(1));
+            self.scroll.set_extent(last + height, self.list.h);
+            self.scroll.reveal(top, height, Transition::INSTANT, now);
+        }
+        true
+    }
+
+    /// The folder in front changed on disk, or went away.
+    fn changed(&mut self, gone: bool) {
+        if gone {
+            self.watch = None;
+            // Up to the nearest folder that's still there.
+            let mut up = self.pane.location().to_owned();
+            while !up.is_dir() && up.pop() {}
+            self.navigate(up);
+        } else {
+            let request = self.pane.reload();
+            if let Some(proxy) = &self.proxy {
+                self.loader.load(request, proxy);
+            }
+        }
+    }
+
     /// Watch the folder just listed, so it updates as it changes.
     fn follow(&mut self, generation: u64) {
         // The old watch stops as it's replaced.
@@ -731,28 +801,10 @@ impl App for Files {
         let location = self.pane.location().to_owned();
         match event {
             Event::Message(Message::Listed { generation, result }) => {
-                if self.pane.set_listing(generation, result) {
-                    self.follow(generation);
-                    self.listed();
-                    // The side columns read again, in case they changed too.
-                    self.side_parent = columns::Side::default();
-                    self.side_child = columns::Side::default();
-                    // A new folder arrives sliding the way we went.
-                    if std::mem::take(&mut self.slide_pending) && self.sliding != 0.0 {
-                        self.arrival.jump(0.0);
-                        self.arrival
-                            .set(1.0, self.transition(Transition::SELECT), now);
-                    }
-                    self.refresh_git(generation);
-                    self.maybe_ask_git();
-                    // Landing on a remembered row: be there, don't glide.
-                    if let Some(row) = self.pane.cursor() {
-                        let (top, height) = self.span_of(row);
-                        self.highlight.jump(top);
-                        let (_, last) = self.span_of(self.pane.len().saturating_sub(1));
-                        self.scroll.set_extent(last + height, self.list.h);
-                        self.scroll.reveal(top, height, Transition::INSTANT, now);
-                    }
+                // Whichever tab asked for it, in front or not.
+                if let Some(tab) = self.tab_of(generation)
+                    && self.with_tab(tab, |files| files.listed_now(generation, result, now))
+                {
                     cx.redraw();
                 }
             }
@@ -761,36 +813,36 @@ impl App for Files {
                 start,
                 metas,
             }) => {
-                if self.pane.apply_stats(generation, start, &metas) {
+                if let Some(tab) = self.tab_of(generation)
+                    && self.with_tab(tab, |files| {
+                        files.pane.apply_stats(generation, start, &metas)
+                    })
+                {
                     cx.redraw();
                 }
             }
             Event::Message(Message::Changed { generation, gone }) => {
-                if generation == self.pane.generation() {
-                    if gone {
-                        self.watch = None;
-                        // Up to the nearest folder that's still there.
-                        let mut up = self.pane.location().to_owned();
-                        while !up.is_dir() && up.pop() {}
-                        self.navigate(up);
-                    } else {
-                        let request = self.pane.reload();
-                        if let Some(proxy) = &self.proxy {
-                            self.loader.load(request, proxy);
-                        }
-                    }
+                if let Some(tab) = self.tab_of(generation) {
+                    self.with_tab(tab, |files| files.changed(gone));
                 }
             }
             Event::Message(Message::Git { generation, status }) => {
-                self.git_arrived(generation, status, cx);
+                if let Some(tab) = self.tab_of(generation) {
+                    self.with_tab(tab, |files| files.git_arrived(generation, status, cx));
+                }
             }
             Event::Message(Message::Preview { path, preview }) => {
                 self.preview_arrived(path, preview);
                 cx.redraw();
             }
             Event::Message(Message::Thumb { path, thumb }) => {
-                if path.parent() == Some(self.pane.location()) {
-                    self.thumbs.arrived(path, thumb);
+                let tabs = path
+                    .parent()
+                    .map(|folder| self.tabs_at(folder))
+                    .unwrap_or_default();
+                for tab in tabs {
+                    let (path, thumb) = (path.clone(), thumb.clone());
+                    self.with_tab(tab, |files| files.thumbs.arrived(path, thumb));
                     cx.redraw();
                 }
             }
