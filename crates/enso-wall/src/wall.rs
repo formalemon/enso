@@ -297,12 +297,7 @@ mod tests {
         assert_eq!(paint, Paint::Idle);
         assert!(wall.fitted.is_empty() && wall.previous.is_none());
 
-        frame
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/wall.png"
-            ))
-            .unwrap();
+        frame.snapshot(env!("CARGO_MANIFEST_DIR"), "wall");
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -10,7 +10,7 @@ use enso_core::{
     Rgba,
     style::{icon, opacity, radius, space, stroke, type_scale},
 };
-use enso_fs::{format, places};
+use enso_fs::format;
 use enso_ui::{
     Align, Canvas, Paint, Rect, Text,
     widget::{Button, Form, Interaction, Kind, Part, controls, field},
@@ -511,7 +511,7 @@ impl Files {
         let scroll = self.scroll.get(now);
         let first = (scroll / row_height).floor().max(0.0) as usize;
         let last = (((scroll + list.h) / row_height).ceil() as usize).min(self.pane.len());
-        let zone = jiff::Zoned::now();
+        let zone = (self.machine.now)();
         let cursor = self.pane.cursor();
         let highlight = self.highlight.get(now);
         let chosen = colors.iris;
@@ -983,7 +983,7 @@ impl Files {
             self.hits.push((rect, Hit::EmptyTrash));
         } else if self.draw_running(canvas, inner) {
             // The job in hand says more than the free space.
-        } else if let Ok(space) = places::space(self.pane.location()) {
+        } else if let Ok(space) = (self.machine.space)(self.pane.location()) {
             let free = format!("{} free", format::size(space.free));
             canvas.text_in(&Text::new(&free, small, colors.subtle), inner, Align::End);
         }

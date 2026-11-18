@@ -16,6 +16,7 @@ mod dnd;
 mod draw;
 mod grid;
 mod input;
+mod machine;
 mod ops;
 mod overlay;
 mod palette;
@@ -253,6 +254,8 @@ pub struct Files {
     picker: Option<Picker>,
     /// What's over the window, if anything: one thing at a time.
     overlay: Option<Overlay>,
+    /// The time, the disks, the trash: asked of the machine.
+    machine: machine::Machine,
     /// The location as text (`Ctrl+L`), while it's being typed, and
     /// whether Enter found nothing there.
     location: Option<TextField>,
@@ -367,6 +370,7 @@ impl Files {
             sidebar_open: true,
             picker: None,
             overlay: None,
+            machine: machine::Machine::real(),
             location: None,
             location_missing: false,
             watch: None,

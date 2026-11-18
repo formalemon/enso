@@ -873,12 +873,7 @@ mod tests {
         let mut text = TextEngine::new(&daemon.ctx.config.appearance);
         let height = (daemon.center.full_height() + daemon.top + SHADOW) as u32;
         let snapshot = |name: &str, frame: &Offscreen| {
-            frame
-                .save_png(format!(
-                    "{}/../../target/snapshots/{name}.png",
-                    env!("CARGO_MANIFEST_DIR")
-                ))
-                .unwrap();
+            frame.snapshot(env!("CARGO_MANIFEST_DIR"), name);
         };
         let mut frame_at = |daemon: &mut Daemon, at: Instant| {
             let mut paint = Paint::Idle;
@@ -1031,12 +1026,7 @@ mod tests {
             at(left + inner * 0.8, bar_y),
             [track.r, track.g, track.b, 255]
         );
-        frame
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/notify-rich.png"
-            ))
-            .unwrap();
+        frame.snapshot(env!("CARGO_MANIFEST_DIR"), "notify-rich");
     }
 
     #[test]
@@ -1094,11 +1084,6 @@ mod tests {
         let surface = daemon.ctx.theme.colors.surface;
         let inside = frame.pixel((SHADOW as u32 + 6) * 2, (daemon.top as u32 + 50) * 2);
         assert_eq!(inside, [surface.r, surface.g, surface.b, 255]);
-        frame
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/notify.png"
-            ))
-            .unwrap();
+        frame.check(env!("CARGO_MANIFEST_DIR"), "notify");
     }
 }

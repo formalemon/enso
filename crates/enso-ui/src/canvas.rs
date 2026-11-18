@@ -688,4 +688,158 @@ impl Offscreen {
         }
         pixmap.save_png(path).map_err(std::io::Error::other)
     }
+
+    /// Write the image to the workspace's `target/snapshots/<name>.png`,
+    /// to look at. `crate_dir` is the calling crate's
+    /// `env!("CARGO_MANIFEST_DIR")`.
+    #[cfg(feature = "png")]
+    pub fn snapshot(&self, crate_dir: &str, name: &str) {
+        let path = std::path::Path::new(crate_dir)
+            .join("../../target/snapshots")
+            .join(format!("{name}.png"));
+        if let Err(err) = self.save_png(&path) {
+            panic!("can't write {}: {err}", path.display());
+        }
+    }
+
+    /// [`snapshot`](Self::snapshot), and then hold the image to the
+    /// crate's reference picture, `<crate_dir>/snapshots/<name>.png`:
+    /// panics if more than a sliver of it has changed, writing a picture
+    /// of where beside the snapshot. With `ENSO_BLESS=1` set, the image
+    /// becomes the reference instead.
+    #[cfg(feature = "png")]
+    pub fn check(&self, crate_dir: &str, name: &str) {
+        self.snapshot(crate_dir, name);
+        let reference = std::path::Path::new(crate_dir)
+            .join("snapshots")
+            .join(format!("{name}.png"));
+        if std::env::var_os("ENSO_BLESS").is_some_and(|value| value != "0") {
+            if let Err(err) = self.save_png(&reference) {
+                panic!("can't write {}: {err}", reference.display());
+            }
+            return;
+        }
+        let Ok(expected) = tiny_skia::Pixmap::load_png(&reference) else {
+            panic!(
+                "no reference picture for {name} ({}): run the tests with ENSO_BLESS=1 to make it",
+                reference.display()
+            );
+        };
+        let changed = snapshot::compare(self, expected.width(), expected.height(), expected.data());
+        if let Err(problem) = changed {
+            let diff = std::path::Path::new(crate_dir)
+                .join("../../target/snapshots")
+                .join(format!("{name}.diff.png"));
+            if let Some(marked) = snapshot::marked(self, expected.data()) {
+                let _ = marked.save_png(&diff);
+            }
+            panic!(
+                "{name} looks different: {problem}. Compare target/snapshots/{name}.png with \
+                 {} (changes marked in {name}.diff.png); if it's meant, run with ENSO_BLESS=1",
+                reference.display()
+            );
+        }
+    }
+}
+
+/// Holding an image to its reference.
+#[cfg(feature = "png")]
+mod snapshot {
+    use super::Offscreen;
+
+    /// How far a channel may drift before the pixel counts as changed: what
+    /// antialiasing and font hinting move, not what a change of colour does.
+    const DRIFT: u8 = 40;
+    /// How many pixels may change, in parts per ten thousand: enough for
+    /// a glyph's edge to land differently, not for a word to change size.
+    const CHANGED: usize = 5;
+
+    fn differs(a: &[u8], b: &[u8]) -> bool {
+        a.iter().zip(b).any(|(a, b)| a.abs_diff(*b) > DRIFT)
+    }
+
+    /// Whether `image` is close enough to the reference `expected`.
+    pub fn compare(
+        image: &Offscreen,
+        width: u32,
+        height: u32,
+        expected: &[u8],
+    ) -> Result<(), String> {
+        if (image.width, image.height) != (width, height) {
+            return Err(format!(
+                "it's {}×{} where it was {width}×{height}",
+                image.width, image.height
+            ));
+        }
+        let pixels = image.rgba.len() / 4;
+        let changed = image
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<4>().0)
+            .filter(|(a, b)| differs(*a, *b))
+            .count();
+        if changed * 10_000 > pixels * CHANGED {
+            return Err(format!("{changed} of {pixels} pixels changed"));
+        }
+        Ok(())
+    }
+
+    /// `image` faded, with the pixels that changed from `expected` in
+    /// magenta.
+    pub fn marked(image: &Offscreen, expected: &[u8]) -> Option<Offscreen> {
+        if image.rgba.len() != expected.len() {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity(image.rgba.len());
+        for (a, b) in image
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(expected.as_chunks::<4>().0)
+        {
+            if differs(a, b) {
+                rgba.extend_from_slice(&[255, 0, 255, 255]);
+            } else {
+                rgba.extend(a.iter().map(|channel| channel / 3));
+            }
+        }
+        Some(Offscreen {
+            width: image.width,
+            height: image.height,
+            rgba,
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn image(rgba: Vec<u8>) -> Offscreen {
+            Offscreen {
+                width: (rgba.len() / 4) as u32,
+                height: 1,
+                rgba,
+            }
+        }
+
+        #[test]
+        fn drift_is_forgiven_and_change_is_not() {
+            let reference = vec![100; 4 * 1000];
+            let mut drifted = reference.clone();
+            drifted[0] = 130;
+            assert!(compare(&image(drifted), 1000, 1, &reference).is_ok());
+            let mut changed = reference.clone();
+            for pixel in 0..1 {
+                changed[pixel * 4] = 250;
+            }
+            assert!(compare(&image(changed.clone()), 1000, 1, &reference).is_err());
+            assert!(compare(&image(reference.clone()), 999, 1, &reference).is_err());
+            let marked = marked(&image(changed), &reference).expect("same size");
+            assert_eq!(marked.pixel(0, 0), [255, 0, 255, 255]);
+            assert_eq!(marked.pixel(10, 0), [33, 33, 33, 33]);
+        }
+    }
 }

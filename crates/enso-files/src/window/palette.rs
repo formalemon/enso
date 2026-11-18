@@ -344,7 +344,7 @@ impl Files {
     /// Choose every row the query words admit. Returns how many.
     pub(super) fn choose_where(&mut self, words: &str) -> usize {
         let query = Query::parse(words);
-        let now = jiff::Timestamp::now().as_nanosecond() as i64;
+        let now = (self.machine.now)().timestamp().as_nanosecond() as i64;
         let mut chosen = 0;
         for row in 0..self.pane.len() {
             let entry = *self.pane.entry(row);

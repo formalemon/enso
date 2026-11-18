@@ -693,13 +693,16 @@ mod tests {
         (frame, paint)
     }
 
+    /// The pictures held to a reference in `snapshots/`; the rest are
+    /// only written, to look at.
+    const CHECKED: &[&str] = &["lock-typing"];
+
     fn snapshot(frame: &Offscreen, name: &str) {
-        frame
-            .save_png(format!(
-                "{}/../../target/snapshots/{name}.png",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .unwrap();
+        if CHECKED.contains(&name) {
+            frame.check(env!("CARGO_MANIFEST_DIR"), name);
+        } else {
+            frame.snapshot(env!("CARGO_MANIFEST_DIR"), name);
+        }
     }
 
     #[test]

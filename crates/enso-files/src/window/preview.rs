@@ -208,7 +208,7 @@ impl Files {
             .max_lines(3);
         let height = canvas.text(&title, area.x, area.y).h;
         let mut y = area.y + height + space::MD;
-        let zone = jiff::Zoned::now().time_zone().clone();
+        let zone = (self.machine.now)().time_zone().clone();
         let executable = entry.meta.is_some_and(|meta| meta.mode & 0o111 != 0);
         let kind = Kind::of(&name, entry.kind.is_dir(), executable);
         let mut rows: Vec<(&str, String)> = vec![("Kind", describe(kind, entry.kind.is_link()))];

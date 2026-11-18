@@ -701,6 +701,7 @@ impl Files {
             hovered: self.hover == Some(hit),
             ..Interaction::default()
         };
+        let now = self.machine.now;
         if let Some(asked) = self.overlay.asked() {
             let folder = asked.target.parent().map(&name_of).unwrap_or_default();
             let title = format!("“{}” is already in {folder}", name_of(&asked.target));
@@ -712,7 +713,7 @@ impl Files {
                             .modified()
                             .ok()
                             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
-                        let zone = jiff::Zoned::now();
+                        let zone = now();
                         let when = when.map_or_else(String::new, |since| {
                             format::when(since.as_nanos() as i64, &zone)
                         });

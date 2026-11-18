@@ -953,13 +953,16 @@ mod tests {
         assert_eq!(bar.island_color(colors.base).a, 255);
     }
 
+    /// The pictures held to a reference in `snapshots/`; the rest are
+    /// only written, to look at.
+    const CHECKED: &[&str] = &["bar-rose-pine-moon"];
+
     fn snapshot(frame: &Offscreen, name: &str) {
-        frame
-            .save_png(format!(
-                "{}/../../target/snapshots/{name}.png",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .expect("write snapshot");
+        if CHECKED.contains(&name) {
+            frame.check(env!("CARGO_MANIFEST_DIR"), name);
+        } else {
+            frame.snapshot(env!("CARGO_MANIFEST_DIR"), name);
+        }
     }
 
     #[test]

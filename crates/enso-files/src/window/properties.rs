@@ -339,7 +339,7 @@ impl Files {
             ));
             rows.push(("Size", counted(tally)));
         }
-        if let Ok(space) = enso_fs::places::space(first) {
+        if let Ok(space) = (self.machine.space)(first) {
             rows.push((
                 "Disk",
                 format!(

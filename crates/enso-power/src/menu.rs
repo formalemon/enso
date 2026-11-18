@@ -740,24 +740,14 @@ mod tests {
             ((card.y + card.h / 2.0) * 2.0) as u32,
         );
         assert_eq!(inside, [surface.r, surface.g, surface.b, 255]);
-        frame
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/power.png"
-            ))
-            .unwrap();
+        frame.check(env!("CARGO_MANIFEST_DIR"), "power");
 
         // Armed: the card grows a line to ask on.
         assert_eq!(menu.choose(4), Outcome::Redraw);
         let later = Instant::now() + Duration::from_secs(1);
         let frame = draw(&mut menu, later);
         assert!(menu.card.h > card.h + CAPTION_HEIGHT - 1.0);
-        frame
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/power-confirm.png"
-            ))
-            .unwrap();
+        frame.snapshot(env!("CARGO_MANIFEST_DIR"), "power-confirm");
     }
 
     /// The selected name's key letter is in its choice's colour; caught
@@ -785,12 +775,7 @@ mod tests {
                 .any(|x| (y0..y1).any(|y| frame.pixel(x, y) == [color.r, color.g, color.b, 255]))
         };
         assert!(has(&settled, &menu, 0, colors.foam));
-        settled
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/power-keys.png"
-            ))
-            .unwrap();
+        settled.snapshot(env!("CARGO_MANIFEST_DIR"), "power-keys");
 
         // On to Log out; halfway through its glint, the light is on the o.
         press(&mut menu, Key::Right);
@@ -799,11 +784,6 @@ mod tests {
         let shining = draw(&mut menu, landed + GLINT * 2 / 5);
         let shine = colors.gold.mix(colors.text, 0.7);
         assert!(has(&shining, &menu, 1, shine), "the glint is on the letter");
-        shining
-            .save_png(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/snapshots/power-glint.png"
-            ))
-            .unwrap();
+        shining.snapshot(env!("CARGO_MANIFEST_DIR"), "power-glint");
     }
 }

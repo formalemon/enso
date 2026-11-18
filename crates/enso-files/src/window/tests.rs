@@ -21,6 +21,26 @@ fn context() -> Context {
     Context::load_from(Paths::rooted("/nonexistent/enso-files-test"))
 }
 
+/// A Monday morning, in UTC, whatever the hour and the zone here.
+fn monday() -> jiff::Zoned {
+    "2026-11-16T09:41:00+00:00[UTC]".parse().expect("a time")
+}
+
+/// A machine that's the same everywhere: [`monday`], a disk half full,
+/// the trash empty.
+fn steady() -> super::machine::Machine {
+    super::machine::Machine {
+        now: monday,
+        space: |_| {
+            Ok(enso_fs::places::Space {
+                total: 500_000_000_000,
+                free: 250_000_000_000,
+            })
+        },
+        trash_full: || false,
+    }
+}
+
 fn fill(files: &mut Files) {
     let request = files.pending.take().unwrap();
     let entries = [
@@ -39,7 +59,7 @@ fn fill(files: &mut Files) {
         ("photo.png", Kind::File),
     ];
     let listing = Listing::from_entries(request.path.clone(), entries);
-    let now = jiff::Timestamp::now().as_nanosecond() as i64;
+    let now = monday().timestamp().as_nanosecond() as i64;
     let metas: Vec<Option<Meta>> = (0..entries.len())
         .map(|i| {
             Some(Meta {
@@ -58,6 +78,20 @@ fn fill(files: &mut Files) {
     assert!(files.pane.apply_stats(request.generation, 0, &metas));
 }
 
+/// The manager onto `folder`, on the steady machine, with a made-up home
+/// in its sidebar in place of this machine's places and drives.
+fn steady_files(folder: PathBuf) -> Files {
+    let mut files = Files::new(context(), FilesConfig::default(), folder);
+    files.places = vec![super::Place {
+        label: "Home".into(),
+        icon: icon::FOLDER,
+        path: "/home/me".into(),
+    }];
+    files.volumes = Vec::new();
+    files.machine = steady();
+    files
+}
+
 /// The manager onto a made-up folder, its listing and sizes arrived.
 fn files() -> Files {
     let mut files = Files::new(
@@ -67,6 +101,8 @@ fn files() -> Files {
     );
     files.home = "/home/me".into();
     files.places = Vec::new();
+    files.volumes = Vec::new();
+    files.machine = steady();
     fill(&mut files);
     files
 }
@@ -79,13 +115,16 @@ fn render(files: &mut Files, size: (u32, u32)) -> Offscreen {
     })
 }
 
+/// The pictures held to a reference in `snapshots/`; the rest are
+/// only written, to look at.
+const CHECKED: &[&str] = &["enso-files", "enso-files-identity"];
+
 fn snapshot(frame: &Offscreen, name: &str) {
-    frame
-        .save_png(format!(
-            "{}/../../target/snapshots/{name}.png",
-            env!("CARGO_MANIFEST_DIR")
-        ))
-        .unwrap();
+    if CHECKED.contains(&name) {
+        frame.check(env!("CARGO_MANIFEST_DIR"), name);
+    } else {
+        frame.snapshot(env!("CARGO_MANIFEST_DIR"), name);
+    }
 }
 
 fn rows(files: &Files) -> usize {
@@ -167,7 +206,7 @@ fn renders_narrow_and_empty() {
         "no sidebar when narrow"
     );
 
-    let mut empty = Files::new(context(), FilesConfig::default(), "/home/me/new".into());
+    let mut empty = steady_files("/home/me/new".into());
     let request = empty.pending.take().unwrap();
     let only_hidden = Listing::from_entries("/home/me/new", [(".keep", Kind::File)]);
     assert!(empty.pane.set_listing(request.generation, Ok(only_hidden)));
@@ -518,7 +557,7 @@ fn renders_columns() {
     }
     std::fs::write(root.join("dev/enso/Cargo.toml"), "").unwrap();
     let here = root.join("dev/enso");
-    let mut files = Files::new(context(), FilesConfig::default(), here.clone());
+    let mut files = steady_files(here.clone());
     files.places = Vec::new();
     files.config.view = crate::config::View::Columns;
     let request = files.pending.take().unwrap();
@@ -551,7 +590,7 @@ fn tabs_and_the_split() {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }
     let now = Instant::now();
-    let mut files = Files::new(context(), FilesConfig::default(), root.join("music"));
+    let mut files = steady_files(root.join("music"));
     files.places = Vec::new();
     files.asked_git = true;
     let first = files.pending.take().unwrap();
@@ -627,7 +666,7 @@ fn renders_search_results() {
     std::fs::write(root.join("src/window/draw.rs"), "// the sky, drawn\n").unwrap();
     std::fs::write(root.join("notes.md"), "# Notes\nLook at the sky tonight.\n").unwrap();
     let now = Instant::now();
-    let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+    let mut files = steady_files(root.clone());
     files.asked_git = true;
     files.bookmarks = vec![enso_fs::bookmarks::Bookmark {
         path: root.join("src"),
@@ -705,7 +744,7 @@ fn folders_slide_in_the_way_you_went() {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("inner")).unwrap();
     let now = Instant::now();
-    let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+    let mut files = steady_files(root.clone());
     files.asked_git = true;
     let first = files.pending.take().unwrap();
     files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
@@ -732,7 +771,7 @@ fn renames_many_at_once_and_back() {
         std::fs::write(root.join(name), name).unwrap();
     }
     let now = Instant::now();
-    let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+    let mut files = steady_files(root.clone());
     files.asked_git = true;
     let first = files.pending.take().unwrap();
     files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
@@ -775,7 +814,7 @@ fn properties_count_and_permissions_change() {
     std::fs::write(root.join("run.sh"), "echo hi").unwrap();
     std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o644)).unwrap();
     let now = Instant::now();
-    let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+    let mut files = steady_files(root.clone());
     files.asked_git = true;
     let first = files.pending.take().unwrap();
     files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
@@ -825,7 +864,7 @@ fn folders_keep_their_own_view() {
     for dir in ["pictures", "papers"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }
-    let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+    let mut files = steady_files(root.clone());
     files.folder_views.change(&root.join("pictures"), |own| {
         own.view = Some(View::Grid);
         own.zoom = Some(3);
@@ -872,7 +911,7 @@ fn archives_are_walked_like_folders() {
     let zip = root.join("trip.zip");
     enso_fs::archive::compress(&[root.join("trip")], &zip, &mut Quiet);
     let now = Instant::now();
-    let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+    let mut files = steady_files(root.clone());
     files.asked_git = true;
     let first = files.pending.take().unwrap();
     files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);

@@ -668,12 +668,13 @@ mod tests {
         let frame = Offscreen::render(&mut text, (760, 520), 2, |canvas| {
             prompt.render(canvas, later);
         });
-        frame
-            .save_png(format!(
-                "{}/../../target/snapshots/{name}.png",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .unwrap();
+        // The one held to a reference in `snapshots/`; the rest are only
+        // written, to look at.
+        if name == "enso-auth-password" {
+            frame.check(env!("CARGO_MANIFEST_DIR"), name);
+        } else {
+            frame.snapshot(env!("CARGO_MANIFEST_DIR"), name);
+        }
     }
 
     #[test]

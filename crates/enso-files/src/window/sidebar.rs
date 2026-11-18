@@ -352,8 +352,7 @@ impl Files {
 
         // The trash, last.
         y += space::SM;
-        let full =
-            std::fs::read_dir(Self::trash_dir()).is_ok_and(|mut entries| entries.next().is_some());
+        let full = (self.machine.trash_full)();
         let here = self.in_trash();
         let label = if full { "Trash" } else { "Trash (empty)" };
         self.place_row(
@@ -499,7 +498,7 @@ impl Files {
 
     /// How full a filesystem is: a hairline under its row.
     fn draw_space(&self, canvas: &mut Canvas<'_>, row: Rect, mount: &std::path::Path) {
-        let Ok(space) = places::space(mount) else {
+        let Ok(space) = (self.machine.space)(mount) else {
             return;
         };
         let colors = &self.ctx.theme.colors;

@@ -86,12 +86,7 @@ fn canvas_draws_shapes_text_and_icons() {
     );
 
     #[cfg(feature = "png")]
-    frame
-        .save_png(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../target/snapshots/ui-canvas.png"
-        ))
-        .expect("write snapshot");
+    frame.snapshot(env!("CARGO_MANIFEST_DIR"), "ui-canvas");
 }
 
 /// Every figure, at the sizes the tools draw them on a plain screen, and
@@ -138,12 +133,15 @@ fn every_figure_draws_at_every_size() {
             assert!(inked, "{figure:?} drew nothing");
         }
         #[cfg(feature = "png")]
-        frame
-            .save_png(format!(
-                "{}/../../target/snapshots/figures-{name}.png",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .expect("write snapshot");
+        {
+            // Every icon, large: held to a reference in `snapshots/`.
+            let name = format!("figures-{name}");
+            if name == "figures-large" {
+                frame.check(env!("CARGO_MANIFEST_DIR"), &name);
+            } else {
+                frame.snapshot(env!("CARGO_MANIFEST_DIR"), &name);
+            }
+        }
         let _ = name;
     }
 }
@@ -276,12 +274,14 @@ fn widgets_draw_in_both_themes() {
             );
         });
         #[cfg(feature = "png")]
-        frame
-            .save_png(format!(
-                "{}/../../target/snapshots/widgets-{theme}.png",
-                env!("CARGO_MANIFEST_DIR")
-            ))
-            .expect("write snapshot");
+        {
+            let name = format!("widgets-{theme}");
+            if theme == "rose-pine-moon" {
+                frame.check(env!("CARGO_MANIFEST_DIR"), &name);
+            } else {
+                frame.snapshot(env!("CARGO_MANIFEST_DIR"), &name);
+            }
+        }
         // The primary button is filled with the accent.
         assert_ne!(frame.pixel(60, 60), frame.pixel(4, 4));
     }
