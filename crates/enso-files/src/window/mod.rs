@@ -574,7 +574,8 @@ impl Files {
                 self.navigate(path);
             }
             (Some(Open::File(path)), false) => {
-                let opened = enso_fs::open::open(&path, "alacritty");
+                let opened =
+                    enso_fs::open::open(&path, &self.ctx.config.appearance.terminal_program());
                 if opened.is_ok() {
                     used(vec![path.clone()]);
                 }

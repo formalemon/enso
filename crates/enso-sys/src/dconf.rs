@@ -123,11 +123,9 @@ fn push_offset(bytes: &mut Vec<u8>, offset: usize, width: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use enso_core::hex::encode as hex;
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
+    use super::*;
 
     fn strings(entries: &[(&str, &str)]) -> Vec<u8> {
         let entries: Vec<(&str, Value<'_>)> = entries

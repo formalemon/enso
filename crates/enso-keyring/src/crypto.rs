@@ -55,20 +55,6 @@ pub fn open(key: &[u8; 32], sealed: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
 }
 
 /// Lower-case hexadecimal.
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-pub fn unhex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,11 +69,5 @@ mod tests {
         let mut changed = sealed.clone();
         *changed.last_mut().unwrap() ^= 1;
         assert!(open(&key, &changed).is_none(), "tampered");
-    }
-
-    #[test]
-    fn hex_both_ways() {
-        assert_eq!(unhex(&hex(&[0, 15, 255])).unwrap(), [0, 15, 255]);
-        assert!(unhex("abc").is_none());
     }
 }

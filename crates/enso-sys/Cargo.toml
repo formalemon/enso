@@ -12,6 +12,9 @@ zeroize.workspace = true
 zbus = { workspace = true, optional = true }
 pulseaudio = { workspace = true, optional = true }
 
+[dev-dependencies]
+enso-core.workspace = true
+
 [features]
 # The `/sys` readers need nothing. Each D-Bus backend is opt-in, so a tool
 # only links a D-Bus client if it talks to one of these services.

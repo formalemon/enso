@@ -220,10 +220,8 @@ pub fn active(paths: &Paths) -> Option<String> {
 /// partial file.
 pub fn set_active(paths: &Paths, id: &str) -> Result<(), Error> {
     let file = paths.active_theme_file();
-    fs::create_dir_all(&paths.state_dir).map_err(|source| Error::io(&paths.state_dir, source))?;
-    let tmp = paths.state_dir.join(".theme.tmp");
-    fs::write(&tmp, format!("{id}\n")).map_err(|source| Error::io(&tmp, source))?;
-    fs::rename(&tmp, &file).map_err(|source| Error::io(&file, source))
+    crate::disk::write_atomic(&file, format!("{id}\n").as_bytes(), crate::disk::SHARED)
+        .map_err(|source| Error::io(&file, source))
 }
 
 #[cfg(test)]

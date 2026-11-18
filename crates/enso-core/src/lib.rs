@@ -16,7 +16,9 @@
 
 pub mod color;
 pub mod config;
+pub mod disk;
 pub mod exe;
+pub mod hex;
 pub mod ipc;
 pub mod motion;
 pub mod notices;

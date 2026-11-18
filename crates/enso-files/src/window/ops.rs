@@ -498,7 +498,8 @@ impl Files {
 
     pub(super) fn terminal_here(&mut self, cx: &mut Cx<'_>) {
         let dir = self.pane.location().to_owned();
-        if let Err(err) = enso_fs::apps::spawn_detached(&["alacritty".to_owned()], Some(&dir)) {
+        let terminal = self.ctx.config.appearance.terminal_program();
+        if let Err(err) = enso_fs::apps::spawn_detached(&[terminal], Some(&dir)) {
             self.toast(format!("Can't open a terminal: {err}"), cx);
         }
     }

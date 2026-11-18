@@ -30,6 +30,10 @@ icons = "auto"
 cursor = ""
 # Cursor size in logical pixels.
 cursor_size = 24
+# Terminal emulator for programs that need one, run as `<terminal> -e <command>`
+# (opening a terminal here, terminal applications, editing names in $EDITOR).
+# "" uses $TERMINAL, or else alacritty.
+terminal = ""
 
 [motion]
 # false makes every transition instant.
@@ -54,8 +58,6 @@ opacity = 0.9
 width = 560
 # Rows shown before the list scrolls.
 max_results = 8
-# Terminal emulator for applications that need one.
-terminal = "alacritty"
 # Search files as well as applications.
 files = true
 # Directories whose files are searched; "~" is your home directory. A hidden

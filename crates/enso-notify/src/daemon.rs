@@ -191,16 +191,9 @@ fn read_history(paths: &enso_core::Paths) -> Vec<Saved> {
 fn write_history(paths: &enso_core::Paths, note: Vec<Saved>) -> Result<(), String> {
     let file = history_file(paths);
     let text = toml::to_string(&History { note }).map_err(|err| err.to_string())?;
-    let dir = file.parent().unwrap_or(&file);
-    std::fs::create_dir_all(dir).map_err(|err| err.to_string())?;
     // Other people's words: readable by their owner alone.
-    let tmp = dir.join(".history.toml.tmp");
-    std::fs::write(&tmp, text).map_err(|err| err.to_string())?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    }
-    std::fs::rename(&tmp, &file).map_err(|err| err.to_string())
+    enso_core::disk::write_atomic(&file, text.as_bytes(), enso_core::disk::PRIVATE)
+        .map_err(|err| err.to_string())
 }
 
 #[derive(Debug)]

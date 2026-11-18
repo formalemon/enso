@@ -18,6 +18,7 @@ use std::{
 
 use enso_core::style::{icon, radius, space, stroke, type_scale};
 use enso_fs::{format, tally::Tally};
+use enso_sys::accounts;
 use enso_ui::{
     Align, Canvas, Cx, Rect, Text,
     widget::{Button, Interaction, Kind as ButtonKind, controls, form},
@@ -55,20 +56,6 @@ fn modes(paths: &[PathBuf]) -> Vec<u32> {
         .filter_map(|path| std::fs::metadata(path).ok())
         .map(|meta| meta.permissions().mode() & 0o7777)
         .collect()
-}
-
-/// A user's or group's name, from `/etc/passwd` or `/etc/group`.
-fn name_of(file: &str, id: u32) -> String {
-    std::fs::read_to_string(file)
-        .unwrap_or_default()
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split(':');
-            let name = fields.next()?;
-            let _ = fields.next()?;
-            (fields.next()?.parse::<u32>().ok()? == id).then(|| name.to_owned())
-        })
-        .unwrap_or_else(|| id.to_string())
 }
 
 impl Files {
@@ -321,8 +308,8 @@ impl Files {
                     "Owner",
                     format!(
                         "{}, group {}",
-                        name_of("/etc/passwd", meta.uid()),
-                        name_of("/etc/group", meta.gid())
+                        accounts::user_name(meta.uid()).unwrap_or_else(|| meta.uid().to_string()),
+                        accounts::group_name(meta.gid()).unwrap_or_else(|| meta.gid().to_string())
                     ),
                 ));
             }

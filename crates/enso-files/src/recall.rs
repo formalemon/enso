@@ -4,6 +4,7 @@
 //! One small text file in the state directory, a line per application:
 //! its id, a tab, the folder. Losing it loses nothing but the convenience.
 
+use enso_core::disk;
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -79,12 +80,7 @@ impl Recall {
             })
             .map(|(app, (_, folder))| format!("{app}\t{}\n", folder.to_string_lossy()))
             .collect();
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        fs::write(&tmp, text)?;
-        fs::rename(tmp, path)
+        disk::write_atomic(path, text.as_bytes(), disk::PRIVATE)
     }
 }
 

@@ -95,13 +95,14 @@ impl Files {
             std::process::id(),
             self.opened
         ));
+        let terminal = self.ctx.config.appearance.terminal_program();
         let _ = thread::Builder::new()
             .name("enso-files-member".to_owned())
             .spawn(move || {
                 let result = archive::extract_member(&archive, &member, &into)
                     .map_err(|err| format!("Can't take it out: {err}"))
                     .and_then(|file| {
-                        enso_fs::open::open(&file, "alacritty")
+                        enso_fs::open::open(&file, &terminal)
                             .map_err(|err| format!("Can't open it: {err}"))
                     });
                 if let Err(why) = result {

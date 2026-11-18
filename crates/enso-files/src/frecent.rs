@@ -5,6 +5,7 @@
 //! Kept in the state directory, one folder a line: visits, the last
 //! visit (seconds since 1970), the path.
 
+use enso_core::disk;
 use std::{
     collections::HashMap,
     fs, io,
@@ -78,12 +79,7 @@ impl Visits {
                 text.push_str(&format!("{count} {last} {folder}\n"));
             }
         }
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        fs::write(&tmp, text)?;
-        fs::rename(tmp, path)
+        disk::write_atomic(path, text.as_bytes(), disk::PRIVATE)
     }
 }
 

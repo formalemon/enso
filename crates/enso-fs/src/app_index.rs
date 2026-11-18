@@ -7,6 +7,7 @@
 //! cache — anything unexpected makes [`read`] return `None` and the launcher
 //! falls back to scanning.
 
+use enso_core::disk;
 use std::{fs, io, path::Path};
 
 use crate::apps::App;
@@ -27,16 +28,7 @@ pub fn read(path: &Path) -> Option<Vec<App>> {
 /// Save the index, atomically: a launcher starting at the same moment sees
 /// either the old file or the new one, never half of it.
 pub fn write(path: &Path, apps: &[App]) -> io::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| io::Error::other("index path has no directory"))?;
-    fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".apps.{}.tmp", std::process::id()));
-    fs::write(&tmp, encode(apps))?;
-    fs::rename(&tmp, path).inspect_err(|_| {
-        // Best effort: a leftover temporary file is harmless.
-        let _ = fs::remove_file(&tmp);
-    })
+    disk::write_atomic(path, encode(apps).as_bytes(), disk::SHARED)
 }
 
 fn encode(apps: &[App]) -> String {

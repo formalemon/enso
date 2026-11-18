@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+enso-core.workspace = true
 rustix.workspace = true
 jiff.workspace = true
 png.workspace = true

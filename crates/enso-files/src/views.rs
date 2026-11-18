@@ -4,6 +4,7 @@
 //!
 //! Kept in the state directory (`views.toml`), one table per folder.
 
+use enso_core::disk;
 use std::{collections::BTreeMap, fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
@@ -84,15 +85,8 @@ impl FolderViews {
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let text = toml::to_string(self).map_err(io::Error::other)?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        fs::write(
-            &tmp,
-            format!("# How enso-files shows the folders where it was changed.\n{text}"),
-        )?;
-        fs::rename(tmp, path)
+        let text = format!("# How enso-files shows the folders where it was changed.\n{text}");
+        disk::write_atomic(path, text.as_bytes(), disk::PRIVATE)
     }
 }
 

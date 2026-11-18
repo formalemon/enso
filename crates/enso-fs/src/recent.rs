@@ -7,6 +7,7 @@
 //! and written by changing only what's needed: an entry already there gets
 //! new times; a new one is added in the shape GTK writes.
 
+use enso_core::disk;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -95,19 +96,8 @@ pub fn add(file: &Path, path: &Path, mime: &str) -> io::Result<()> {
     if let Some(dir) = file.parent() {
         fs::create_dir_all(dir)?;
     }
-    // Written whole beside it, then put in its place; private, as GTK's is.
-    let tmp = file.with_extension("enso-tmp");
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut out = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        io::Write::write_all(&mut out, text.as_bytes())?;
-    }
-    fs::rename(tmp, file)
+    // Private, as GTK's is.
+    disk::write_atomic(file, text.as_bytes(), disk::PRIVATE)
 }
 
 /// `text` with `uri` marked as used at `now`.

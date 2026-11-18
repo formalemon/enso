@@ -11,10 +11,11 @@
 //! anything else is only shown if another program has already made its
 //! thumbnail.
 
+use enso_core::disk;
 use std::{
     fs,
-    io::{self, BufWriter},
-    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    io::{self},
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -105,7 +106,7 @@ fn thumbnail_in(cache: &Path, path: &Path, size: Size) -> Option<Thumb> {
         return None;
     }
     let uri = uri::from_path(&path);
-    let name = format!("{}.png", hex(&md5(uri.as_bytes())));
+    let name = format!("{}.png", enso_core::hex::encode(&md5(uri.as_bytes())));
     let mtime = meta.mtime();
     let cached = cache.join(size.dir()).join(&name);
     if let Some(thumb) = read_cached(&cached, &uri, mtime) {
@@ -374,23 +375,8 @@ fn read_cached(path: &Path, uri: &str, mtime: i64) -> Option<Thumb> {
 }
 
 fn write(path: &Path, thumb: &Thumb, uri: &str, mtime: i64, size: u64) -> io::Result<()> {
-    let dir = path.parent().ok_or_else(|| io::Error::other("no folder"))?;
-    fs::create_dir_all(dir)?;
-    // Thumbnails can show what's private: only the user reads them.
-    let tmp = dir.join(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        path.file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default()
-    ));
-    let file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    let mut encoder = png::Encoder::new(BufWriter::new(file), thumb.width, thumb.height);
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, thumb.width, thumb.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let text = |e: png::EncodingError| io::Error::other(e.to_string());
@@ -409,11 +395,8 @@ fn write(path: &Path, thumb: &Thumb, uri: &str, mtime: i64, size: u64) -> io::Re
     let mut writer = encoder.write_header().map_err(text)?;
     writer.write_image_data(&thumb.rgba).map_err(text)?;
     writer.finish().map_err(text)?;
-    fs::rename(tmp, path)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    // Thumbnails can show what's private: only the user reads them.
+    disk::write_atomic(path, &png, disk::PRIVATE)
 }
 
 /// MD5, which the spec names thumbnails by. (Not for anything secret.)
@@ -478,17 +461,23 @@ mod tests {
 
     #[test]
     fn md5_matches_the_reference() {
-        assert_eq!(hex(&md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
-        assert_eq!(hex(&md5(b"abc")), "900150983cd24fb0d6963f7d28e17f72");
         assert_eq!(
-            hex(&md5(
+            enso_core::hex::encode(&md5(b"")),
+            "d41d8cd98f00b204e9800998ecf8427e"
+        );
+        assert_eq!(
+            enso_core::hex::encode(&md5(b"abc")),
+            "900150983cd24fb0d6963f7d28e17f72"
+        );
+        assert_eq!(
+            enso_core::hex::encode(&md5(
                 b"12345678901234567890123456789012345678901234567890123456789012345678901234567890"
             )),
             "57edf4a22be3c955ac49da2e2107b67a"
         );
         // The spec's own example.
         assert_eq!(
-            hex(&md5(b"file:///home/jens/photos/me.png")),
+            enso_core::hex::encode(&md5(b"file:///home/jens/photos/me.png")),
             "c6ee772d9e49320e97ec29a7eb5b1697"
         );
     }
@@ -570,9 +559,10 @@ mod tests {
         let thumb = thumbnail_in(&cache, &picture, Size::Normal).unwrap();
         assert_eq!((thumb.width, thumb.height), (128, 64));
         let uri = uri::from_path(&picture);
-        let kept = cache
-            .join("normal")
-            .join(format!("{}.png", hex(&md5(uri.as_bytes()))));
+        let kept = cache.join("normal").join(format!(
+            "{}.png",
+            enso_core::hex::encode(&md5(uri.as_bytes()))
+        ));
         assert!(kept.exists());
         let text = read_text(&kept).unwrap();
         assert_eq!(text.uri.as_deref(), Some(uri.as_str()));

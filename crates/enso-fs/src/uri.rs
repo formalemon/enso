@@ -49,23 +49,14 @@ pub fn to_path(uri: &str) -> Option<PathBuf> {
     let mut input = rest.bytes();
     while let Some(byte) = input.next() {
         if byte == b'%' {
-            let high = hex_value(input.next()?)?;
-            let low = hex_value(input.next()?)?;
+            let high = enso_core::hex::digit(input.next()?)?;
+            let low = enso_core::hex::digit(input.next()?)?;
             bytes.push(high << 4 | low);
         } else {
             bytes.push(byte);
         }
     }
     Some(PathBuf::from(OsStr::from_bytes(&bytes)))
-}
-
-fn hex_value(digit: u8) -> Option<u8> {
-    match digit {
-        b'0'..=b'9' => Some(digit - b'0'),
-        b'a'..=b'f' => Some(digit - b'a' + 10),
-        b'A'..=b'F' => Some(digit - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// A path as the portal sends it (`ay`): the bytes, usually with a

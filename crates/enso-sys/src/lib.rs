@@ -28,6 +28,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod accounts;
 pub mod auth;
 #[cfg(any(
     feature = "iwd",

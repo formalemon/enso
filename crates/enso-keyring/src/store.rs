@@ -12,6 +12,8 @@
 //! secret while the keyring is locked, and so know to ask for it to be
 //! unlocked; a hash says nothing of what's in it.
 
+use enso_core::disk;
+use enso_core::hex;
 use std::{
     collections::BTreeMap,
     fs, io,
@@ -41,17 +43,18 @@ pub struct Item {
 }
 
 mod secret_hex {
+    use enso_core::hex;
     use serde::{Deserialize, Deserializer, Serializer};
     use zeroize::Zeroizing;
 
     pub fn serialize<S: Serializer>(secret: &Zeroizing<Vec<u8>>, to: S) -> Result<S::Ok, S::Error> {
-        let text = Zeroizing::new(crate::crypto::hex(secret));
+        let text = Zeroizing::new(hex::encode(secret));
         to.serialize_str(&text)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Zeroizing<Vec<u8>>, D::Error> {
         let text = Zeroizing::new(String::deserialize(from)?);
-        crate::crypto::unhex(&text)
+        hex::decode(&text)
             .map(Zeroizing::new)
             .ok_or_else(|| serde::de::Error::custom("a secret that isn't hex"))
     }
@@ -118,7 +121,7 @@ pub fn hash(name: &str, value: &str) -> String {
     digest.update(name.as_bytes());
     digest.update([0]);
     digest.update(value.as_bytes());
-    crypto::hex(&digest.finalize())
+    hex::encode(&digest.finalize())
 }
 
 fn hashes(item: &Item) -> Vec<String> {
@@ -210,7 +213,7 @@ impl Keyring {
         let text =
             fs::read_to_string(&self.path).map_err(|err| Refused::Damaged(err.to_string()))?;
         let file: File = toml::from_str(&text).map_err(|err| Refused::Damaged(err.to_string()))?;
-        let sealed = crypto::unhex(&file.contents)
+        let sealed = hex::decode(&file.contents)
             .ok_or_else(|| Refused::Damaged("contents don't read".into()))?;
         let plain = crypto::open(&master, &sealed)
             .ok_or_else(|| Refused::Damaged("the contents have been changed".into()))?;
@@ -255,7 +258,7 @@ impl Keyring {
         let file = File {
             version: 2,
             master: self.sealed_master.clone(),
-            contents: crypto::hex(&crypto::seal(master, plain.as_bytes())),
+            contents: hex::encode(&crypto::seal(master, plain.as_bytes())),
             index: self
                 .index
                 .iter()
@@ -272,19 +275,7 @@ impl Keyring {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
-        let tmp = self.path.with_extension("tmp");
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut out = fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp)?;
-            io::Write::write_all(&mut out, text.as_bytes())?;
-            out.sync_all()?;
-        }
-        fs::rename(tmp, &self.path)
+        disk::write_atomic(&self.path, text.as_bytes(), disk::PRIVATE)
     }
 
     /// The items (collection, id) whose attributes include all of `wanted`
@@ -366,11 +357,11 @@ pub mod tests {
 
     impl Sealer for Pretend {
         fn seal(&self, plain: &[u8]) -> Result<String, String> {
-            Ok(crypto::hex(&crypto::seal(&self.0, plain)))
+            Ok(hex::encode(&crypto::seal(&self.0, plain)))
         }
 
         fn open(&self, sealed: &str) -> Result<Vec<u8>, String> {
-            let sealed = crypto::unhex(sealed).ok_or("not hex")?;
+            let sealed = hex::decode(sealed).ok_or("not hex")?;
             crypto::open(&self.0, &sealed)
                 .map(|plain| plain.to_vec())
                 .ok_or_else(|| "not this machine".to_owned())

@@ -79,11 +79,8 @@ impl Chosen {
             what: file.display().to_string(),
             message: err.to_string(),
         })?;
-        fs::create_dir_all(&paths.state_dir)
-            .map_err(|source| Error::io(&paths.state_dir, source))?;
-        let tmp = paths.state_dir.join(".wallpapers.tmp");
-        fs::write(&tmp, text).map_err(|source| Error::io(&tmp, source))?;
-        fs::rename(&tmp, &file).map_err(|source| Error::io(&file, source))
+        crate::disk::write_atomic(&file, text.as_bytes(), crate::disk::SHARED)
+            .map_err(|source| Error::io(&file, source))
     }
 
     /// Choose `picture` for `theme`, or as the default with `None`.

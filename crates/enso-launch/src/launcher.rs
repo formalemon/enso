@@ -39,8 +39,6 @@ pub struct LaunchConfig {
     pub width: u32,
     /// Rows visible at once; the list scrolls beyond this.
     pub max_results: usize,
-    /// Terminal emulator for applications that need one.
-    pub terminal: String,
     /// Search files as well as applications.
     pub files: bool,
     /// Directories whose files are searched; `~` is the home directory.
@@ -61,7 +59,6 @@ impl Default for LaunchConfig {
         Self {
             width: 560,
             max_results: 8,
-            terminal: "alacritty".to_owned(),
             files: true,
             file_roots: vec!["~".to_owned(), "~/.config".to_owned()],
             hidden: false,
@@ -390,7 +387,7 @@ impl Launcher {
         match &self.results[self.selected] {
             Entry::App(index) => {
                 let app = &self.apps[*index];
-                if let Err(err) = app.launch(&self.config.terminal) {
+                if let Err(err) = app.launch(&self.ctx.config.appearance.terminal_program()) {
                     eprintln!("enso-launch: cannot start {}: {err}", app.name);
                 }
             }
@@ -400,7 +397,8 @@ impl Launcher {
                     Some(parent) if reveal => parent,
                     _ => path,
                 };
-                if let Err(err) = open::open(target, &self.config.terminal) {
+                if let Err(err) = open::open(target, &self.ctx.config.appearance.terminal_program())
+                {
                     eprintln!("enso-launch: cannot open {}: {err}", target.display());
                 }
             }

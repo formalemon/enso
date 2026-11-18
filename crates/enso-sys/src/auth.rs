@@ -67,26 +67,13 @@ pub fn available() -> Result<(), Error> {
 /// The login name of the account this process runs as.
 pub fn user() -> Result<String, Error> {
     let uid = fs::metadata("/proc/self").map(|meta| meta.uid()).ok();
-    let from_passwd = uid.and_then(|uid| {
-        let passwd = fs::read_to_string("/etc/passwd").ok()?;
-        name_of(&passwd, uid).map(str::to_owned)
-    });
+    let from_passwd = uid.and_then(crate::accounts::user_name);
     from_passwd
         // Accounts from a directory service are not in the file. The helper
         // checks the name against the real uid itself, so the environment
         // can suggest but not lie.
         .or_else(|| std::env::var("USER").ok().filter(|name| !name.is_empty()))
         .ok_or(Error::NoUser)
-}
-
-/// The name for `uid` in the text of a passwd file.
-fn name_of(passwd: &str, uid: u32) -> Option<&str> {
-    passwd.lines().find_map(|line| {
-        let mut fields = line.split(':');
-        let name = fields.next()?;
-        let id: u32 = fields.nth(1)?.parse().ok()?;
-        (id == uid && !name.is_empty()).then_some(name)
-    })
 }
 
 fn helper() -> Result<&'static Path, Error> {
@@ -135,18 +122,6 @@ pub fn verify(password: &[u8]) -> Result<bool, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finds_a_name_by_uid() {
-        let passwd = "root:x:0:0::/root:/bin/bash\n\
-                      broken line\n\
-                      ren:x:1000:1000:Ren:/home/ren:/bin/bash\n\
-                      :x:1001:1001::/:/bin/false\n";
-        assert_eq!(name_of(passwd, 0), Some("root"));
-        assert_eq!(name_of(passwd, 1000), Some("ren"));
-        assert_eq!(name_of(passwd, 1001), None);
-        assert_eq!(name_of(passwd, 42), None);
-    }
 
     #[test]
     fn refuses_what_could_not_be_a_password_without_asking() {

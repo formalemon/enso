@@ -2,6 +2,7 @@
 //! same shape as enso-auth's. It sends what's typed to the keyring and
 //! waits; the keyring closes it, or says why not and lets it try again.
 
+use enso_core::hex;
 use std::{
     io::{self, BufRead, Write},
     thread,
@@ -18,10 +19,7 @@ use enso_ui::{
 };
 use zeroize::Zeroizing;
 
-use crate::{
-    asking::Mode,
-    crypto::{hex, unhex},
-};
+use crate::asking::Mode;
 
 const MAX_PASSWORD: usize = 512;
 
@@ -104,7 +102,7 @@ impl Card {
             return Outcome::Ignored;
         }
         let typed = self.field.take(&self.ctx.motion, now);
-        let encoded = Zeroizing::new(hex(typed.as_bytes()));
+        let encoded = Zeroizing::new(hex::encode(typed.as_bytes()));
         let line = Zeroizing::new(format!("password {}", encoded.as_str()));
         self.say(&line);
         self.waiting = true;
@@ -308,7 +306,7 @@ impl App for Card {
                 }
                 if let Some(rest) = line.strip_prefix("again ") {
                     let (mode, words) = rest.split_once(' ').unwrap_or((rest, ""));
-                    let words = unhex(words)
+                    let words = hex::decode(words)
                         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                         .unwrap_or_default();
                     if let Some(mode) = Mode::from_word(mode) {

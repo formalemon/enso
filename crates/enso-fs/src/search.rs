@@ -10,6 +10,7 @@
 //! Like the application index, the saved copy (`~/.cache/enso/files`) only
 //! answers until a fresh walk finishes, so it needs no invalidation.
 
+use enso_core::disk;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -271,18 +272,11 @@ impl FileIndex {
 
     /// Save the index atomically, like the application index.
     pub fn write(&self, path: &Path) -> io::Result<()> {
-        let dir = path
-            .parent()
-            .ok_or_else(|| io::Error::other("index path has no directory"))?;
-        fs::create_dir_all(dir)?;
-        let tmp = dir.join(format!(".files.{}.tmp", std::process::id()));
         let mut contents = String::with_capacity(HEADER.len() + self.text.len());
         contents.push_str(HEADER);
         contents.push_str(&self.text);
-        fs::write(&tmp, contents)?;
-        fs::rename(&tmp, path).inspect_err(|_| {
-            let _ = fs::remove_file(&tmp);
-        })
+        // What's on the disk is the user's own business.
+        disk::write_atomic(path, contents.as_bytes(), disk::PRIVATE)
     }
 
     /// The best `limit` matches for `query`, best first. Queries shorter

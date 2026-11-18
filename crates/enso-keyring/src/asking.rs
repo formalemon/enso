@@ -15,7 +15,7 @@ use std::{
 
 use zeroize::Zeroizing;
 
-use crate::crypto::{hex, unhex};
+use enso_core::hex;
 
 /// What the card asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,7 +86,11 @@ pub fn ask(
         if from.read_line(&mut line).unwrap_or(0) == 0 {
             break;
         }
-        let Some(typed) = line.trim_end().strip_prefix("password ").and_then(unhex) else {
+        let Some(typed) = line
+            .trim_end()
+            .strip_prefix("password ")
+            .and_then(hex::decode)
+        else {
             break;
         };
         let asked = Asked {
@@ -101,7 +105,14 @@ pub fn ask(
             }
             Err((words, next)) => {
                 mode = next;
-                if writeln!(to, "again {} {}", next.word(), hex(words.as_bytes())).is_err() {
+                if writeln!(
+                    to,
+                    "again {} {}",
+                    next.word(),
+                    hex::encode(words.as_bytes())
+                )
+                .is_err()
+                {
                     break;
                 }
             }

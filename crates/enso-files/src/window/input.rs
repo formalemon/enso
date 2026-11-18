@@ -158,7 +158,11 @@ impl Files {
             MenuFor::OpenWith(path, choices) => match choices.get(index) {
                 Some(choice) => {
                     let db = enso_fs::open::Database::from_env();
-                    match db.open_with(&choice.id, &path, "alacritty") {
+                    match db.open_with(
+                        &choice.id,
+                        &path,
+                        &self.ctx.config.appearance.terminal_program(),
+                    ) {
                         Ok(()) => super::used(vec![path.clone()]),
                         Err(err) => {
                             self.toast(format!("Can't open it with {}: {err}", choice.name), cx);

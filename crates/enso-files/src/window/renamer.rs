@@ -270,6 +270,7 @@ impl Files {
         };
         renamer.editing = true;
         cx.redraw();
+        let terminal = self.ctx.config.appearance.terminal_program();
         let _ = thread::Builder::new()
             .name("enso-files-editor".to_owned())
             .spawn(move || {
@@ -277,15 +278,14 @@ impl Files {
                     .join(format!("enso-files-rename-{}.txt", std::process::id()));
                 let result = std::fs::write(&file, names)
                     .and_then(|()| {
-                        std::process::Command::new("alacritty")
-                            .args([
-                                "--title",
-                                "Rename — save and close to finish",
-                                "-e",
-                                "sh",
-                                "-c",
-                            ])
-                            .arg("exec ${VISUAL:-${EDITOR:-nvim}} \"$1\"")
+                        // The title by escape code, which every terminal
+                        // takes, unlike a flag for it.
+                        std::process::Command::new(&terminal)
+                            .args(["-e", "sh", "-c"])
+                            .arg(
+                                "printf '\\033]2;%s\\007' 'Rename — save and close to finish'; \
+                                 exec ${VISUAL:-${EDITOR:-nvim}} \"$1\"",
+                            )
                             .arg("sh")
                             .arg(&file)
                             .status()

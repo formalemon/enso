@@ -251,23 +251,11 @@ impl Job<'_> {
 /// a file — it is written beside the target, then swapped in — and a file
 /// that already says `text` is left alone, so nothing reloads for nothing.
 fn replace(path: &Path, text: &str) -> Result<(), String> {
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    replace_through(path, &dir.join(format!(".{name}.tmp")), text)
-}
-
-/// [`replace`], writing the new file at `tmp` first. `tmp` must be on the
-/// same filesystem as `path`.
-fn replace_through(path: &Path, tmp: &Path, text: &str) -> Result<(), String> {
-    let io = |path: &Path, err: std::io::Error| format!("{}: {err}", path.display());
     if fs::read_to_string(path).is_ok_and(|current| current == text) {
         return Ok(());
     }
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).map_err(|err| io(dir, err))?;
-    }
-    fs::write(tmp, text).map_err(|err| io(tmp, err))?;
-    fs::rename(tmp, path).map_err(|err| io(path, err))
+    enso_core::disk::write_atomic(path, text.as_bytes(), enso_core::disk::SHARED)
+        .map_err(|err| format!("{}: {err}", path.display()))
 }
 
 /// The files directly in `dir` with one of these extensions, and — `depth`

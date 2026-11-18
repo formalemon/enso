@@ -5,6 +5,7 @@
 //! Bookmarks that aren't local folders (`sftp://…`) are kept as they are
 //! but not offered here.
 
+use enso_core::disk;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -152,12 +153,7 @@ impl Bookmarks {
 
     /// Write them back, whole or not at all.
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("enso-tmp");
-        fs::write(&tmp, self.to_text())?;
-        fs::rename(tmp, path)
+        disk::write_atomic(path, self.to_text().as_bytes(), disk::SHARED)
     }
 }
 

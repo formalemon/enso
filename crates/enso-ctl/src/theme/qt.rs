@@ -17,7 +17,7 @@ use std::fs;
 
 use enso_core::{Palette, Rgba};
 
-use super::{Job, Outcome, keyfile, replace_through};
+use super::{Job, Outcome, keyfile, replace};
 
 /// Name of the colour scheme, as the tools list it.
 const SCHEME: &str = "enso.conf";
@@ -53,11 +53,7 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
         found += 1;
         let colors = dir.join("colors");
         fs::create_dir_all(&colors).map_err(|err| format!("{}: {err}", colors.display()))?;
-        replace_through(
-            &colors.join(SCHEME),
-            &dir.join(format!(".{SCHEME}.tmp")),
-            &render(job, tool.roles),
-        )?;
+        replace(&colors.join(SCHEME), &render(job, tool.roles))?;
         if !chosen(&fs::read_to_string(dir.join(format!("{}.conf", tool.name))).unwrap_or_default())
         {
             to_choose.push(tool.name);

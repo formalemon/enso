@@ -50,7 +50,6 @@ Keys:
 Configuration is optional: the [launch] table of ~/.config/enso/config.toml.
   width       = 560            card width in pixels
   max_results = 8              rows shown before the list scrolls
-  terminal    = \"alacritty\"    used for terminal applications
   files       = true           search files as well as applications
   file_roots  = [\"~\", \"~/.config\"]
                                directories whose files are searched
@@ -65,7 +64,8 @@ Configuration is optional: the [launch] table of ~/.config/enso/config.toml.
                                beside a Cargo.toml, a dist beside a
                                package.json, *.o, *.pyc, and the like
 
-Version-control internals (.git) are always left out.
+Version-control internals (.git) are always left out. Terminal
+applications open in [appearance] terminal ($TERMINAL, or alacritty).
 ";
 
 enum Mode {

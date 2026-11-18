@@ -43,6 +43,28 @@ pub struct Appearance {
     pub cursor: String,
     /// Cursor size in logical pixels.
     pub cursor_size: u32,
+    /// Terminal emulator, run as `<terminal> -e <command>` for programs
+    /// that need one. Empty: `$TERMINAL`, or else alacritty.
+    pub terminal: String,
+}
+
+impl Appearance {
+    /// The terminal to run: the one configured, else `$TERMINAL`, else
+    /// alacritty.
+    pub fn terminal_program(&self) -> String {
+        terminal_program(&self.terminal, std::env::var("TERMINAL").ok())
+    }
+}
+
+fn terminal_program(configured: &str, from_env: Option<String>) -> String {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return configured.to_owned();
+    }
+    from_env
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "alacritty".to_owned())
 }
 
 impl Default for Appearance {
@@ -55,6 +77,7 @@ impl Default for Appearance {
             icons: IconMode::Auto,
             cursor: String::new(),
             cursor_size: 24,
+            terminal: String::new(),
         }
     }
 }
@@ -129,6 +152,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_terminal_is_configured_or_the_sessions_or_alacritty() {
+        assert_eq!(terminal_program("foot", Some("kitty".into())), "foot");
+        assert_eq!(terminal_program("", Some("kitty".into())), "kitty");
+        assert_eq!(terminal_program(" ", Some(String::new())), "alacritty");
+        assert_eq!(terminal_program("", None), "alacritty");
+    }
     use crate::test_dir;
 
     #[test]

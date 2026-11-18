@@ -9,6 +9,7 @@
 //! The answer to "use version control?" lives here too: `None` until the
 //! question has been asked.
 
+use enso_core::disk;
 use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
@@ -56,17 +57,10 @@ impl Overrides {
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
         let text = toml::to_string(self).map_err(io::Error::other)?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        fs::write(
-            &tmp,
-            format!(
-                "# Written by enso-files' settings; config.toml's [files] is the default under it.\n{text}"
-            ),
-        )?;
-        fs::rename(tmp, path)
+        let text = format!(
+            "# Written by enso-files' settings; config.toml's [files] is the default under it.\n{text}"
+        );
+        disk::write_atomic(path, text.as_bytes(), disk::SHARED)
     }
 
     /// `config` with these changes over it.

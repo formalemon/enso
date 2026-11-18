@@ -431,6 +431,7 @@ name = "enso-auth"
 version = "0.1.0"
 dependencies = [
  "enso-core",
+ "enso-sys",
  "enso-ui",
  "lexopt",
  "rustix",
@@ -499,6 +500,7 @@ name = "enso-fs"
 version = "0.1.0"
 dependencies = [
  "bzip2-rs",
+ "enso-core",
  "flate2",
  "gif",
  "image-webp",
@@ -581,6 +583,7 @@ dependencies = [
 name = "enso-sys"
 version = "0.1.0"
 dependencies = [
+ "enso-core",
  "pulseaudio",
  "zbus",
  "zeroize",
