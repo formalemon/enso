@@ -824,7 +824,13 @@ across), search by name and inside files, query words, recent files (the
 shared xbel), GTK's bookmarks, the command palette, frecent folders,
 select-by, bulk rename (in-app and `$EDITOR`, a setting), properties with
 permissions and live folder sizes, make executable, per-folder views.
-Next: **P5**.
+**P5** so far: drag and drop both ways, archives (browse, extract,
+compress), drives through udisks2, Git's remotes (branches, fetch, pull,
+push, clone, open on the forge), and accounts on GitHub and GitLab
+(gitlab.com or self-hosted) with your own OAuth app: the device flow,
+tokens in enso-keyring (GitLab's refreshed as they run out), your
+repositories to clone, publish, and git's credential helper. Left: IME
+in text fields, fractional scaling.
 
 Each phase ends usable, tested, committed, and measured against §8.
 

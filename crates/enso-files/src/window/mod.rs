@@ -102,6 +102,8 @@ enum Hit {
     GitNo,
     /// A form's field (by index), and its buttons.
     FormField(usize),
+    /// One of a form's choices: which forge.
+    FormChoice(usize),
     FormSave,
     FormCancel,
     /// A drive, and its ⏏.
@@ -310,7 +312,7 @@ pub struct Files {
     /// light up (`None`: the list).
     drop_at: Option<(PathBuf, Option<Rect>)>,
     /// Your GitHub repositories, for the clone form, and the one picked.
-    repos: Vec<crate::github::Repo>,
+    repos: Vec<crate::forge::Repo>,
     repo_pick: usize,
     /// Signing in to GitHub: set to stop waiting.
     signing_in: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -1010,10 +1012,14 @@ impl App for Files {
             Event::Message(Message::Edited(result)) => self.edited(result, cx),
             Event::Message(Message::Toast(text)) => self.toast(text, cx),
             Event::Message(Message::Device(code, page)) => self.device_arrived(code, page, cx),
-            Event::Message(Message::SignedIn(result)) => self.signed_in(result, cx),
-            Event::Message(Message::Repos(result)) => {
+            Event::Message(Message::SignedIn(site, result)) => self.signed_in(site, result, cx),
+            Event::Message(Message::Repos(site, result)) => {
                 match result {
-                    Ok(repos) => self.repos = repos,
+                    // Each forge's in place of what it said before.
+                    Ok(repos) => {
+                        self.repos.retain(|repo| repo.forge != site.name());
+                        self.repos.extend(repos);
+                    }
                     Err(why) => self.toast(why, cx),
                 }
                 cx.redraw();

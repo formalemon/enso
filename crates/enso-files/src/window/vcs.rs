@@ -15,7 +15,10 @@ use enso_ui::{
 
 use super::overlay::{Overlay, Reach};
 use super::{Files, Hit, MenuFor};
-use crate::jobs::Message;
+use crate::{
+    forge::{Account, Repo, Site},
+    jobs::Message,
+};
 
 /// Editing who commits.
 #[derive(Debug)]
@@ -35,8 +38,59 @@ pub(super) struct GitFacts {
     pub global: Identity,
     /// This repository's own identity, if the folder is in one.
     pub own: Option<Identity>,
-    /// git asks enso-files for its way in to GitHub.
-    pub github_git: bool,
+    /// Whether git asks enso-files for its way in, to each forge.
+    pub forge_git: [bool; 2],
+}
+
+impl GitFacts {
+    pub fn helped(&self, site: Site) -> bool {
+        self.forge_git[site_index(site)]
+    }
+
+    pub fn set_helped(&mut self, site: Site, on: bool) {
+        self.forge_git[site_index(site)] = on;
+    }
+}
+
+fn site_index(site: Site) -> usize {
+    match site {
+        Site::GitHub => 0,
+        Site::GitLab => 1,
+    }
+}
+
+/// Your OAuth app on a forge: its client ID, and for GitLab where your
+/// GitLab is.
+#[derive(Debug)]
+pub(super) struct AppForm {
+    pub site: Site,
+    pub id: TextField,
+    /// GitLab's address: gitlab.com, or one of your own.
+    pub host: TextField,
+    /// GitLab: 0, the address; 1, the ID.
+    pub focus: usize,
+    pub error: Option<String>,
+}
+
+impl AppForm {
+    /// The field being typed in.
+    fn field(&mut self) -> &mut TextField {
+        if self.site == Site::GitLab && self.focus == 0 {
+            &mut self.host
+        } else {
+            &mut self.id
+        }
+    }
+}
+
+/// Publishing this repository on a forge: its name there, whether it's
+/// private, which forge (when there's a choice), and what's wrong.
+#[derive(Debug)]
+pub(super) struct PublishForm {
+    pub name: TextField,
+    pub private: bool,
+    pub site: Site,
+    pub error: Option<String>,
 }
 
 /// A question or form version control has open.
@@ -49,20 +103,19 @@ pub(super) enum Vcs {
     NewBranch(TextField, Option<String>),
     /// A repository's address, to clone into the folder shown.
     Clone(TextField, Option<String>),
-    /// Your GitHub OAuth app's client ID, asked once.
-    ClientId(TextField, Option<String>),
-    /// Signing in to GitHub: the code to type there, its page, and what
+    /// Your OAuth app on a forge, asked once.
+    ClientId(AppForm),
+    /// Signing in to a forge: the code to type there, its page, and what
     /// went wrong, if anything did.
     Device {
+        site: Site,
         code: String,
         page: String,
         error: Option<String>,
     },
     /// "Disconnect from GitHub?"
-    Disconnect,
-    /// Publishing this repository on GitHub: its name there, whether it's
-    /// private, and what's wrong with the name.
-    Publish(TextField, bool, Option<String>),
+    Disconnect(Site),
+    Publish(PublishForm),
 }
 
 /// What a line of the branch menu does.
@@ -78,7 +131,7 @@ pub(super) enum BranchLine {
     Web(String),
     NewBranch,
     CommitAs,
-    /// Make it on GitHub and push it there.
+    /// Make it on a forge and push it there.
     Publish,
 }
 
@@ -97,9 +150,9 @@ enum Remote {
         url: String,
         into: PathBuf,
     },
-    /// Make a repository on GitHub, add it as `origin`, and push.
+    /// Make a repository on a forge, add it as `origin`, and push.
     Publish {
-        login: String,
+        account: Account,
         name: String,
         private: bool,
     },
@@ -130,7 +183,7 @@ impl Files {
             own: git::root(self.pane.location())
                 .filter(|_| available)
                 .map(|root| git::identity(&Scope::Repository(root))),
-            github_git: available && crate::github::used_for_git(),
+            forge_git: Site::ALL.map(|site| available && self.forge(site).used_for_git()),
         };
     }
 
@@ -304,9 +357,14 @@ impl Files {
             }
         }
         // Nowhere to push yet, and an account to make somewhere with.
-        if remotes.is_empty() && self.github_account().is_some() {
+        let accounts = self.accounts();
+        if remotes.is_empty() && !accounts.is_empty() {
+            let label = match accounts.as_slice() {
+                [only] => format!("Publish on {}…", only.forge.name()),
+                _ => "Publish…".to_owned(),
+            };
             lines.push((Item::Separator, None));
-            lines.push((Item::new("Publish on GitHub…"), Some(BranchLine::Publish)));
+            lines.push((Item::new(&label), Some(BranchLine::Publish)));
         }
         lines.push((Item::Separator, None));
         lines.push((Item::new("New branch…"), Some(BranchLine::NewBranch)));
@@ -388,7 +446,16 @@ impl Files {
                     .unwrap_or_default();
                 let mut field = TextField::new(&name);
                 field.select_all();
-                self.overlay = Some(Overlay::Vcs(Vcs::Publish(field, true, None)));
+                let site = self
+                    .accounts()
+                    .first()
+                    .map_or(Site::GitHub, |account| account.forge.site);
+                self.overlay = Some(Overlay::Vcs(Vcs::Publish(PublishForm {
+                    name: field,
+                    private: true,
+                    site,
+                    error: None,
+                })));
             }
             BranchLine::CommitAs => self.edit_identity(Scope::Repository(root)),
         }
@@ -399,24 +466,34 @@ impl Files {
     pub(super) fn ask_clone(&mut self) {
         self.overlay = Some(Overlay::Vcs(Vcs::Clone(TextField::default(), None)));
         self.repo_pick = 0;
-        // Signed in: your repositories, to pick from.
-        if let (Some(login), Some(proxy)) =
-            (self.github_account().map(str::to_owned), self.proxy.clone())
-        {
+        // Signed in: your repositories on each forge, to pick from.
+        self.repos.clear();
+        for account in self.accounts() {
+            let Some(proxy) = self.proxy.clone() else {
+                break;
+            };
             let _ = thread::Builder::new()
                 .name("enso-files-repos".to_owned())
                 .spawn(move || {
-                    let result = crate::github::token(&login)
-                        .ok_or_else(|| "The keyring has no GitHub token: sign in again".to_owned())
-                        .and_then(|token| crate::github::repos(&token));
-                    proxy.send(Message::Repos(result));
+                    let site = account.forge.site;
+                    let result = account
+                        .forge
+                        .token(&account.login, &account.client_id)
+                        .ok_or_else(|| {
+                            format!(
+                                "The keyring has no {} token: sign in again",
+                                account.forge.name()
+                            )
+                        })
+                        .and_then(|token| account.forge.repos(&token));
+                    proxy.send(Message::Repos(site, result));
                 });
         }
     }
 
     /// The repositories matching what's typed in the clone form, best
     /// first, at most `MOST_REPOS`.
-    pub(super) fn repos_shown(&self) -> Vec<&crate::github::Repo> {
+    pub(super) fn repos_shown(&self) -> Vec<&Repo> {
         let Some(Vcs::Clone(field, _)) = self.overlay.vcs() else {
             return Vec::new();
         };
@@ -426,7 +503,7 @@ impl Files {
             return Vec::new();
         }
         let pattern = enso_fs::fuzzy::Pattern::new(text);
-        let mut scored: Vec<(i32, &crate::github::Repo)> = self
+        let mut scored: Vec<(i32, &Repo)> = self
             .repos
             .iter()
             .filter_map(|repo| pattern.score(&repo.name).map(|score| (score, repo)))
@@ -474,15 +551,17 @@ impl Files {
                     }
                     // Three steps: make it, add it as origin, push.
                     Remote::Publish {
-                        login,
+                        account,
                         name,
                         private,
                     } => {
-                        let published = crate::github::token(login)
+                        let forge = &account.forge;
+                        let published = forge
+                            .token(&account.login, &account.client_id)
                             .ok_or_else(|| {
-                                "The keyring has no GitHub token: sign in again".to_owned()
+                                format!("The keyring has no {} token: sign in again", forge.name())
                             })
-                            .and_then(|token| crate::github::create(&token, name, *private))
+                            .and_then(|token| forge.create(&token, name, *private))
                             .and_then(|made| {
                                 git::add_remote(&root, "origin", &made.clone_url)
                                     .map_err(|err| err.to_string())?;
@@ -490,7 +569,10 @@ impl Files {
                                 Ok(made.name)
                             });
                         match published {
-                            Ok(made) => (Some(format!("Published on GitHub as {made}")), Ok(None)),
+                            Ok(made) => (
+                                Some(format!("Published on {} as {made}", forge.name())),
+                                Ok(None),
+                            ),
                             Err(why) => (None, Err(std::io::Error::other(why))),
                         }
                     }
@@ -596,43 +678,80 @@ impl Files {
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
                 _ => *error = None,
             },
-            Vcs::ClientId(field, error) => match field.key(key) {
+            Vcs::ClientId(app) if key.key == Key::Tab && app.site == Site::GitLab => {
+                app.focus = 1 - app.focus;
+            }
+            Vcs::ClientId(app) => match app.field().key(key) {
+                // GitLab's address first, then on to the ID.
+                field::Response::Submit if app.site == Site::GitLab && app.focus == 0 => {
+                    app.focus = 1;
+                }
                 field::Response::Submit => {
-                    let id = field.text().trim().to_owned();
+                    let id = app.id.text().trim().to_owned();
+                    let site = app.site;
+                    let host = (site == Site::GitLab).then(|| app.host.text().trim().to_owned());
                     if id.is_empty() || id.contains(char::is_whitespace) {
-                        *error =
-                            Some("The client ID, as GitHub shows it on the app's page".to_owned());
+                        app.error = Some(format!(
+                            "The ID, as {} shows it on the app's page",
+                            site.name()
+                        ));
+                    } else if host
+                        .as_deref()
+                        .is_some_and(|host| host.is_empty() || host.contains(char::is_whitespace))
+                    {
+                        app.error = Some("Where your GitLab is: gitlab.com, say".to_owned());
+                        app.focus = 0;
                     } else {
-                        self.set_client_id(id, cx);
+                        self.set_client_id(site, id, host, cx);
                     }
                 }
                 field::Response::Cancel => self.overlay = None,
+                field::Response::Copy(text) | field::Response::Cut(text) => {
+                    cx.copy(Clip::text(&text))
+                }
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
-                _ => *error = None,
+                _ => app.error = None,
             },
             Vcs::Device { .. } => match key.key {
                 Key::Enter => self.open_device_page(cx),
                 Key::Escape => self.cancel_sign_in(),
                 _ => {}
             },
-            Vcs::Disconnect => match key.key {
-                Key::Enter => self.disconnect(cx),
+            Vcs::Disconnect(site) => match key.key {
+                Key::Enter => {
+                    let site = *site;
+                    self.disconnect(site, cx);
+                }
                 Key::Escape => self.overlay = None,
                 _ => {}
             },
-            Vcs::Publish(field, private, error) => match key.key {
-                Key::Tab => *private = !*private,
-                _ => match field.key(key) {
+            Vcs::Publish(form) => match key.key {
+                // Shift+Tab: the other forge, when both are signed in to.
+                Key::Tab if key.mods.shift => {
+                    let other = match form.site {
+                        Site::GitHub => Site::GitLab,
+                        Site::GitLab => Site::GitHub,
+                    };
+                    let has_other = match other {
+                        Site::GitHub => self.overrides.github_account.is_some(),
+                        Site::GitLab => self.overrides.gitlab_account.is_some(),
+                    };
+                    if has_other && let Some(Vcs::Publish(form)) = self.overlay.vcs_mut() {
+                        form.site = other;
+                    }
+                }
+                Key::Tab => form.private = !form.private,
+                _ => match form.name.key(key) {
                     field::Response::Submit => {
-                        let name = field.text().trim().to_owned();
-                        let private = *private;
+                        let name = form.name.text().trim().to_owned();
+                        let (private, site) = (form.private, form.site);
                         if name.is_empty() || name.contains(char::is_whitespace) {
-                            *error = Some("A name, without spaces".to_owned());
-                        } else if let Some(login) = self.github_account().map(str::to_owned) {
+                            form.error = Some("A name, without spaces".to_owned());
+                        } else if let Some(account) = self.signed_in_to(site) {
                             self.overlay = None;
-                            self.toast("Publishing on GitHub…", cx);
+                            self.toast(format!("Publishing on {}…", account.forge.name()), cx);
                             self.remote(Remote::Publish {
-                                login,
+                                account,
                                 name,
                                 private,
                             });
@@ -640,7 +759,7 @@ impl Files {
                     }
                     field::Response::Cancel => self.overlay = None,
                     field::Response::Paste => cx.paste(&TEXT_TYPES),
-                    _ => *error = None,
+                    _ => form.error = None,
                 },
             },
             Vcs::Clone(..) if key.nav(false).is_some() => {
@@ -699,13 +818,16 @@ impl Files {
                 .insert(text);
                 true
             }
-            Some(
-                Vcs::NewBranch(field, _)
-                | Vcs::Clone(field, _)
-                | Vcs::ClientId(field, _)
-                | Vcs::Publish(field, ..),
-            ) => {
+            Some(Vcs::NewBranch(field, _) | Vcs::Clone(field, _)) => {
                 field.insert(text);
+                true
+            }
+            Some(Vcs::ClientId(app)) => {
+                app.field().insert(text);
+                true
+            }
+            Some(Vcs::Publish(form)) => {
+                form.name.insert(text);
                 true
             }
             _ => false,
@@ -736,15 +858,23 @@ impl Files {
         match hit {
             Some(Hit::GitYes) => self.answer_git(true, cx),
             Some(Hit::GitNo) => self.answer_git(false, cx),
-            Some(Hit::FormField(index)) => {
-                if let Some(Vcs::Identity(edit)) = self.overlay.vcs_mut() {
-                    edit.focus = *index;
+            Some(Hit::FormField(index)) => match self.overlay.vcs_mut() {
+                Some(Vcs::Identity(edit)) => edit.focus = *index,
+                Some(Vcs::ClientId(app)) => app.focus = *index,
+                _ => {}
+            },
+            Some(Hit::FormChoice(index)) => {
+                if let Some(Vcs::Publish(form)) = self.overlay.vcs_mut() {
+                    form.site = Site::ALL[*index];
                 }
             }
             Some(Hit::FormSave) => match self.overlay.vcs() {
                 Some(Vcs::Identity(_)) => self.save_identity(cx),
                 Some(Vcs::Device { .. }) => self.open_device_page(cx),
-                Some(Vcs::Disconnect) => self.disconnect(cx),
+                Some(Vcs::Disconnect(site)) => {
+                    let site = *site;
+                    self.disconnect(site, cx);
+                }
                 Some(
                     Vcs::NewBranch(..) | Vcs::Clone(..) | Vcs::ClientId(..) | Vcs::Publish(..),
                 ) => {
@@ -853,35 +983,48 @@ impl Files {
                 1,
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Create", Kind::Primary, Hit::FormSave)],
             ),
-            Vcs::ClientId(..) => (
-                "Your GitHub OAuth app".to_owned(),
-                "Its client ID: make one at github.com/settings/developers → New OAuth App, with “Enable Device Flow” ticked (any address will do for the rest). It's public, not a secret."
-                    .to_owned(),
-                1,
-                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Sign in", Kind::Primary, Hit::FormSave)],
-            ),
-            Vcs::Device { code, .. } => (
-                "Sign in to GitHub".to_owned(),
-                if code.is_empty() {
-                    "Asking GitHub for a code…".to_owned()
-                } else {
-                    "Type this code at GitHub and approve. Open GitHub copies it and opens the page.".to_owned()
-                },
-                1,
-                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Open GitHub", Kind::Primary, Hit::FormSave)],
-            ),
-            Vcs::Publish(_, private, _) => (
-                "Publish on GitHub".to_owned(),
+            Vcs::ClientId(app) => {
+                let forge = match app.site {
+                    Site::GitHub => self.forge(Site::GitHub),
+                    Site::GitLab => crate::forge::Forge::gitlab(app.host.text()),
+                };
+                (
+                    format!("Your {} OAuth app", app.site.name()),
+                    forge.app_help(),
+                    if app.site == Site::GitLab { 2 } else { 1 },
+                    [("Cancel", Kind::Secondary, Hit::FormCancel), ("Sign in", Kind::Primary, Hit::FormSave)],
+                )
+            }
+            Vcs::Device { site, code, .. } => {
+                let name = self.forge(*site).name();
+                (
+                    format!("Sign in to {name}"),
+                    if code.is_empty() {
+                        format!("Asking {name} for a code…")
+                    } else {
+                        format!("Type this code at {name} and approve. Open {} copies it and opens the page.", site.name())
+                    },
+                    1,
+                    [("Cancel", Kind::Secondary, Hit::FormCancel), ("Open", Kind::Primary, Hit::FormSave)],
+                )
+            }
+            Vcs::Publish(form) => (
+                format!("Publish on {}", self.forge(form.site).name()),
                 format!(
-                    "Made on your account as a {} repository, added as origin, and pushed. Tab: make it {}.",
-                    if *private { "private" } else { "public" },
-                    if *private { "public" } else { "private" }
+                    "Made on your account as a {} repository, added as origin, and pushed. Tab: make it {}.{}",
+                    if form.private { "private" } else { "public" },
+                    if form.private { "public" } else { "private" },
+                    if self.accounts().len() > 1 { " Shift+Tab: the other forge." } else { "" }
                 ),
                 1,
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Publish", Kind::Primary, Hit::FormSave)],
             ),
-            Vcs::Disconnect => (
-                format!("Disconnect from GitHub ({})?", self.github_account().unwrap_or("you")),
+            Vcs::Disconnect(site) => (
+                format!(
+                    "Disconnect from {} ({})?",
+                    self.forge(*site).name(),
+                    self.account(*site).unwrap_or("you")
+                ),
                 "Its token leaves your keyring. You can sign in again any time.".to_owned(),
                 0,
                 [("Keep", Kind::Secondary, Hit::FormCancel), ("Disconnect", Kind::Danger, Hit::FormSave)],
@@ -889,7 +1032,7 @@ impl Files {
             Vcs::Clone(..) => (
                 "Clone a repository".to_owned(),
                 if self.repos.is_empty() {
-                    "Its address, from GitHub or anywhere: copied into this folder, under its own name.".to_owned()
+                    "Its address, from a forge or anywhere: copied into this folder, under its own name.".to_owned()
                 } else {
                     "One of yours, by name — or any address: copied into this folder, under its own name.".to_owned()
                 },
@@ -906,37 +1049,70 @@ impl Files {
         };
         let error = match vcs {
             Vcs::Identity(edit) => edit.error.clone(),
-            Vcs::Device { error, .. }
-            | Vcs::NewBranch(_, error)
-            | Vcs::Clone(_, error)
-            | Vcs::ClientId(_, error)
-            | Vcs::Publish(_, _, error) => error.clone(),
-            Vcs::Ask | Vcs::Disconnect => None,
+            Vcs::ClientId(app) => app.error.clone(),
+            Vcs::Publish(form) => form.error.clone(),
+            Vcs::Device { error, .. } | Vcs::NewBranch(_, error) | Vcs::Clone(_, error) => {
+                error.clone()
+            }
+            Vcs::Ask | Vcs::Disconnect(_) => None,
         };
+        // Publishing with two forges signed in to: which one.
+        let publish_on = match vcs {
+            Vcs::Publish(form) if self.accounts().len() > 1 => Some(form.site),
+            _ => None,
+        };
+        let forges = Site::ALL.map(Site::name);
         let code = match vcs {
             Vcs::Device { code, .. } if code.is_empty() => Some("· · · ·".to_owned()),
             Vcs::Device { code, .. } => Some(code.clone()),
             _ => None,
         };
-        // Signed in: your repositories under the field, the picked one lit.
-        let shown: Vec<(String, bool)> = if matches!(vcs, Vcs::Clone(..)) {
+        // Signed in: your repositories under the field, the picked one lit,
+        // each with where it is when there's more than one place.
+        let several = self.accounts().len() > 1;
+        let shown: Vec<(String, String)> = if matches!(vcs, Vcs::Clone(..)) {
             self.repos_shown()
                 .iter()
-                .map(|repo| (repo.name.clone(), repo.private))
+                .map(|repo| {
+                    let note = match (repo.private, several) {
+                        (true, true) => format!("private · {}", repo.forge),
+                        (true, false) => "private".to_owned(),
+                        (false, true) => repo.forge.to_owned(),
+                        (false, false) => String::new(),
+                    };
+                    (repo.name.clone(), note)
+                })
                 .collect()
         } else {
             Vec::new()
         };
         const REPO_ROW: f32 = 32.0;
 
+        let labels = if matches!(vcs, Vcs::ClientId(_)) {
+            ["Where", "App ID"]
+        } else {
+            ["Name", "Email"]
+        };
         let mut form = Form::new(&title).width(480.0).about(&detail);
+        if let Some(site) = publish_on {
+            form = form.part(Part::Choices {
+                label: Some("On"),
+                options: &forges,
+                chosen: site_index(site),
+                hovered: match self.hover {
+                    Some(Hit::FormChoice(index)) => Some(index),
+                    _ => None,
+                },
+                enabled: true,
+            });
+        }
         if fields == 2 {
             form = form
                 .part(Part::Field {
-                    label: Some("Name"),
+                    label: Some(labels[0]),
                 })
                 .part(Part::Field {
-                    label: Some("Email"),
+                    label: Some(labels[1]),
                 });
         } else if let Some(code) = &code {
             form = form.part(Part::Code(code));
@@ -946,7 +1122,7 @@ impl Files {
         if !shown.is_empty() {
             form = form.part(Part::Space(shown.len() as f32 * REPO_ROW));
         }
-        if !matches!(vcs, Vcs::Ask | Vcs::Disconnect) {
+        if !matches!(vcs, Vcs::Ask | Vcs::Disconnect(_)) {
             form = form.note(error.as_deref().map_or(Note::Nothing, Note::Complains));
         }
         for (label, kind, hit) in &buttons {
@@ -991,28 +1167,67 @@ impl Files {
                 hits.push((placed.parts[0], Hit::FormField(0)));
                 hits.push((placed.parts[1], Hit::FormField(1)));
             }
-            Some(
-                Vcs::NewBranch(text, _)
-                | Vcs::Clone(text, _)
-                | Vcs::ClientId(text, _)
-                | Vcs::Publish(text, _, _),
-            ) => field(canvas, placed.parts[0], text, true, single_placeholder),
+            Some(Vcs::ClientId(app)) if app.site == Site::GitLab => {
+                let focus = app.focus;
+                field(
+                    canvas,
+                    placed.parts[0],
+                    &mut app.host,
+                    focus == 0,
+                    "gitlab.com",
+                );
+                field(
+                    canvas,
+                    placed.parts[1],
+                    &mut app.id,
+                    focus == 1,
+                    "a long hexadecimal ID",
+                );
+                hits.push((placed.parts[0], Hit::FormField(0)));
+                hits.push((placed.parts[1], Hit::FormField(1)));
+            }
+            Some(Vcs::ClientId(app)) => {
+                field(
+                    canvas,
+                    placed.parts[0],
+                    &mut app.id,
+                    true,
+                    single_placeholder,
+                );
+            }
+            Some(Vcs::Publish(form)) => {
+                // After the choice of forge, when there is one.
+                let at = usize::from(publish_on.is_some());
+                field(
+                    canvas,
+                    placed.parts[at],
+                    &mut form.name,
+                    true,
+                    single_placeholder,
+                );
+            }
+            Some(Vcs::NewBranch(text, _) | Vcs::Clone(text, _)) => {
+                field(canvas, placed.parts[0], text, true, single_placeholder);
+            }
             _ => {}
         }
+        for &(_, index, pill) in &placed.choices {
+            hits.push((pill, Hit::FormChoice(index)));
+        }
         if let Some(list) = placed.parts.last().filter(|_| !shown.is_empty()) {
-            for (index, (name, private)) in shown.iter().enumerate() {
+            for (index, (name, note)) in shown.iter().enumerate() {
                 let rect = Rect::new(list.x, list.y + index as f32 * REPO_ROW, list.w, 30.0);
                 if index == self.repo_pick {
                     canvas.fill(rect, radius::CONTROL, look.accent.alpha(opacity::TINT));
                 }
                 let label = rect.inset_xy(space::MD, 0.0);
                 canvas.text_in(
-                    &Text::new(name, small, look.text).max_width(label.w - 60.0),
+                    &Text::new(name, small, look.text).max_width(label.w - 130.0),
                     label,
                     Align::Start,
                 );
-                if *private {
-                    canvas.text_in(&Text::new("private", small, look.muted), label, Align::End);
+                if !note.is_empty() {
+                    canvas.text_in(&Text::new(note, small, look.muted), label, Align::End);
                 }
             }
         }

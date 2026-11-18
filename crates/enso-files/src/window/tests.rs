@@ -369,7 +369,7 @@ fn renders_settings_and_version_control() {
             email: Some("me@example.com".into()),
         },
         own: None,
-        github_git: false,
+        forge_git: [false; 2],
     };
     files.overlay = Some(Overlay::Settings(4));
     snapshot(&render(&mut files, (900, 640)), "enso-files-settings");
@@ -1078,6 +1078,7 @@ fn renders_github_sign_in_clone_and_publish() {
     use super::vcs::Vcs;
     let mut files = files();
     files.overlay = Some(Overlay::Vcs(Vcs::Device {
+        site: crate::forge::Site::GitHub,
         code: "4F2A-91CD".into(),
         page: "https://github.com/login/device".into(),
         error: None,
@@ -1088,11 +1089,12 @@ fn renders_github_sign_in_clone_and_publish() {
     files.overrides.github_account = Some("Formalemon".into());
     files.repos = ["formalemon/enso", "formalemon/sumi", "formalemon/notes"]
         .into_iter()
-        .map(|name| crate::github::Repo {
+        .map(|name| crate::forge::Repo {
             name: name.into(),
             clone_url: format!("https://github.com/{name}.git"),
             private: name.ends_with("notes"),
             description: String::new(),
+            forge: "GitHub",
         })
         .collect();
     files.overlay = Some(Overlay::Vcs(Vcs::Clone(
@@ -1108,12 +1110,56 @@ fn renders_github_sign_in_clone_and_publish() {
     )));
     assert!(files.repos_shown().is_empty());
 
-    files.overlay = Some(Overlay::Vcs(Vcs::Publish(
-        enso_ui::widget::TextField::new("enso"),
-        true,
-        None,
-    )));
+    files.overlay = Some(Overlay::Vcs(Vcs::Publish(super::vcs::PublishForm {
+        name: enso_ui::widget::TextField::new("enso"),
+        private: true,
+        site: crate::forge::Site::GitHub,
+        error: None,
+    })));
     snapshot(&render(&mut files, (900, 480)), "enso-files-github-publish");
+    // One forge: no choice of where.
+    assert!(
+        !files
+            .hits
+            .iter()
+            .any(|(_, hit)| matches!(hit, Hit::FormChoice(_)))
+    );
+}
+
+#[test]
+fn gitlab_asks_where_it_is_and_publish_offers_both() {
+    use super::vcs::{AppForm, PublishForm, Vcs};
+    use crate::forge::Site;
+    let mut files = files();
+    files.config.gitlab_host = "gitlab.com".into();
+    // GitLab's app: where it is, then its ID.
+    files.overlay = Some(Overlay::Vcs(Vcs::ClientId(AppForm {
+        site: Site::GitLab,
+        id: enso_ui::widget::TextField::default(),
+        host: enso_ui::widget::TextField::new("git.example.org"),
+        focus: 1,
+        error: None,
+    })));
+    snapshot(&render(&mut files, (900, 520)), "enso-files-gitlab-app");
+    assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::FormField(0)));
+    assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::FormField(1)));
+
+    // Signed in to both: publish asks which.
+    files.overrides.github_account = Some("formalemon".into());
+    files.overrides.gitlab_account = Some("formalemon".into());
+    files.overlay = Some(Overlay::Vcs(Vcs::Publish(PublishForm {
+        name: enso_ui::widget::TextField::new("sumi"),
+        private: true,
+        site: Site::GitLab,
+        error: None,
+    })));
+    snapshot(&render(&mut files, (900, 520)), "enso-files-publish-where");
+    let choices: Vec<_> = files
+        .hits
+        .iter()
+        .filter(|(_, hit)| matches!(hit, Hit::FormChoice(_)))
+        .collect();
+    assert_eq!(choices.len(), 2);
 }
 
 #[test]

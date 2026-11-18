@@ -105,6 +105,11 @@ bulk_rename = true
 # GitHub asks for it the first time). Make one at github.com/settings/developers
 # → New OAuth App, with "Enable Device Flow" ticked. It's public, not a secret.
 github_client_id = ""
+# The same for GitLab (Settings → GitLab): your OAuth app's application ID, made
+# at <your GitLab>/-/user_settings/applications with the api scope and
+# "Confidential" unticked; and where your GitLab is, if not gitlab.com.
+gitlab_client_id = ""
+gitlab_host = "gitlab.com"
 
 [notify]
 width = 360

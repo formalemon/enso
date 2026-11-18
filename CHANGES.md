@@ -44,6 +44,12 @@ places; this file is current. Add to it with each change worth mentioning.
 
 ### enso-files
 
+- **GitLab sign-in**, gitlab.com or your own: Settings → GitLab asks where
+  it is and for your OAuth app's ID, then signs in with the device flow as
+  GitHub does. Its tokens go in the keyring and are refreshed as they run
+  out; clone lists your projects beside your GitHub repositories, publish
+  asks which forge when you're signed in to both, and git can ask
+  enso-files for GitLab's way in too.
 - One overlay at a time — a dialog, a form, the palette, a menu — by
   construction; keys and clicks go to it alone.
 - The `?` keys card shows the essentials and points to the command palette

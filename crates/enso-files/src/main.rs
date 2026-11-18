@@ -11,9 +11,9 @@
 mod bench;
 mod bulk;
 mod config;
+mod forge;
 mod frecent;
 mod gather;
-mod github;
 mod jobs;
 mod kind;
 mod location;
@@ -153,8 +153,32 @@ fn main() -> ExitCode {
         Command::Portal(command) => portal::run(&command),
         Command::GitCredential(operation) => {
             let ctx = Context::load();
+            let mut ctx = ctx;
+            let config: config::FilesConfig = ctx.section("files");
             let overrides = settings::Overrides::load(&ctx.paths.state_dir.join(settings::FILE));
-            github::git_credential(&operation, overrides.github_account.as_deref());
+            let config = overrides.over(&config);
+            let accounts: Vec<forge::Account> = [
+                (
+                    forge::Forge::github(),
+                    &overrides.github_account,
+                    &config.github_client_id,
+                ),
+                (
+                    forge::Forge::gitlab(&config.gitlab_host),
+                    &overrides.gitlab_account,
+                    &config.gitlab_client_id,
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(forge, login, client_id)| {
+                Some(forge::Account {
+                    forge,
+                    login: login.clone()?,
+                    client_id: client_id.trim().to_owned(),
+                })
+            })
+            .collect();
+            forge::git_credential(&operation, &accounts);
             ExitCode::SUCCESS
         }
     }

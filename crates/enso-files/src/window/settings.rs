@@ -12,6 +12,7 @@ use enso_ui::{
 
 use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
+use crate::forge::Site;
 use crate::{
     config::{Density, SortBy, View},
     settings,
@@ -32,10 +33,10 @@ pub(super) enum Row {
     Global,
     /// Who commits in this repository.
     Repository,
-    /// The GitHub account.
-    GitHub,
+    /// The account on a forge.
+    Account(Site),
     /// git pushes and pulls with it.
-    GitHubGit,
+    AccountGit(Site),
 }
 
 const VIEWS: [(View, &str); 3] = [
@@ -69,9 +70,11 @@ impl Files {
             if git::root(self.pane.location()).is_some() {
                 rows.push(Row::Repository);
             }
-            rows.push(Row::GitHub);
-            if self.github_account().is_some() {
-                rows.push(Row::GitHubGit);
+            for site in Site::ALL {
+                rows.push(Row::Account(site));
+                if self.account(site).is_some() {
+                    rows.push(Row::AccountGit(site));
+                }
             }
         }
         rows
@@ -199,13 +202,13 @@ impl Files {
                 self.edit_identity(Scope::Global);
                 return;
             }
-            Row::GitHub => {
+            Row::Account(site) => {
                 self.overlay = None;
-                self.github_row(cx);
+                self.account_row(site, cx);
                 return;
             }
-            Row::GitHubGit => {
-                self.toggle_github_git(cx);
+            Row::AccountGit(site) => {
+                self.toggle_forge_git(site, cx);
                 cx.redraw();
                 return;
             }
@@ -364,14 +367,14 @@ impl Files {
                         _ => "the global identity".to_owned(),
                     }),
                 ),
-                Row::GitHub => (
-                    "GitHub",
-                    Some(match self.github_account() {
+                Row::Account(site) => (
+                    site.name(),
+                    Some(match self.account(*site) {
                         Some(login) => login.to_owned(),
                         None => "Sign in".to_owned(),
                     }),
                 ),
-                Row::GitHubGit => ("git pushes and pulls with it", None),
+                Row::AccountGit(_) => ("git pushes and pulls with it", None),
             };
             canvas.text_in(
                 &Text::new(label, body, colors.text),
@@ -397,7 +400,7 @@ impl Files {
                 Row::Reversed => Some(config.descending),
                 Row::BulkRename => Some(config.bulk_rename),
                 Row::Git => Some(self.git_on()),
-                Row::GitHubGit => Some(facts.github_git),
+                Row::AccountGit(site) => Some(facts.forge_git[usize::from(*site == Site::GitLab)]),
                 _ => None,
             };
             if let Some(on) = on {

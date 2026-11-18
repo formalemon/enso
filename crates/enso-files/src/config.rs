@@ -23,6 +23,11 @@ pub struct FilesConfig {
     /// The client ID of your GitHub OAuth app, for signing in (Settings →
     /// GitHub). Public, not a secret; empty until you make one.
     pub github_client_id: String,
+    /// The application ID of your GitLab OAuth app (Settings → GitLab).
+    /// Public, not a secret; empty until you make one.
+    pub gitlab_client_id: String,
+    /// Where your GitLab is: gitlab.com, or one of your own.
+    pub gitlab_host: String,
 }
 
 impl Default for FilesConfig {
@@ -36,6 +41,8 @@ impl Default for FilesConfig {
             view: View::List,
             bulk_rename: true,
             github_client_id: String::new(),
+            gitlab_client_id: String::new(),
+            gitlab_host: "gitlab.com".to_owned(),
         }
     }
 }

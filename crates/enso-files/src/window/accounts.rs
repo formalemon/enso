@@ -1,8 +1,9 @@
-//! Signing in to GitHub, in the window: Settings → GitHub. The first time,
-//! it asks for your OAuth app's client ID; then it shows a short code and
-//! opens GitHub's page to type it at, copying it as it does. Approved
-//! there, the token goes into the keyring and the account's name into the
-//! settings. Disconnecting takes the token out of the keyring again.
+//! Signing in to a forge, in the window: Settings → GitHub, or → GitLab.
+//! The first time, it asks for your OAuth app's client ID (and, for
+//! GitLab, where your GitLab is); then it shows a short code and opens the
+//! forge's page to type it at, copying it as it does. Approved there, the
+//! token goes into the keyring and the account's name into the settings.
+//! Disconnecting takes the token out of the keyring again.
 
 use std::{
     sync::{
@@ -16,9 +17,12 @@ use std::{
 use enso_ui::{Clip, Cx, widget::TextField};
 
 use super::overlay::{Overlay, Reach};
-use super::{Files, vcs::Vcs};
+use super::{
+    Files,
+    vcs::{AppForm, Vcs},
+};
 use crate::{
-    github::{self, Waiting},
+    forge::{Account, Forge, Site, Waiting},
     jobs::Message,
 };
 
@@ -26,49 +30,122 @@ use crate::{
 const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
 impl Files {
-    pub(super) fn github_account(&self) -> Option<&str> {
-        self.overrides.github_account.as_deref()
-    }
-
-    /// Settings → GitHub was chosen.
-    pub(super) fn github_row(&mut self, cx: &mut Cx<'_>) {
-        if self.github_account().is_some() {
-            self.overlay = Some(Overlay::Vcs(Vcs::Disconnect));
-        } else if self.config.github_client_id.trim().is_empty() {
-            self.overlay = Some(Overlay::Vcs(Vcs::ClientId(TextField::default(), None)));
-        } else {
-            self.start_sign_in(cx);
+    /// The account signed in to on `site`, by its login.
+    pub(super) fn account(&self, site: Site) -> Option<&str> {
+        match site {
+            Site::GitHub => self.overrides.github_account.as_deref(),
+            Site::GitLab => self.overrides.gitlab_account.as_deref(),
         }
     }
 
-    /// The client ID was given: keep it, and sign in.
-    pub(super) fn set_client_id(&mut self, id: String, cx: &mut Cx<'_>) {
-        self.overrides.github_client_id = Some(id);
-        self.save_overrides(cx);
-        self.start_sign_in(cx);
+    /// `site`, where it is.
+    pub(super) fn forge(&self, site: Site) -> Forge {
+        match site {
+            Site::GitHub => Forge::github(),
+            Site::GitLab => Forge::gitlab(&self.config.gitlab_host),
+        }
     }
 
-    /// Ask GitHub for a code, then wait for it to be approved, on a thread.
-    pub(super) fn start_sign_in(&mut self, cx: &mut Cx<'_>) {
+    /// The client ID of your OAuth app on `site`.
+    pub(super) fn client_id(&self, site: Site) -> String {
+        match site {
+            Site::GitHub => &self.config.github_client_id,
+            Site::GitLab => &self.config.gitlab_client_id,
+        }
+        .trim()
+        .to_owned()
+    }
+
+    /// The account on `site`, with all it takes to use it.
+    pub(super) fn signed_in_to(&self, site: Site) -> Option<Account> {
+        Some(Account {
+            forge: self.forge(site),
+            login: self.account(site)?.to_owned(),
+            client_id: self.client_id(site),
+        })
+    }
+
+    /// Every account signed in to.
+    pub(super) fn accounts(&self) -> Vec<Account> {
+        Site::ALL
+            .into_iter()
+            .filter_map(|site| self.signed_in_to(site))
+            .collect()
+    }
+
+    fn set_account(&mut self, site: Site, login: Option<String>) {
+        match site {
+            Site::GitHub => self.overrides.github_account = login,
+            Site::GitLab => self.overrides.gitlab_account = login,
+        }
+    }
+
+    /// Settings → GitHub (or GitLab) was chosen.
+    pub(super) fn account_row(&mut self, site: Site, cx: &mut Cx<'_>) {
+        if self.account(site).is_some() {
+            self.overlay = Some(Overlay::Vcs(Vcs::Disconnect(site)));
+        } else if self.client_id(site).is_empty() {
+            let host = match site {
+                Site::GitHub => String::new(),
+                Site::GitLab => self.forge(site).host,
+            };
+            self.overlay = Some(Overlay::Vcs(Vcs::ClientId(AppForm {
+                site,
+                id: TextField::default(),
+                host: TextField::new(&host),
+                focus: usize::from(site == Site::GitLab && host == "gitlab.com"),
+                error: None,
+            })));
+        } else {
+            self.start_sign_in(site, cx);
+        }
+    }
+
+    /// The app was given: keep its ID (and where the forge is), and sign in.
+    pub(super) fn set_client_id(
+        &mut self,
+        site: Site,
+        id: String,
+        host: Option<String>,
+        cx: &mut Cx<'_>,
+    ) {
+        match site {
+            Site::GitHub => self.overrides.github_client_id = Some(id),
+            Site::GitLab => {
+                self.overrides.gitlab_client_id = Some(id);
+                if let Some(host) = host {
+                    self.overrides.gitlab_host = Some(Forge::gitlab(&host).host);
+                }
+            }
+        }
+        self.save_overrides(cx);
+        self.start_sign_in(site, cx);
+    }
+
+    /// Ask the forge for a code, then wait for it to be approved, on a
+    /// thread.
+    pub(super) fn start_sign_in(&mut self, site: Site, cx: &mut Cx<'_>) {
         let Some(proxy) = self.proxy.clone() else {
             return;
         };
-        let client_id = self.config.github_client_id.trim().to_owned();
+        let forge = self.forge(site);
+        let client_id = self.client_id(site);
         let stop = Arc::new(AtomicBool::new(false));
         self.signing_in = Some(stop.clone());
         self.overlay = Some(Overlay::Vcs(Vcs::Device {
+            site,
             code: String::new(),
             page: String::new(),
             error: None,
         }));
         cx.redraw();
         let _ = thread::Builder::new()
-            .name("enso-files-github".to_owned())
+            .name("enso-files-sign-in".to_owned())
             .spawn(move || {
-                let code = match github::begin(&client_id) {
+                let code = match forge.begin(&client_id) {
                     Ok(code) => code,
                     Err(why) => {
-                        proxy.send(Message::SignedIn(Err(why)));
+                        proxy.send(Message::SignedIn(site, Err(why)));
                         return;
                     }
                 };
@@ -85,19 +162,19 @@ impl Files {
                     if started.elapsed() > PATIENCE {
                         break Err("The code ran out of time: sign in again".to_owned());
                     }
-                    match github::poll(&client_id, &code.device_code) {
+                    match forge.poll(&client_id, &code.device_code) {
                         Waiting::Pending => {}
                         Waiting::SlowDown => interval += Duration::from_secs(5),
                         Waiting::Failed(why) => break Err(why),
-                        Waiting::Token(token) => {
-                            break github::login(&token).and_then(|login| {
-                                github::keep(&login, &token)?;
+                        Waiting::Token(tokens) => {
+                            break forge.login(&tokens.access).and_then(|login| {
+                                forge.keep(&login, &tokens)?;
                                 Ok(login)
                             });
                         }
                     }
                 };
-                proxy.send(Message::SignedIn(result));
+                proxy.send(Message::SignedIn(site, result));
             });
     }
 
@@ -114,16 +191,24 @@ impl Files {
         }
     }
 
-    pub(super) fn signed_in(&mut self, result: Result<String, String>, cx: &mut Cx<'_>) {
+    pub(super) fn signed_in(
+        &mut self,
+        site: Site,
+        result: Result<String, String>,
+        cx: &mut Cx<'_>,
+    ) {
         self.signing_in = None;
         match result {
             Ok(login) => {
                 // The sign-in form, if it's still up; nothing else.
                 self.overlay.take_vcs();
-                self.overrides.github_account = Some(login.clone());
+                self.set_account(site, Some(login.clone()));
                 self.save_overrides(cx);
                 self.toast(
-                    format!("Connected to GitHub as {login} · the token is in your keyring"),
+                    format!(
+                        "Connected to {} as {login} · the token is in your keyring",
+                        self.forge(site).name()
+                    ),
                     cx,
                 );
             }
@@ -135,8 +220,8 @@ impl Files {
         cx.redraw();
     }
 
-    /// "Open GitHub": the page, in the browser, with the code copied to
-    /// paste there.
+    /// "Open GitHub" (or GitLab): the page, in the browser, with the code
+    /// copied to paste there.
     pub(super) fn open_device_page(&mut self, cx: &mut Cx<'_>) {
         let Some(Vcs::Device { code, page, .. }) = self.overlay.vcs() else {
             return;
@@ -158,20 +243,23 @@ impl Files {
         self.overlay.take_vcs();
     }
 
-    pub(super) fn disconnect(&mut self, cx: &mut Cx<'_>) {
+    pub(super) fn disconnect(&mut self, site: Site, cx: &mut Cx<'_>) {
         self.overlay.take_vcs();
-        let Some(login) = self.overrides.github_account.take() else {
+        let Some(login) = self.account(site).map(str::to_owned) else {
             return;
         };
-        let forgotten = github::forget(&login);
-        if self.git_facts.github_git {
-            let _ = github::use_for_git(false);
-            self.git_facts.github_git = false;
+        self.set_account(site, None);
+        let forge = self.forge(site);
+        let forgotten = forge.forget(&login);
+        if self.git_facts.helped(site) {
+            let _ = forge.use_for_git(false);
+            self.git_facts.set_helped(site, false);
         }
         self.save_overrides(cx);
+        let name = forge.name();
         match forgotten {
             Ok(()) => self.toast(
-                format!("Disconnected from GitHub · {login}'s token left the keyring"),
+                format!("Disconnected from {name} · {login}'s token left the keyring"),
                 cx,
             ),
             Err(why) => self.toast(
@@ -181,17 +269,19 @@ impl Files {
         }
     }
 
-    /// "git uses it" was switched.
-    pub(super) fn toggle_github_git(&mut self, cx: &mut Cx<'_>) {
-        let on = !self.git_facts.github_git;
-        match github::use_for_git(on) {
+    /// "git pushes and pulls with it" was switched, for `site`.
+    pub(super) fn toggle_forge_git(&mut self, site: Site, cx: &mut Cx<'_>) {
+        let on = !self.git_facts.helped(site);
+        let forge = self.forge(site);
+        match forge.use_for_git(on) {
             Ok(()) => {
-                self.git_facts.github_git = on;
+                self.git_facts.set_helped(site, on);
+                let name = forge.name();
                 self.toast(
                     if on {
-                        "git pushes and pulls with your GitHub account now"
+                        format!("git pushes and pulls with your {name} account now")
                     } else {
-                        "git no longer asks enso-files for GitHub"
+                        format!("git no longer asks enso-files for {name}")
                     },
                     cx,
                 );

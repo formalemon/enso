@@ -41,6 +41,13 @@ pub struct Overrides {
     /// The GitHub account signed in to (its token is in the keyring).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gitlab_client_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gitlab_host: Option<String>,
+    /// The GitLab account signed in to (its tokens are in the keyring).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gitlab_account: Option<String>,
     /// Version control: on, off, or not asked yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<bool>,
@@ -77,6 +84,14 @@ impl Overrides {
                 .github_client_id
                 .clone()
                 .unwrap_or_else(|| config.github_client_id.clone()),
+            gitlab_client_id: self
+                .gitlab_client_id
+                .clone()
+                .unwrap_or_else(|| config.gitlab_client_id.clone()),
+            gitlab_host: self
+                .gitlab_host
+                .clone()
+                .unwrap_or_else(|| config.gitlab_host.clone()),
         }
     }
 

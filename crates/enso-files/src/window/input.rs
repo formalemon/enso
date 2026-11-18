@@ -1545,6 +1545,7 @@ impl Files {
                 | Hit::GitYes
                 | Hit::GitNo
                 | Hit::FormField(_)
+                | Hit::FormChoice(_)
                 | Hit::FormSave
                 | Hit::FormCancel
                 | Hit::Setting(_)
