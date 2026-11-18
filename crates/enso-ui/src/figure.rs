@@ -569,6 +569,47 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
                 });
             }
         }
+        Figure::Home => p.stroke(true, |s| {
+            s.soft(&[(3.6, 11.4), (12.0, 4.0), (20.4, 11.4)], 1.0, false);
+            s.soft(
+                &[(6.0, 9.6), (6.0, 20.0), (18.0, 20.0), (18.0, 9.6)],
+                1.8,
+                false,
+            );
+            s.soft(
+                &[(10.2, 20.0), (10.2, 15.0), (13.8, 15.0), (13.8, 20.0)],
+                1.0,
+                false,
+            );
+        }),
+        Figure::Trash => p.stroke(true, |s| {
+            s.line((4.0, 6.6), (20.0, 6.6));
+            s.soft(
+                &[(9.4, 6.6), (9.4, 3.8), (14.6, 3.8), (14.6, 6.6)],
+                1.2,
+                false,
+            );
+            s.soft(
+                &[(6.2, 6.6), (7.4, 20.4), (16.6, 20.4), (17.8, 6.6)],
+                1.8,
+                false,
+            );
+            s.line((10.2, 10.4), (10.4, 16.6));
+            s.line((13.8, 10.4), (13.6, 16.6));
+        }),
+        Figure::Drive => {
+            p.stroke(true, |s| {
+                s.rounded(3.2, 7.0, 17.6, 10.0, 2.6);
+                s.line((6.8, 12.0), (11.0, 12.0));
+            });
+            p.fill(true, |s| {
+                s.circle((16.6, 12.0), 1.4);
+            });
+        }
+        Figure::Eject => p.stroke(true, |s| {
+            s.soft(&[(12.0, 4.6), (19.0, 13.0), (5.0, 13.0)], 1.4, true);
+            s.line((5.0, 18.4), (19.0, 18.4));
+        }),
         Figure::Power => p.stroke(true, |s| {
             s.arc((12.0, 13.0), 7.6, -52.0, 284.0);
             s.line((12.0, 3.2), (12.0, 11.4));
@@ -780,7 +821,7 @@ fn moon(p: &mut Pen<'_, '_>) {
 
 /// Every figure, and each state of those with states: for tests and
 /// contact sheets.
-pub const ALL: [Figure; 36] = [
+pub const ALL: [Figure; 40] = [
     Figure::Search,
     Figure::Apps,
     Figure::Folder,
@@ -817,6 +858,10 @@ pub const ALL: [Figure; 36] = [
     Figure::Logout,
     Figure::Sleep,
     Figure::CapsLock,
+    Figure::Home,
+    Figure::Trash,
+    Figure::Drive,
+    Figure::Eject,
 ];
 
 #[cfg(test)]

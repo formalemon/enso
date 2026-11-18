@@ -153,8 +153,13 @@ impl Service {
 
     /// Every object the service exports, with its properties.
     pub(crate) fn objects(&self) -> Result<Objects> {
+        self.objects_at("/")
+    }
+
+    /// Every object, from an object manager that isn't at `/`.
+    pub(crate) fn objects_at(&self, manager: &str) -> Result<Objects> {
         self.call(
-            "/",
+            manager,
             "org.freedesktop.DBus.ObjectManager",
             "GetManagedObjects",
             &(),

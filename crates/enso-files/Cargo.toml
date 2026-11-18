@@ -20,7 +20,7 @@ zbus.workspace = true
 # Ending a picker the portal takes away.
 rustix.workspace = true
 # Restarting the portal after `portal enable`/`disable`.
-enso-sys = { workspace = true, features = ["systemd"] }
+enso-sys = { workspace = true, features = ["systemd", "udisks"] }
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

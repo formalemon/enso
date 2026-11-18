@@ -141,6 +141,11 @@ pub enum Figure {
     Logout,
     Sleep,
     CapsLock,
+    Home,
+    Trash,
+    /// A disk: a drive, a partition, a USB stick.
+    Drive,
+    Eject,
 }
 
 /// An icon: the figure drawn, and a few letters standing in for it where
@@ -200,4 +205,8 @@ pub mod icon {
     pub const LOGOUT: Icon = Icon::new(Figure::Logout, "exit");
     pub const SLEEP: Icon = Icon::new(Figure::Sleep, "zz");
     pub const CAPS_LOCK: Icon = Icon::new(Figure::CapsLock, "caps");
+    pub const HOME: Icon = Icon::new(Figure::Home, "~");
+    pub const TRASH: Icon = Icon::new(Figure::Trash, "del");
+    pub const DRIVE: Icon = Icon::new(Figure::Drive, "disk");
+    pub const EJECT: Icon = Icon::new(Figure::Eject, "^");
 }

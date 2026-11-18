@@ -11,6 +11,8 @@
 //!   restarting, or suspending the machine (feature `logind`).
 //! - [`dconf`] — desktop settings, the dark-or-light preference among them,
 //!   through dconf's own service (feature `dconf`).
+//! - [`udisks`] — disks, partitions, and USB sticks: listing, mounting,
+//!   ejecting (feature `udisks`).
 //! - [`systemd`] — restarting a user service so it reads new settings
 //!   (feature `systemd`).
 //! - [`auth`] — checking the user's own password. No dependencies, always
@@ -32,7 +34,8 @@ pub mod auth;
     feature = "bluez",
     feature = "logind",
     feature = "dconf",
-    feature = "systemd"
+    feature = "systemd",
+    feature = "udisks"
 ))]
 // logind, dconf, and systemd only make calls, and only the last two are on
 // the session bus: short of every feature, some of this is unused.
@@ -58,6 +61,8 @@ pub mod dconf;
 pub mod logind;
 #[cfg(feature = "systemd")]
 pub mod systemd;
+#[cfg(feature = "udisks")]
+pub mod udisks;
 #[cfg(feature = "iwd")]
 pub mod wifi;
 
@@ -66,6 +71,7 @@ pub mod wifi;
     feature = "bluez",
     feature = "logind",
     feature = "dconf",
-    feature = "systemd"
+    feature = "systemd",
+    feature = "udisks"
 ))]
 pub use bus::Error;

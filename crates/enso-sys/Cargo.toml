@@ -24,6 +24,8 @@ logind = ["dep:zbus"]
 dconf = ["dep:zbus"]
 # Restarting a user service that reads its settings only at start, through systemd.
 systemd = ["dep:zbus"]
+# Disks, partitions, and USB sticks: listing, mounting, ejecting, through udisks2.
+udisks = ["dep:zbus"]
 # Volume, per output and per application, through PipeWire's PulseAudio socket.
 audio = ["dep:pulseaudio"]
 
