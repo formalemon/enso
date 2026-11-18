@@ -1,0 +1,14 @@
+[package]
+name = "enso-fs"
+description = "Files without a window: listing, sorting, MIME types, applications, search, and the freedesktop specs, for the enso desktop suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rustix.workspace = true
+
+[lints]
+workspace = true

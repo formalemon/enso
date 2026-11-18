@@ -48,15 +48,15 @@ fn load_indexed_from(
     desktops: &[String],
     mut ready: impl FnMut(Vec<App>),
 ) {
-    let saved = crate::index::read(index);
+    let saved = crate::app_index::read(index);
     if let Some(apps) = &saved {
         ready(apps.clone());
     }
     let apps = load_from(dirs, desktops);
     if saved.as_ref() != Some(&apps) {
         // Without an index the next launch scans first; nothing else is lost.
-        if let Err(err) = crate::index::write(index, &apps) {
-            eprintln!("enso-launch: cannot save the application index: {err}");
+        if let Err(err) = crate::app_index::write(index, &apps) {
+            crate::warn(&format!("cannot save the application index: {err}"));
         }
         ready(apps);
     }
@@ -371,7 +371,7 @@ Exec=/usr/lib/firefox/firefox --new-window %u
 
     #[test]
     fn user_entries_override_system_ones() {
-        let root = env::temp_dir().join(format!("enso-launch-apps-{}", std::process::id()));
+        let root = env::temp_dir().join(format!("enso-fs-apps-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (user, system) = (root.join("user"), root.join("system"));
         fs::create_dir_all(user.join("nested")).unwrap();
@@ -400,7 +400,7 @@ Exec=/usr/lib/firefox/firefox --new-window %u
 
     #[test]
     fn the_index_answers_first_and_is_corrected_when_stale() {
-        let root = env::temp_dir().join(format!("enso-launch-indexed-{}", std::process::id()));
+        let root = env::temp_dir().join(format!("enso-fs-indexed-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let dirs = [root.join("applications")];
         let index = root.join("cache/apps");

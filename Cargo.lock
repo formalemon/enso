@@ -240,10 +240,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "enso-fs"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+]
+
+[[package]]
 name = "enso-launch"
 version = "0.1.0"
 dependencies = [
  "enso-core",
+ "enso-fs",
  "enso-ui",
  "lexopt",
  "serde",

@@ -23,13 +23,13 @@ use enso_ui::{
 };
 use serde::Deserialize;
 
-use crate::{
+use enso_fs::{
     apps::{self, App},
-    files::{self, Hit, Job, Scope},
-    fuzzy,
-    history::{self, History},
-    open,
+    fuzzy, open,
+    search::{self as files, Hit, Job, Scope},
 };
+
+use crate::history::{self, History};
 
 /// The `[launch]` table of `config.toml`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]

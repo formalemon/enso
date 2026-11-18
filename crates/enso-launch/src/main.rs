@@ -13,14 +13,8 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-mod apps;
-mod files;
-mod fuzzy;
 mod history;
-mod ignores;
-mod index;
 mod launcher;
-mod open;
 
 use std::{
     env, fs,
@@ -87,7 +81,7 @@ fn main() -> ExitCode {
     };
 
     if let Mode::List = mode {
-        for app in apps::load() {
+        for app in enso_fs::apps::load() {
             println!("{}\t{}", app.id, app.name);
         }
         return ExitCode::SUCCESS;
@@ -151,7 +145,7 @@ fn find(ctx: &Context, config: &launcher::LaunchConfig, query: &str) {
     let cache = ctx.paths.cache_dir.join(launcher::FILE_INDEX);
 
     let started = Instant::now();
-    let saved = files::FileIndex::read(&cache);
+    let saved = enso_fs::search::FileIndex::read(&cache);
     if let Some(index) = &saved {
         eprintln!(
             "saved index: {} entries, read in {:.1?}",
@@ -162,8 +156,8 @@ fn find(ctx: &Context, config: &launcher::LaunchConfig, query: &str) {
     // Walk on another thread, as the launcher does, so the walk's timing is
     // not hidden behind the search's.
     let walking = Instant::now();
-    let index =
-        thread::scope(|threads| threads.spawn(|| files::walk(&scope)).join()).unwrap_or_default();
+    let index = thread::scope(|threads| threads.spawn(|| enso_fs::search::walk(&scope)).join())
+        .unwrap_or_default();
     eprintln!(
         "walked: {} entries in {:.1?}",
         index.len(),

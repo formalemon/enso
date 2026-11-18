@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn writes_and_reads_a_file() {
-        let dir = std::env::temp_dir().join(format!("enso-launch-index-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("enso-fs-index-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         // The directory is created on demand.
         let path = dir.join("nested/apps");

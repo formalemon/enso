@@ -488,8 +488,8 @@ pause/cancel), and finish with a toast.
   icon when non-empty. **P2**
 - Drives: mounted filesystems with free space bars (`statvfs`), hiding
   system mounts (`/boot`, `/proc`, tmpfs…). Mounting and ejecting removable
-  drives needs `udisks2`, which is **not installed** here — see risks; with
-  it present, mount/unmount/eject/power-off over D-Bus. **P5**
+  drives goes through `udisks2` over D-Bus: mount, unmount, eject, power
+  off. **P5**
 - Free space in the status row for the current filesystem. **P1**
 
 ### 6.10 Tabs and panes
@@ -702,7 +702,7 @@ What `sumi/install` (or `enso-ctl`) sets up; all user-level, no root:
    symlinks to every system `.portal` file, plus a systemd user drop-in
    `xdg-desktop-portal.service.d/enso.conf` setting the variable. The
    alternative is one file in `/usr/share/xdg-desktop-portal/portals/`
-   installed by hand. **Decision needed** ([§13](#13-open-questions)).
+   installed by hand. Settled: the drop-in ([§13](#13-decisions)).
 3. **Routing** in `~/.config/xdg-desktop-portal/niri-portals.conf`:
    ```ini
    [preferred]
@@ -841,22 +841,19 @@ jumps = { w = "~/Pictures/Wallpapers", e = "~/dev/enso" }
 # keys = { "ctrl+e" = "terminal-here", "x" = "cut" }
 ```
 
-## 13. Open questions
+## 13. Decisions
 
-1. **Portal registration** — the user-level `XDG_DESKTOP_PORTAL_DIR`
-   drop-in (no root, but every system `.portal` file has to be mirrored as
-   a symlink, which `install` would refresh) versus one root-installed file
-   in `/usr/share/xdg-desktop-portal/portals/` (simple, but outside
-   `sumi`'s user-level model). Recommendation: the drop-in, maintained by
-   `sumi/install`.
-2. **udisks2** for mounting USB drives — it's a system package, so by the
-   current rule removable drives can be listed but not mounted. Install it
-   (one package, one exception), or leave mounting to the command line?
-3. **Space** — toggle selection (yazi, nnn, and what multi-select wants) or
-   preview (Finder)? The plan picks selection, with `Shift+Space` for peek.
-4. **Name** — `enso-files` fits the suite's plain names (`enso-launch`,
-   `enso-lock`). Alternatives welcome before P1 makes it public in the
-   portal file.
+Settled on 2026-11-18:
+
+1. **Portal registration** — user-level: a `~/.local/share/enso/portals/`
+   directory holding `enso.portal` and symlinks to every system `.portal`
+   file, and a systemd user drop-in setting `XDG_DESKTOP_PORTAL_DIR` to it,
+   both kept by `sumi/install`. No root.
+2. **udisks2** — installed on the system, so removable drives are mounted,
+   unmounted, and ejected through it (P5). Its absence elsewhere is still a
+   drawn state, not an error.
+3. **Space** toggles selection; `Shift+Space` peeks.
+4. **Name** — `enso-files`.
 
 ## 14. Risks
 

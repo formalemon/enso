@@ -247,6 +247,10 @@ impl FileIndex {
         self.text.bytes().filter(|byte| *byte == b'\n').count()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
     /// The saved index, if there is a usable one.
     pub fn read(path: &Path) -> Option<Self> {
         let mut text = fs::read_to_string(path).ok()?;
@@ -682,7 +686,7 @@ pub fn serve(
             let fresh = walk(&scope);
             if saved.as_ref() != Some(&fresh) {
                 if let Err(err) = fresh.write(&cache) {
-                    eprintln!("enso-launch: cannot save the file index: {err}");
+                    crate::warn(&format!("cannot save the file index: {err}"));
                 }
                 let _ = indexed.send(Job::Index(fresh));
             }
@@ -745,7 +749,7 @@ mod tests {
     /// A tree under a fresh temporary directory, and a way to list what a
     /// scope finds in it, as sorted paths relative to it.
     fn tree(name: &str, dirs: &[&str], files: &[(&str, &str)]) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("enso-launch-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("enso-fs-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         for dir in dirs {
@@ -951,7 +955,7 @@ mod tests {
 
     #[test]
     fn walks_and_ignores() {
-        let root = std::env::temp_dir().join(format!("enso-launch-files-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("enso-fs-files-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         for dir in [
             "notes/2026",
@@ -1154,7 +1158,7 @@ mod tests {
 
     #[test]
     fn the_cache_round_trips_and_rejects_strangers() {
-        let dir = std::env::temp_dir().join(format!("enso-launch-fcache-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("enso-fs-fcache-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let path = dir.join("files");
         assert_eq!(FileIndex::read(&path), None);
@@ -1171,7 +1175,7 @@ mod tests {
 
     #[test]
     fn the_service_answers_the_latest_query_and_follows_a_new_index() {
-        let root = std::env::temp_dir().join(format!("enso-launch-serve-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("enso-fs-serve-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("home")).unwrap();
         fs::write(root.join("home/letter.txt"), "").unwrap();

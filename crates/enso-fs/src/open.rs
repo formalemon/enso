@@ -271,7 +271,7 @@ mod tests {
 
     /// A sandbox with a small MIME database and two applications.
     fn sandbox(name: &str) -> (PathBuf, Database) {
-        let root = env::temp_dir().join(format!("enso-launch-open-{name}-{}", std::process::id()));
+        let root = env::temp_dir().join(format!("enso-fs-open-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let (config, data) = (root.join("config"), root.join("share"));
         fs::create_dir_all(&config).unwrap();
