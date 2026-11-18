@@ -75,6 +75,7 @@ impl Files {
         self.draw_questions(canvas, bounds);
         self.draw_vcs(canvas, bounds);
         self.draw_settings(canvas, bounds, now);
+        self.draw_renamer(canvas, bounds);
         self.draw_palette(canvas, bounds);
         if self.peek {
             self.draw_peek(canvas, bounds);
@@ -1872,6 +1873,48 @@ mod tests {
         let request = files.pane.parent();
         files.load(request);
         assert_eq!(files.sliding, -1.0, "out: from the left");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renames_many_at_once_and_back() {
+        let root = std::env::temp_dir().join(format!("enso-files-bulk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["IMG_0031.jpg", "IMG_0032.jpg", "IMG_0040.jpg", "notes.txt"] {
+            std::fs::write(root.join(name), name).unwrap();
+        }
+        let now = Instant::now();
+        let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+        files.asked_git = true;
+        let first = files.pending.take().unwrap();
+        files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
+        assert!(!files.rename_targets(), "one thing: the usual rename");
+        files.choose_where("ext:jpg");
+        files.config.bulk_rename = false;
+        assert!(!files.rename_targets(), "off in Settings");
+        files.config.bulk_rename = true;
+        assert!(files.rename_targets());
+        {
+            let renamer = files.renamer.as_mut().unwrap();
+            renamer.fields[1].set_text("Holiday {n:02}");
+            renamer.replan();
+        }
+        snapshot(&render(&mut files, (900, 600)), "enso-files-rename-many");
+        assert_eq!(files.commit_renames(), Some(Ok(3)));
+        for name in [
+            "Holiday 01.jpg",
+            "Holiday 02.jpg",
+            "Holiday 03.jpg",
+            "notes.txt",
+        ] {
+            assert!(root.join(name).exists(), "{name}");
+        }
+        assert!(files.selection.contains(&root.join("Holiday 02.jpg")));
+        // One undo puts every name back.
+        let done = files.undo.pop().unwrap();
+        enso_fs::ops::undo(&done).unwrap();
+        assert!(root.join("IMG_0040.jpg").exists());
         std::fs::remove_dir_all(root).unwrap();
     }
 

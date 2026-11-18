@@ -16,6 +16,7 @@ mod input;
 mod ops;
 mod palette;
 mod preview;
+mod renamer;
 mod seek;
 mod settings;
 mod sidebar;
@@ -112,6 +113,8 @@ enum Hit {
     /// The palette: a line of it, and the rest of its card.
     PaletteLine(usize),
     PaletteField,
+    /// Renaming many.
+    Rename(renamer::RenameHit),
     /// Something on the split's other side: it comes in front first.
     Other(Box<Hit>),
     /// The name being saved as, whose text starts at this `x`.
@@ -285,6 +288,8 @@ pub struct Files {
     /// The tab on the split's other side, and where it was drawn.
     split: Option<usize>,
     split_rect: Rect,
+    /// Renaming many, while it's open.
+    renamer: Option<renamer::Renamer>,
     /// The command palette, while it's open.
     palette: Option<palette::Palette>,
     /// The field searching instead of filtering, and when the search
@@ -373,6 +378,7 @@ impl Files {
             split: None,
             split_rect: Rect::default(),
             palette: None,
+            renamer: None,
             seek: None,
             seek_due: None,
             bookmarks: enso_fs::bookmarks::Bookmarks::load(&enso_fs::bookmarks::file()).folders(),
@@ -947,6 +953,7 @@ impl App for Files {
                     cx.redraw();
                 }
             }
+            Event::Message(Message::Edited(result)) => self.edited(result, cx),
             Event::Message(Message::Volumes(volumes)) => {
                 self.volumes = volumes;
                 cx.redraw();
@@ -989,7 +996,7 @@ impl App for Files {
                         .picker
                         .as_ref()
                         .is_some_and(|picker| picker.typing_name);
-                if self.palette_paste(&text) || self.vcs_paste(&text) {
+                if self.palette_paste(&text) || self.renamer_paste(&text) || self.vcs_paste(&text) {
                     cx.redraw();
                 } else if let Some(renaming) = &mut self.renaming {
                     renaming.field.insert(&text);

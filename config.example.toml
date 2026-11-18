@@ -94,6 +94,9 @@ density = "comfortable"
 # "list", "grid" for thumbnails, or "columns" (the folder above, this one,
 # and what's under the cursor). Ctrl+1, Ctrl+2, and Ctrl+3 switch.
 view = "list"
+# F2 with several things chosen renames them all at once: find and replace,
+# numbering, a template, or $EDITOR. false renames the one under the cursor.
+bulk_rename = true
 
 [notify]
 width = 360

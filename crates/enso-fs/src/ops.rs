@@ -73,6 +73,8 @@ pub enum Done {
         to: PathBuf,
     },
     Moved(Vec<(PathBuf, PathBuf)>),
+    /// Many renamed at once ([`rename_all`]), each pair `(from, to)`.
+    RenamedAll(Vec<(PathBuf, PathBuf)>),
     /// Copies (or new folders and files) that undoing removes — to the
     /// trash, so even an undo can be undone by hand.
     Created(Vec<PathBuf>),
@@ -86,6 +88,9 @@ impl Done {
         match self {
             Self::Renamed { .. } => "rename".to_owned(),
             Self::Moved(pairs) => format!("move of {}", count(pairs.len(), "item", "items")),
+            Self::RenamedAll(pairs) => {
+                format!("renaming of {}", count(pairs.len(), "item", "items"))
+            }
             Self::Created(paths) => count(paths.len(), "new item", "new items"),
             Self::Trashed(items) => format!("trashing of {}", count(items.len(), "item", "items")),
         }
@@ -113,6 +118,13 @@ pub fn undo(done: &Done) -> io::Result<Done> {
             back.reverse();
             Ok(Done::Moved(back))
         }
+        Done::RenamedAll(pairs) => {
+            let back: Vec<(PathBuf, PathBuf)> = pairs
+                .iter()
+                .map(|(from, to)| (to.clone(), from.clone()))
+                .collect();
+            rename_all(&back)
+        }
         Done::Created(paths) => {
             let items = paths
                 .iter()
@@ -128,6 +140,67 @@ pub fn undo(done: &Done) -> io::Result<Done> {
             Ok(Done::Created(restored))
         }
     }
+}
+
+/// Rename many at once: each `(from, to)` within a filesystem. A new name
+/// may be one of the old ones — swapping two names, or shifting numbers
+/// along — so when one is, everything goes through a temporary name first.
+/// A new name taken by anything not being renamed is refused before
+/// anything changes; a failure part way puts back what was done.
+pub fn rename_all(pairs: &[(PathBuf, PathBuf)]) -> io::Result<Done> {
+    let pairs: Vec<(PathBuf, PathBuf)> = pairs
+        .iter()
+        .filter(|(from, to)| from != to)
+        .cloned()
+        .collect();
+    let sources: std::collections::HashSet<&Path> =
+        pairs.iter().map(|(from, _)| from.as_path()).collect();
+    let mut targets = std::collections::HashSet::new();
+    for (_, to) in &pairs {
+        if !targets.insert(to.as_path()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("two would be called {}", to.display()),
+            ));
+        }
+        if !sources.contains(to.as_path()) {
+            refuse_existing(to)?;
+        }
+    }
+    let crossing = pairs.iter().any(|(_, to)| sources.contains(to.as_path()));
+    // Each step taken, to undo if a later one fails.
+    let mut done: Vec<(PathBuf, PathBuf)> = Vec::new();
+    let step = |from: &Path, to: &Path, done: &mut Vec<(PathBuf, PathBuf)>| {
+        fs::rename(from, to)?;
+        done.push((from.to_owned(), to.to_owned()));
+        io::Result::Ok(())
+    };
+    let result = (|| {
+        if crossing {
+            let mut parked = Vec::new();
+            for (index, (from, to)) in pairs.iter().enumerate() {
+                let dir = from.parent().unwrap_or(Path::new("/"));
+                let tmp = dir.join(format!(".enso-renaming-{}-{index}", std::process::id()));
+                step(from, &tmp, &mut done)?;
+                parked.push((tmp, to));
+            }
+            for (tmp, to) in parked {
+                step(&tmp, to, &mut done)?;
+            }
+        } else {
+            for (from, to) in &pairs {
+                step(from, to, &mut done)?;
+            }
+        }
+        io::Result::Ok(())
+    })();
+    if let Err(err) = result {
+        for (from, to) in done.iter().rev() {
+            let _ = fs::rename(to, from);
+        }
+        return Err(err);
+    }
+    Ok(Done::RenamedAll(pairs))
 }
 
 fn refuse_existing(path: &Path) -> io::Result<()> {
@@ -567,6 +640,33 @@ mod tests {
     use std::cell::Cell;
 
     use super::*;
+
+    #[test]
+    fn many_renamed_at_once_even_swapped() {
+        let root = std::env::temp_dir().join(format!("enso-fs-rename-all-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        for (name, text) in [("a", "A"), ("b", "B"), ("c", "C"), ("keep", "K")] {
+            fs::write(root.join(name), text).unwrap();
+        }
+        let at = |name: &str| root.join(name);
+        // a and b swap; c becomes d.
+        let done =
+            rename_all(&[(at("a"), at("b")), (at("b"), at("a")), (at("c"), at("d"))]).unwrap();
+        assert_eq!(fs::read_to_string(at("a")).unwrap(), "B");
+        assert_eq!(fs::read_to_string(at("b")).unwrap(), "A");
+        assert_eq!(fs::read_to_string(at("d")).unwrap(), "C");
+        // Undone, all the way back, swap and all.
+        undo(&done).unwrap();
+        assert_eq!(fs::read_to_string(at("a")).unwrap(), "A");
+        assert_eq!(fs::read_to_string(at("c")).unwrap(), "C");
+        assert!(!at("d").exists());
+        // A name already taken by something else: nothing changes.
+        assert!(rename_all(&[(at("a"), at("x")), (at("c"), at("keep"))]).is_err());
+        assert!(at("a").exists() && !at("x").exists());
+        assert!(rename_all(&[(at("a"), at("x")), (at("b"), at("x"))]).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     struct Answers {
         resolve: Resolve,

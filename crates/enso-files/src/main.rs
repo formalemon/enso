@@ -9,6 +9,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bench;
+mod bulk;
 mod config;
 mod frecent;
 mod gather;

@@ -205,7 +205,7 @@ impl Files {
 
     // Undo.
 
-    fn remember(&mut self, done: Done) {
+    pub(super) fn remember(&mut self, done: Done) {
         self.undo.push(done);
         // Something new: what was undone is no longer in reach.
         self.redo.clear();

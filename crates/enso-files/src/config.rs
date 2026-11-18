@@ -17,6 +17,9 @@ pub struct FilesConfig {
     pub density: Density,
     /// Rows, or a grid of thumbnails.
     pub view: View,
+    /// F2 with several chosen renames them all at once; off, it renames
+    /// the one under the cursor.
+    pub bulk_rename: bool,
 }
 
 impl Default for FilesConfig {
@@ -28,6 +31,7 @@ impl Default for FilesConfig {
             folders_first: true,
             density: Density::Comfortable,
             view: View::List,
+            bulk_rename: true,
         }
     }
 }

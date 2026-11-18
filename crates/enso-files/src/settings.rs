@@ -33,6 +33,8 @@ pub struct Overrides {
     pub density: Option<Density>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<View>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bulk_rename: Option<bool>,
     /// Version control: on, off, or not asked yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<bool>,
@@ -71,6 +73,7 @@ impl Overrides {
             folders_first: self.folders_first.unwrap_or(config.folders_first),
             density: self.density.unwrap_or(config.density),
             view: self.view.unwrap_or(config.view),
+            bulk_rename: self.bulk_rename.unwrap_or(config.bulk_rename),
         }
     }
 

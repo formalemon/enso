@@ -23,6 +23,7 @@ pub(super) enum Row {
     FoldersFirst,
     View,
     Compact,
+    BulkRename,
     Reversed,
     Sort,
     Git,
@@ -55,6 +56,7 @@ impl Files {
             Row::Compact,
             Row::Reversed,
             Row::Sort,
+            Row::BulkRename,
             Row::Git,
         ];
         if self.git_on() {
@@ -105,6 +107,7 @@ impl Files {
                 });
             }
             Row::Reversed => self.overrides.descending = Some(!config.descending),
+            Row::BulkRename => self.overrides.bulk_rename = Some(!config.bulk_rename),
             Row::Sort => {
                 let at = SORTS
                     .iter()
@@ -212,7 +215,7 @@ impl Files {
         let small = self.font(type_scale::SMALL);
         self.hits.clear();
         let line = 44.0;
-        let sections = 2.0;
+        let sections = 3.0;
         let height = 64.0 + rows.len() as f32 * line + sections * 34.0 + controls::HEIGHT + 40.0;
         let inner = controls::dialog(canvas, bounds, 560.0, height, &look, 1.0);
         canvas.text(
@@ -225,11 +228,11 @@ impl Files {
         let facts = self.git_facts.clone();
         let (global, own) = (facts.global, facts.own);
         for (index, row) in rows.iter().enumerate() {
-            if matches!(row, Row::Hidden | Row::Git) {
-                let heading = if *row == Row::Hidden {
-                    "View"
-                } else {
-                    "Version control"
+            if matches!(row, Row::Hidden | Row::BulkRename | Row::Git) {
+                let heading = match row {
+                    Row::Hidden => "View",
+                    Row::BulkRename => "Renaming",
+                    _ => "Version control",
                 };
                 canvas.text(
                     &Text::new(heading, small, colors.muted).medium(),
@@ -258,6 +261,7 @@ impl Files {
                 Row::Compact => ("Compact rows", None),
                 Row::Reversed => ("Reverse the order", None),
                 Row::Sort => ("Sort by", None),
+                Row::BulkRename => ("Rename several at once (F2)", None),
                 Row::Git => (
                     "Use version control",
                     (!facts.available).then(|| "git isn't installed".to_owned()),
@@ -300,6 +304,7 @@ impl Files {
                 Row::FoldersFirst => Some(config.folders_first),
                 Row::Compact => Some(config.density == Density::Compact),
                 Row::Reversed => Some(config.descending),
+                Row::BulkRename => Some(config.bulk_rename),
                 Row::Git => Some(self.git_on()),
                 _ => None,
             };
