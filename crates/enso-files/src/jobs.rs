@@ -26,6 +26,12 @@ use crate::pane::{Request, Source, describe};
 
 #[derive(Debug)]
 pub enum Message {
+    /// Your GitHub repositories, for the clone form.
+    Repos(Result<Vec<crate::github::Repo>, String>),
+    /// Signing in to GitHub: the code to type there, and its page.
+    Device(String, String),
+    /// Signed in (as this login), or why not.
+    SignedIn(Result<String, String>),
     /// Work with a remote finished: what to say (if it went well and it
     /// was asked for), a folder to go to (a clone), or what went wrong.
     Remote {

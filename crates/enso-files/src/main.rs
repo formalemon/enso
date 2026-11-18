@@ -13,6 +13,7 @@ mod bulk;
 mod config;
 mod frecent;
 mod gather;
+mod github;
 mod jobs;
 mod kind;
 mod location;
@@ -122,6 +123,8 @@ enum Command {
     Portal(String),
     Pick(Box<Pick>),
     Bench(PathBuf),
+    /// git's credential helper protocol: `get`, `store`, `erase`.
+    GitCredential(String),
 }
 
 struct Pick {
@@ -146,6 +149,12 @@ fn main() -> ExitCode {
         Command::Pick(pick) => run_pick(*pick),
         Command::Service => service::run(),
         Command::Portal(command) => portal::run(&command),
+        Command::GitCredential(operation) => {
+            let ctx = Context::load();
+            let overrides = settings::Overrides::load(&ctx.paths.state_dir.join(settings::FILE));
+            github::git_credential(&operation, overrides.github_account.as_deref());
+            ExitCode::SUCCESS
+        }
     }
 }
 
@@ -260,6 +269,14 @@ fn parse_args(mut parser: lexopt::Parser) -> Result<Option<Command>, String> {
                     .map_err(|_| "portal what? enable, disable, or status".to_owned())?;
                 return Ok(Some(Command::Portal(
                     command.to_string_lossy().into_owned(),
+                )));
+            }
+            Some(Value(word)) if folder.is_none() && word == "git-credential" => {
+                let operation = parser
+                    .value()
+                    .map_err(|_| "git-credential what? get, store, or erase".to_owned())?;
+                return Ok(Some(Command::GitCredential(
+                    operation.to_string_lossy().into_owned(),
                 )));
             }
             Some(Value(word)) if folder.is_none() && word == "pick" => {

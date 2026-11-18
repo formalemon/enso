@@ -20,6 +20,9 @@ pub struct FilesConfig {
     /// F2 with several chosen renames them all at once; off, it renames
     /// the one under the cursor.
     pub bulk_rename: bool,
+    /// The client ID of your GitHub OAuth app, for signing in (Settings →
+    /// GitHub). Public, not a secret; empty until you make one.
+    pub github_client_id: String,
 }
 
 impl Default for FilesConfig {
@@ -32,6 +35,7 @@ impl Default for FilesConfig {
             density: Density::Comfortable,
             view: View::List,
             bulk_rename: true,
+            github_client_id: String::new(),
         }
     }
 }

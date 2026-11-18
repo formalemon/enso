@@ -26,6 +26,8 @@ dconf = ["dep:zbus"]
 systemd = ["dep:zbus"]
 # Disks, partitions, and USB sticks: listing, mounting, ejecting, through udisks2.
 udisks = ["dep:zbus"]
+# Keeping secrets in the session's keyring, through the Secret Service.
+secrets = ["dep:zbus"]
 # Volume, per output and per application, through PipeWire's PulseAudio socket.
 audio = ["dep:pulseaudio"]
 

@@ -35,7 +35,8 @@ pub mod auth;
     feature = "logind",
     feature = "dconf",
     feature = "systemd",
-    feature = "udisks"
+    feature = "udisks",
+    feature = "secrets"
 ))]
 // logind, dconf, and systemd only make calls, and only the last two are on
 // the session bus: short of every feature, some of this is unused.
@@ -59,6 +60,8 @@ pub mod bluetooth;
 pub mod dconf;
 #[cfg(feature = "logind")]
 pub mod logind;
+#[cfg(feature = "secrets")]
+pub mod secrets;
 #[cfg(feature = "systemd")]
 pub mod systemd;
 #[cfg(feature = "udisks")]

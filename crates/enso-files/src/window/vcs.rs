@@ -34,6 +34,8 @@ pub(super) struct GitFacts {
     pub global: Identity,
     /// This repository's own identity, if the folder is in one.
     pub own: Option<Identity>,
+    /// git asks enso-files for its way in to GitHub.
+    pub github_git: bool,
 }
 
 /// A question or form version control has open.
@@ -46,6 +48,20 @@ pub(super) enum Vcs {
     NewBranch(TextField, Option<String>),
     /// A repository's address, to clone into the folder shown.
     Clone(TextField, Option<String>),
+    /// Your GitHub OAuth app's client ID, asked once.
+    ClientId(TextField, Option<String>),
+    /// Signing in to GitHub: the code to type there, its page, and what
+    /// went wrong, if anything did.
+    Device {
+        code: String,
+        page: String,
+        error: Option<String>,
+    },
+    /// "Disconnect from GitHub?"
+    Disconnect,
+    /// Publishing this repository on GitHub: its name there, whether it's
+    /// private, and what's wrong with the name.
+    Publish(TextField, bool, Option<String>),
 }
 
 /// What a line of the branch menu does.
@@ -61,6 +77,8 @@ pub(super) enum BranchLine {
     Web(String),
     NewBranch,
     CommitAs,
+    /// Make it on GitHub and push it there.
+    Publish,
 }
 
 /// Work with a remote, on a thread.
@@ -78,7 +96,16 @@ enum Remote {
         url: String,
         into: PathBuf,
     },
+    /// Make a repository on GitHub, add it as `origin`, and push.
+    Publish {
+        login: String,
+        name: String,
+        private: bool,
+    },
 }
+
+/// Repositories the clone form lists at most.
+const MOST_REPOS: usize = 5;
 
 /// How old a fetch can be before the branch menu fetches again.
 const STALE: std::time::Duration = std::time::Duration::from_secs(600);
@@ -102,6 +129,7 @@ impl Files {
             own: git::root(self.pane.location())
                 .filter(|_| available)
                 .map(|root| git::identity(&Scope::Repository(root))),
+            github_git: available && crate::github::used_for_git(),
         };
     }
 
@@ -274,6 +302,11 @@ impl Files {
                 lines.push((Item::new(&label), Some(BranchLine::Web(page))));
             }
         }
+        // Nowhere to push yet, and an account to make somewhere with.
+        if remotes.is_empty() && self.github_account().is_some() {
+            lines.push((Item::Separator, None));
+            lines.push((Item::new("Publish on GitHub…"), Some(BranchLine::Publish)));
+        }
         lines.push((Item::Separator, None));
         lines.push((Item::new("New branch…"), Some(BranchLine::NewBranch)));
         lines.push((Item::new("Commit as…"), Some(BranchLine::CommitAs)));
@@ -345,6 +378,15 @@ impl Files {
                 }
             }
             BranchLine::NewBranch => self.vcs = Some(Vcs::NewBranch(TextField::default(), None)),
+            BranchLine::Publish => {
+                let name = root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let mut field = TextField::new(&name);
+                field.select_all();
+                self.vcs = Some(Vcs::Publish(field, true, None));
+            }
             BranchLine::CommitAs => self.edit_identity(Scope::Repository(root)),
         }
         cx.redraw();
@@ -353,6 +395,47 @@ impl Files {
     /// Ask for a repository's address to clone here.
     pub(super) fn ask_clone(&mut self) {
         self.vcs = Some(Vcs::Clone(TextField::default(), None));
+        self.repo_pick = 0;
+        // Signed in: your repositories, to pick from.
+        if let (Some(login), Some(proxy)) =
+            (self.github_account().map(str::to_owned), self.proxy.clone())
+        {
+            let _ = thread::Builder::new()
+                .name("enso-files-repos".to_owned())
+                .spawn(move || {
+                    let result = crate::github::token(&login)
+                        .ok_or_else(|| "The keyring has no GitHub token: sign in again".to_owned())
+                        .and_then(|token| crate::github::repos(&token));
+                    proxy.send(Message::Repos(result));
+                });
+        }
+    }
+
+    /// The repositories matching what's typed in the clone form, best
+    /// first, at most `MOST_REPOS`.
+    pub(super) fn repos_shown(&self) -> Vec<&crate::github::Repo> {
+        let Some(Vcs::Clone(field, _)) = &self.vcs else {
+            return Vec::new();
+        };
+        let text = field.text().trim();
+        // An address being typed: no list.
+        if text.contains("://") || text.contains('@') {
+            return Vec::new();
+        }
+        let pattern = enso_fs::fuzzy::Pattern::new(text);
+        let mut scored: Vec<(i32, &crate::github::Repo)> = self
+            .repos
+            .iter()
+            .filter_map(|repo| pattern.score(&repo.name).map(|score| (score, repo)))
+            .collect();
+        if !text.is_empty() {
+            scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        }
+        scored
+            .into_iter()
+            .map(|(_, repo)| repo)
+            .take(MOST_REPOS)
+            .collect()
     }
 
     /// Run `work` with a remote on a thread; what came of it arrives as
@@ -385,6 +468,28 @@ impl Files {
                     ),
                     Remote::Clone { url, into } => {
                         (Some("Cloned".to_owned()), git::clone(url, into).map(Some))
+                    }
+                    // Three steps: make it, add it as origin, push.
+                    Remote::Publish {
+                        login,
+                        name,
+                        private,
+                    } => {
+                        let published = crate::github::token(login)
+                            .ok_or_else(|| {
+                                "The keyring has no GitHub token: sign in again".to_owned()
+                            })
+                            .and_then(|token| crate::github::create(&token, name, *private))
+                            .and_then(|made| {
+                                git::add_remote(&root, "origin", &made.clone_url)
+                                    .map_err(|err| err.to_string())?;
+                                git::push(&root, false).map_err(|err| err.to_string())?;
+                                Ok(made.name)
+                            });
+                        match published {
+                            Ok(made) => (Some(format!("Published on GitHub as {made}")), Ok(None)),
+                            Err(why) => (None, Err(std::io::Error::other(why))),
+                        }
                     }
                 };
                 let quiet_failure = matches!(work, Remote::Fetch { quiet: true });
@@ -488,17 +593,87 @@ impl Files {
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
                 _ => *error = None,
             },
-            Vcs::Clone(field, error) => match field.key(key) {
+            Vcs::ClientId(field, error) => match field.key(key) {
                 field::Response::Submit => {
-                    let url = field.text().trim().to_owned();
-                    if url.is_empty() {
-                        *error = Some("The repository's address goes here".to_owned());
+                    let id = field.text().trim().to_owned();
+                    if id.is_empty() || id.contains(char::is_whitespace) {
+                        *error =
+                            Some("The client ID, as GitHub shows it on the app's page".to_owned());
                     } else {
-                        self.vcs = None;
-                        self.toast("Cloning…", cx);
-                        let into = self.pane.location().to_owned();
-                        self.remote(Remote::Clone { url, into });
+                        self.set_client_id(id, cx);
                     }
+                }
+                field::Response::Cancel => self.vcs = None,
+                field::Response::Paste => cx.paste(&TEXT_TYPES),
+                _ => *error = None,
+            },
+            Vcs::Device { .. } => match key.key {
+                Key::Enter => self.open_device_page(cx),
+                Key::Escape => self.cancel_sign_in(),
+                _ => {}
+            },
+            Vcs::Disconnect => match key.key {
+                Key::Enter => self.disconnect(cx),
+                Key::Escape => self.vcs = None,
+                _ => {}
+            },
+            Vcs::Publish(field, private, error) => match key.key {
+                Key::Tab => *private = !*private,
+                _ => match field.key(key) {
+                    field::Response::Submit => {
+                        let name = field.text().trim().to_owned();
+                        let private = *private;
+                        if name.is_empty() || name.contains(char::is_whitespace) {
+                            *error = Some("A name, without spaces".to_owned());
+                        } else if let Some(login) = self.github_account().map(str::to_owned) {
+                            self.vcs = None;
+                            self.toast("Publishing on GitHub…", cx);
+                            self.remote(Remote::Publish {
+                                login,
+                                name,
+                                private,
+                            });
+                        }
+                    }
+                    field::Response::Cancel => self.vcs = None,
+                    field::Response::Paste => cx.paste(&TEXT_TYPES),
+                    _ => *error = None,
+                },
+            },
+            Vcs::Clone(..) if key.nav(false).is_some() => {
+                let count = self.repos_shown().len();
+                if count > 0
+                    && let Some(nav) = key.nav(false)
+                {
+                    self.repo_pick = match nav {
+                        enso_ui::Nav::Up => self.repo_pick.checked_sub(1).unwrap_or(count - 1),
+                        enso_ui::Nav::Down => (self.repo_pick + 1) % count,
+                    };
+                }
+            }
+            Vcs::Clone(..) if key.key == Key::Enter => {
+                // A repository picked from the list, or the address typed.
+                let picked = self
+                    .repos_shown()
+                    .get(self.repo_pick)
+                    .map(|repo| repo.clone_url.clone());
+                let Some(Vcs::Clone(field, error)) = &mut self.vcs else {
+                    return true;
+                };
+                let url = picked.unwrap_or_else(|| field.text().trim().to_owned());
+                if url.is_empty() {
+                    *error = Some("The repository's address goes here".to_owned());
+                } else {
+                    self.vcs = None;
+                    self.toast("Cloning…", cx);
+                    let into = self.pane.location().to_owned();
+                    self.remote(Remote::Clone { url, into });
+                }
+            }
+            Vcs::Clone(field, error) => match field.key(key) {
+                field::Response::Changed => {
+                    *error = None;
+                    self.repo_pick = 0;
                 }
                 field::Response::Cancel => self.vcs = None,
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
@@ -521,7 +696,12 @@ impl Files {
                 .insert(text);
                 true
             }
-            Some(Vcs::NewBranch(field, _) | Vcs::Clone(field, _)) => {
+            Some(
+                Vcs::NewBranch(field, _)
+                | Vcs::Clone(field, _)
+                | Vcs::ClientId(field, _)
+                | Vcs::Publish(field, ..),
+            ) => {
                 field.insert(text);
                 true
             }
@@ -560,7 +740,11 @@ impl Files {
             }
             Some(Hit::FormSave) => match &self.vcs {
                 Some(Vcs::Identity(_)) => self.save_identity(cx),
-                Some(Vcs::NewBranch(..) | Vcs::Clone(..)) => {
+                Some(Vcs::Device { .. }) => self.open_device_page(cx),
+                Some(Vcs::Disconnect) => self.disconnect(cx),
+                Some(
+                    Vcs::NewBranch(..) | Vcs::Clone(..) | Vcs::ClientId(..) | Vcs::Publish(..),
+                ) => {
                     let enter = KeyEvent {
                         key: Key::Enter,
                         mods: Default::default(),
@@ -570,7 +754,13 @@ impl Files {
                 }
                 _ => {}
             },
-            Some(Hit::FormCancel) | None => self.vcs = None,
+            Some(Hit::FormCancel) | None => {
+                if matches!(self.vcs, Some(Vcs::Device { .. })) {
+                    self.cancel_sign_in();
+                } else {
+                    self.vcs = None;
+                }
+            }
             _ => {}
         }
         cx.redraw();
@@ -662,10 +852,47 @@ impl Files {
                 1,
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Create", Kind::Primary, Hit::FormSave)],
             ),
+            Vcs::ClientId(..) => (
+                "Your GitHub OAuth app".to_owned(),
+                "Its client ID: make one at github.com/settings/developers → New OAuth App, with “Enable Device Flow” ticked (any address will do for the rest). It's public, not a secret."
+                    .to_owned(),
+                1,
+                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Sign in", Kind::Primary, Hit::FormSave)],
+            ),
+            Vcs::Device { code, .. } => (
+                "Sign in to GitHub".to_owned(),
+                if code.is_empty() {
+                    "Asking GitHub for a code…".to_owned()
+                } else {
+                    "Type this code at GitHub and approve. Open GitHub copies it and opens the page.".to_owned()
+                },
+                1,
+                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Open GitHub", Kind::Primary, Hit::FormSave)],
+            ),
+            Vcs::Publish(_, private, _) => (
+                "Publish on GitHub".to_owned(),
+                format!(
+                    "Made on your account as a {} repository, added as origin, and pushed. Tab: make it {}.",
+                    if *private { "private" } else { "public" },
+                    if *private { "public" } else { "private" }
+                ),
+                1,
+                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Publish", Kind::Primary, Hit::FormSave)],
+            ),
+            Vcs::Disconnect => (
+                format!("Disconnect from GitHub ({})?", self.github_account().unwrap_or("you")),
+                "Its token leaves your keyring. You can sign in again any time.".to_owned(),
+                0,
+                [("Keep", Kind::Secondary, Hit::FormCancel), ("Disconnect", Kind::Danger, Hit::FormSave)],
+            ),
             Vcs::Clone(..) => (
                 "Clone a repository".to_owned(),
-                "Its address, from GitHub or anywhere: copied into this folder, under its own name.".to_owned(),
-                1,
+                if self.repos.is_empty() {
+                    "Its address, from GitHub or anywhere: copied into this folder, under its own name.".to_owned()
+                } else {
+                    "One of yours, by name — or any address: copied into this folder, under its own name.".to_owned()
+                },
+                if self.repos.is_empty() { 1 } else { 4 },
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Clone", Kind::Primary, Hit::FormSave)],
             ),
         };
@@ -698,10 +925,11 @@ impl Files {
         let mut error = None;
         let mut field_rects = Vec::new();
         // A one-field form's example.
-        let single_placeholder = if matches!(self.vcs, Some(Vcs::Clone(..))) {
-            "https://github.com/owner/repository"
-        } else {
-            "feature/quiet-mode"
+        let single_placeholder = match self.vcs {
+            Some(Vcs::Clone(..)) => "https://github.com/owner/repository",
+            Some(Vcs::ClientId(..)) => "Ov23li…",
+            Some(Vcs::Publish(..)) => "repository-name",
+            _ => "feature/quiet-mode",
         };
         match &mut self.vcs {
             Some(Vcs::Identity(edit)) => {
@@ -740,7 +968,33 @@ impl Files {
                 }
                 error = edit.error.clone();
             }
-            Some(Vcs::NewBranch(field, problem) | Vcs::Clone(field, problem)) => {
+            Some(Vcs::Device {
+                code,
+                error: problem,
+                ..
+            }) => {
+                // The code, large, to read off and type at GitHub.
+                let rect = Rect::new(inner.x, y, inner.w, controls::HEIGHT);
+                let shown = if code.is_empty() {
+                    "· · · ·"
+                } else {
+                    code.as_str()
+                };
+                let text = Text::new(
+                    shown,
+                    self.ctx.config.appearance.font_size * type_scale::HEADING * 1.3,
+                    colors.text,
+                )
+                .font(enso_ui::Font::Mono);
+                canvas.text_in(&text, rect, Align::Center);
+                error = problem.clone();
+            }
+            Some(
+                Vcs::NewBranch(field, problem)
+                | Vcs::Clone(field, problem)
+                | Vcs::ClientId(field, problem)
+                | Vcs::Publish(field, _, problem),
+            ) => {
                 let rect = Rect::new(inner.x, y, inner.w, controls::HEIGHT);
                 canvas.fill(rect, radius::pill(rect.h), colors.base);
                 canvas.stroke(rect, radius::pill(rect.h), stroke::HAIRLINE, accent);
@@ -753,6 +1007,35 @@ impl Files {
                 error = problem.clone();
             }
             _ => {}
+        }
+        // Signed in: your repositories under the field, the picked one lit.
+        if matches!(self.vcs, Some(Vcs::Clone(..))) && !self.repos.is_empty() {
+            let shown: Vec<(String, bool)> = self
+                .repos_shown()
+                .iter()
+                .map(|repo| (repo.name.clone(), repo.private))
+                .collect();
+            let mut row_y = y + controls::HEIGHT + space::SM;
+            for (index, (name, private)) in shown.iter().enumerate() {
+                let rect = Rect::new(inner.x, row_y, inner.w, 30.0);
+                if index == self.repo_pick {
+                    canvas.fill(rect, radius::CONTROL, accent.alpha(opacity::TINT));
+                }
+                let label = Rect::new(rect.x + space::MD, rect.y, rect.w - 2.0 * space::MD, rect.h);
+                canvas.text_in(
+                    &Text::new(name, small, colors.text).max_width(label.w - 60.0),
+                    label,
+                    Align::Start,
+                );
+                if *private {
+                    canvas.text_in(
+                        &Text::new("private", small, colors.muted),
+                        label,
+                        Align::End,
+                    );
+                }
+                row_y += 32.0;
+            }
         }
         self.hits.extend(field_rects);
         if let Some(error) = error {

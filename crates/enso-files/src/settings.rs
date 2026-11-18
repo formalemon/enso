@@ -35,6 +35,11 @@ pub struct Overrides {
     pub view: Option<View>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bulk_rename: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_client_id: Option<String>,
+    /// The GitHub account signed in to (its token is in the keyring).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_account: Option<String>,
     /// Version control: on, off, or not asked yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<bool>,
@@ -74,6 +79,10 @@ impl Overrides {
             density: self.density.unwrap_or(config.density),
             view: self.view.unwrap_or(config.view),
             bulk_rename: self.bulk_rename.unwrap_or(config.bulk_rename),
+            github_client_id: self
+                .github_client_id
+                .clone()
+                .unwrap_or_else(|| config.github_client_id.clone()),
         }
     }
 

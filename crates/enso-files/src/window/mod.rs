@@ -8,6 +8,7 @@
 //! ([`input`]) asks "what is under me" of the last frame instead of laying
 //! everything out again.
 
+mod accounts;
 mod archives;
 mod band;
 mod columns;
@@ -311,6 +312,11 @@ pub struct Files {
     /// Where something dragged over the window would land, and what to
     /// light up (`None`: the list).
     drop_at: Option<(PathBuf, Option<Rect>)>,
+    /// Your GitHub repositories, for the clone form, and the one picked.
+    repos: Vec<crate::github::Repo>,
+    repo_pick: usize,
+    /// Signing in to GitHub: set to stop waiting.
+    signing_in: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Asking what to call a new archive.
     packing: Option<archives::Packing>,
     /// Files opened out of archives, for a fresh folder each.
@@ -412,6 +418,9 @@ impl Files {
             drag_from: None,
             drop_at: None,
             packing: None,
+            signing_in: None,
+            repos: Vec::new(),
+            repo_pick: 0,
             opened: 0,
             properties: None,
             tallies: 0,
@@ -1021,6 +1030,15 @@ impl App for Files {
             }
             Event::Message(Message::Edited(result)) => self.edited(result, cx),
             Event::Message(Message::Toast(text)) => self.toast(text, cx),
+            Event::Message(Message::Device(code, page)) => self.device_arrived(code, page, cx),
+            Event::Message(Message::SignedIn(result)) => self.signed_in(result, cx),
+            Event::Message(Message::Repos(result)) => {
+                match result {
+                    Ok(repos) => self.repos = repos,
+                    Err(why) => self.toast(why, cx),
+                }
+                cx.redraw();
+            }
             Event::Message(Message::Remote { said, result }) => self.remote_done(said, result, cx),
             Event::DragOver { x, y } => self.drag_over(x, y, cx),
             Event::DragLeave => self.drag_leave(cx),

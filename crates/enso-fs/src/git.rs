@@ -215,6 +215,11 @@ pub fn clone(url: &str, into: &Path) -> io::Result<PathBuf> {
     Ok(folder)
 }
 
+/// Add the remote `name`, fetching from and pushing to `url`.
+pub fn add_remote(root: &Path, name: &str, url: &str) -> io::Result<()> {
+    run(root, &["remote", "add", "--", name, url]).map(drop)
+}
+
 /// The web page for a remote's address, where it's a forge with one
 /// (GitHub, GitLab, Codeberg…): `git@github.com:me/repo.git` and
 /// `https://github.com/me/repo.git` both become

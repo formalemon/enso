@@ -1495,6 +1495,7 @@ mod tests {
                 email: Some("me@example.com".into()),
             },
             own: None,
+            github_git: false,
         };
         files.settings = Some(4);
         snapshot(&render(&mut files, (900, 640)), "enso-files-settings");
@@ -2198,6 +2199,46 @@ mod tests {
         }
         snapshot(&render(&mut files, (900, 480)), "enso-files-branches");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renders_github_sign_in_clone_and_publish() {
+        use super::super::vcs::Vcs;
+        let mut files = files();
+        files.vcs = Some(Vcs::Device {
+            code: "4F2A-91CD".into(),
+            page: "https://github.com/login/device".into(),
+            error: None,
+        });
+        snapshot(&render(&mut files, (900, 480)), "enso-files-github-code");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::FormSave));
+
+        files.overrides.github_account = Some("Formalemon".into());
+        files.repos = ["formalemon/enso", "formalemon/sumi", "formalemon/notes"]
+            .into_iter()
+            .map(|name| crate::github::Repo {
+                name: name.into(),
+                clone_url: format!("https://github.com/{name}.git"),
+                private: name.ends_with("notes"),
+                description: String::new(),
+            })
+            .collect();
+        files.vcs = Some(Vcs::Clone(enso_ui::widget::TextField::new("su"), None));
+        assert_eq!(files.repos_shown()[0].name, "formalemon/sumi");
+        snapshot(&render(&mut files, (900, 520)), "enso-files-github-clone");
+        // An address typed: no list.
+        files.vcs = Some(Vcs::Clone(
+            enso_ui::widget::TextField::new("https://example.com/x.git"),
+            None,
+        ));
+        assert!(files.repos_shown().is_empty());
+
+        files.vcs = Some(Vcs::Publish(
+            enso_ui::widget::TextField::new("enso"),
+            true,
+            None,
+        ));
+        snapshot(&render(&mut files, (900, 480)), "enso-files-github-publish");
     }
 
     #[test]

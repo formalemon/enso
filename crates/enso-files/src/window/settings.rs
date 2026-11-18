@@ -31,6 +31,10 @@ pub(super) enum Row {
     Global,
     /// Who commits in this repository.
     Repository,
+    /// The GitHub account.
+    GitHub,
+    /// git pushes and pulls with it.
+    GitHubGit,
 }
 
 const VIEWS: [(View, &str); 3] = [
@@ -63,6 +67,10 @@ impl Files {
             rows.push(Row::Global);
             if git::root(self.pane.location()).is_some() {
                 rows.push(Row::Repository);
+            }
+            rows.push(Row::GitHub);
+            if self.github_account().is_some() {
+                rows.push(Row::GitHubGit);
             }
         }
         rows
@@ -188,6 +196,16 @@ impl Files {
             Row::Global => {
                 self.settings = None;
                 self.edit_identity(Scope::Global);
+                return;
+            }
+            Row::GitHub => {
+                self.settings = None;
+                self.github_row(cx);
+                return;
+            }
+            Row::GitHubGit => {
+                self.toggle_github_git(cx);
+                cx.redraw();
                 return;
             }
             Row::Repository => {
@@ -344,6 +362,14 @@ impl Files {
                         _ => "the global identity".to_owned(),
                     }),
                 ),
+                Row::GitHub => (
+                    "GitHub",
+                    Some(match self.github_account() {
+                        Some(login) => login.to_owned(),
+                        None => "Sign in".to_owned(),
+                    }),
+                ),
+                Row::GitHubGit => ("git pushes and pulls with it", None),
             };
             canvas.text_in(
                 &Text::new(label, body, colors.text),
@@ -369,6 +395,7 @@ impl Files {
                 Row::Reversed => Some(config.descending),
                 Row::BulkRename => Some(config.bulk_rename),
                 Row::Git => Some(self.git_on()),
+                Row::GitHubGit => Some(facts.github_git),
                 _ => None,
             };
             if let Some(on) = on {

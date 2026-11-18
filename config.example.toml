@@ -99,6 +99,10 @@ view = "list"
 # F2 with several things chosen renames them all at once: find and replace,
 # numbering, a template, or $EDITOR. false renames the one under the cursor.
 bulk_rename = true
+# The client ID of your GitHub OAuth app, for signing in to GitHub (Settings →
+# GitHub asks for it the first time). Make one at github.com/settings/developers
+# → New OAuth App, with "Enable Device Flow" ticked. It's public, not a secret.
+github_client_id = ""
 
 [notify]
 width = 360
