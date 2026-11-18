@@ -20,6 +20,7 @@
 
 pub mod canvas;
 pub mod figure;
+mod fractional;
 pub mod geom;
 pub mod idle;
 pub mod image;

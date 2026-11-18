@@ -28,7 +28,7 @@ use smithay_client_toolkit::{
     reexports::{
         calloop_wayland_source::WaylandSource,
         client::{
-            Connection, Proxy, QueueHandle, WEnum,
+            Connection, QueueHandle, WEnum,
             globals::registry_queue_init,
             protocol::{
                 wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
@@ -42,7 +42,7 @@ use smithay_client_toolkit::{
         protocols::wp::{
             fractional_scale::v1::client::{
                 wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
-                wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+                wp_fractional_scale_v1::WpFractionalScaleV1,
             },
             viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
         },
@@ -66,6 +66,7 @@ use smithay_client_toolkit::{
 
 use crate::{
     canvas::Canvas,
+    fractional::{self, Extension, ScaleOf, Scaled, physical},
     input::{Button, PointerEvent},
     keymap::Keys,
     shell::{Cx, Error, Event, Paint, Proxy as AppProxy},
@@ -106,12 +107,6 @@ impl Screen {
             physical(self.height, scale120),
         )
     }
-}
-
-/// Logical length to buffer pixels, rounding half away from zero as the
-/// fractional-scale protocol prescribes.
-fn physical(logical: u32, scale120: u32) -> u32 {
-    ((logical * scale120 + 60) / 120).max(1)
 }
 
 /// An interface drawn on every output.
@@ -458,11 +453,7 @@ impl<A: Screens> Runtime<A> {
         let surface = &mut self.surfaces[index];
         surface.dirty = false;
         // Without a viewport the compositor only takes whole-number scales.
-        let scale120 = if surface.viewport.is_some() {
-            surface.scale120
-        } else {
-            surface.scale120.div_ceil(120) * 120
-        };
+        let scale120 = fractional::drawn(surface.scale120, surface.viewport.is_some());
         let (width, height) = (
             physical(surface.size.0, scale120) as i32,
             physical(surface.size.1, scale120) as i32,
@@ -551,62 +542,12 @@ impl<A: Screens> Runtime<A> {
     }
 }
 
-/// User data for globals and objects that never send events.
-struct Extension;
-
-impl<A: Screens> Dispatch2<WpFractionalScaleManagerV1, Runtime<A>> for Extension {
-    fn event(
-        &self,
-        _: &mut Runtime<A>,
-        _: &WpFractionalScaleManagerV1,
-        _: <WpFractionalScaleManagerV1 as Proxy>::Event,
-        _: &Connection,
-        _: &QueueHandle<Runtime<A>>,
-    ) {
-    }
-}
-
-impl<A: Screens> Dispatch2<WpViewporter, Runtime<A>> for Extension {
-    fn event(
-        &self,
-        _: &mut Runtime<A>,
-        _: &WpViewporter,
-        _: <WpViewporter as Proxy>::Event,
-        _: &Connection,
-        _: &QueueHandle<Runtime<A>>,
-    ) {
-    }
-}
-
-impl<A: Screens> Dispatch2<WpViewport, Runtime<A>> for Extension {
-    fn event(
-        &self,
-        _: &mut Runtime<A>,
-        _: &WpViewport,
-        _: <WpViewport as Proxy>::Event,
-        _: &Connection,
-        _: &QueueHandle<Runtime<A>>,
-    ) {
-    }
-}
-
-/// User data for a surface's fractional scale: the surface it speaks for.
-struct ScaleOf(WlSurface);
-
-impl<A: Screens> Dispatch2<WpFractionalScaleV1, Runtime<A>> for ScaleOf {
-    fn event(
-        &self,
-        runtime: &mut Runtime<A>,
-        _: &WpFractionalScaleV1,
-        event: wp_fractional_scale_v1::Event,
-        _: &Connection,
-        _: &QueueHandle<Runtime<A>>,
-    ) {
-        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event
-            && let Some(surface) = runtime.surface_mut(&self.0)
-            && surface.scale120 != scale.max(1)
+impl<A: Screens> Scaled for Runtime<A> {
+    fn prefer_scale(&mut self, wl_surface: &WlSurface, scale120: u32) {
+        if let Some(surface) = self.surface_mut(wl_surface)
+            && surface.scale120 != scale120
         {
-            surface.scale120 = scale.max(1);
+            surface.scale120 = scale120;
             surface.dirty = true;
         }
     }
