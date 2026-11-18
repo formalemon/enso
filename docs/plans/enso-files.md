@@ -577,6 +577,63 @@ enso-files pick --filter 'Images:*.png,*.jpg,image/webp'
 Exit status 0 with answers, 1 when cancelled. For scripts, Neovim, and
 `xdg-desktop-portal-termfilechooser`-style setups. **P1**
 
+### 6.17 Settings
+
+The file manager's own settings, in the window — not in enso-ctl, which
+is the desktop's. **P2**
+
+- Opened with `Ctrl+,`, a gear at the end of the title row, or the
+  command palette; a card over the window (`radius::CARD`, scrim behind),
+  sections down the left, keyboard-navigable like everything else.
+- Sections: **View** (default view, density, dotfiles, sort, folders
+  first), **Behaviour** (type-to-find, single click, confirm trash, vim
+  keys, terminal), **Picker** (where it opens for open and for save),
+  **Version control** ([§6.18](#618-version-control-git): on/off, the
+  global identity, this repository's identity).
+- **Layers**: `config.toml`'s `[files]` is the hand-written default; what
+  is changed in the window is written to `~/.local/state/enso/files.toml`
+  and wins over it, the way `enso-ctl theme set` overrides the configured
+  theme. A setting coming from `config.toml` says so, and "Reset" drops
+  the override.
+- Changes apply at once to every open enso-files window (they watch the
+  state file).
+
+### 6.18 Version control (Git)
+
+Basic, opt-in, and quiet: two things a person actually reaches for, and
+nothing that turns the file manager into a Git client. **P2**
+
+- **Asked once.** The first time the file manager opens (never inside the
+  picker — a stranger's upload dialog is no place for questions), a small
+  card asks whether to turn on version control. **No** turns it off
+  completely: no `.git` is ever read, no branch is shown, no menu item
+  appears. The answer is kept in the settings layer, and Settings →
+  Version control turns it back on (or off) at any time.
+- **Yes → who you are.** If a global Git identity exists
+  (`user.name`/`user.email` in `~/.gitconfig` or
+  `$XDG_CONFIG_HOME/git/config`), it is shown and used by default. If
+  there is none, the card offers to set one — name and email fields,
+  written to the global config — or to skip and set identities per
+  repository instead.
+- **Per folder.** A repository can have its own identity (written to its
+  `.git/config` `[user]`), shown and edited in Settings → Version control
+  while inside it, and in the folder's properties. Default: inherit the
+  global one.
+- **See the branch.** Inside a repository, the status row shows the
+  current branch as a small pill (`⎇ main`), or the short commit when
+  detached; worktrees (`.git` as a file with `gitdir:`) work too.
+- **Make a repository.** "Initialise Git repository here" — in the
+  folder's context menu and the command palette — creates `.git` directly
+  (`HEAD`, `config`, `objects/`, `refs/heads`, `refs/tags`), on the branch
+  named by `init.defaultBranch` (else `main`), and offers the identity
+  step if this repository has none and there is no global one.
+- **Pure Rust, no `git` binary**: `HEAD` and refs are read as files, and
+  Git's config format (sections, subsections, quoting, escapes,
+  comments) is parsed and edited in place, touching only the `[user]`
+  keys it means to.
+- Deliberately not here: status badges on every file, staging,
+  committing, history. A terminal or a real Git client does those better.
+
 ## 7. Keys and the mouse
 
 ### 7.1 Keyboard (defaults; every one remappable)
@@ -618,6 +675,7 @@ Exit status 0 with answers, 1 when cancelled. For scripts, Neovim, and
 | `Ctrl+B` | sidebar |
 | `Ctrl+R` | reload |
 | `?`, `F1` | key map |
+| `Ctrl+,` | settings |
 | `Ctrl+Q` | close window (picker: cancel) |
 
 Picker-only: `Enter` chooses (with a selection: the selection; without: the
@@ -755,9 +813,14 @@ the GTK fallback line restores the old picker.
 Open / open-with / set default, terminal here, copy/cut/paste (interop),
 trash + trash view + restore, delete, rename, new, duplicate, conflicts,
 undo/redo, progress pill and toasts, live updates, context menus,
-FileManager1, symlinks, run-vs-open, mounts in the sidebar (read-only).
+FileManager1, symlinks, run-vs-open, mounts in the sidebar (read-only),
+the settings panel and its layer ([§6.17](#617-settings)), and version
+control ([§6.18](#618-version-control-git)): asked once, the identity
+step, the branch pill, initialising a repository, per-repository
+identities.
 *Done when*: a week of normal use needs no other file manager; "Show in
-folder" from Firefox's downloads lands on the file, selected.
+folder" from Firefox's downloads lands on the file, selected; answering
+"no" to version control leaves no trace of Git anywhere in the window.
 
 **P3 — Looking.**
 Grid view and zoom, thumbnails (formats in §6.8, freedesktop cache),
@@ -777,9 +840,8 @@ Drag and drop both ways, archives (browse/extract/compress), removable
 drives via udisks2 when present, IME in text fields, fractional scaling.
 
 **P6 — Nice to have, still real.**
-Saved searches, session restore, checksums, Git status badges in
-repositories (read from `.git` directly; plan in that phase), emblems/tags
-(xattr `user.xdg.tags`), duplicate finder.
+Saved searches, session restore, checksums, emblems/tags (xattr
+`user.xdg.tags`), duplicate finder.
 
 ## 11. Dependencies
 
@@ -854,6 +916,11 @@ Settled on 2026-11-18:
    drawn state, not an error.
 3. **Space** toggles selection; `Shift+Space` peeks.
 4. **Name** — `enso-files`.
+5. **Settings** live in the window, for the file manager only, as an
+   override layer over `config.toml` ([§6.17](#617-settings)).
+6. **Git** — basic and opt-in: asked once, "no" means off entirely; a
+   global identity by default, per-repository identities, the branch, and
+   initialising a repository ([§6.18](#618-version-control-git)).
 
 ## 14. Risks
 
