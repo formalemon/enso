@@ -13,6 +13,16 @@ use std::{
 
 use crate::apps::{self, spawn_detached};
 
+/// An application offered for opening a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Choice {
+    /// Its desktop file id, `org.gnome.Loupe.desktop`.
+    pub id: String,
+    pub name: String,
+    /// The one opening it would use.
+    pub default: bool,
+}
+
 /// How a file is going to be opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
@@ -100,6 +110,91 @@ impl Database {
             return Some(Plan { argv, cwd: None });
         }
         None
+    }
+
+    /// The applications that can open `path`: the one [`plan`](Self::plan)
+    /// would use first, then every other that declares its type (or a type
+    /// it is a kind of).
+    pub fn choices(&self, path: &Path) -> Vec<Choice> {
+        let mut seen = std::collections::HashSet::new();
+        let mut choices: Vec<Choice> = Vec::new();
+        for mime in self.types(path, path.is_dir()) {
+            for id in self.handlers(&mime) {
+                if !seen.insert(id.clone()) {
+                    continue;
+                }
+                if let Some(name) = self.name(&id) {
+                    let default = choices.is_empty();
+                    choices.push(Choice { id, name, default });
+                }
+            }
+        }
+        choices
+    }
+
+    /// Open `path` with the application `id`.
+    pub fn open_with(&self, id: &str, path: &Path, terminal: &str) -> io::Result<()> {
+        let file = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("the name isn't UTF-8"))?;
+        let (mut argv, in_terminal) = self
+            .command(id, file)
+            .ok_or_else(|| io::Error::other(format!("{id} can't be started")))?;
+        if in_terminal {
+            argv.splice(0..0, [terminal.to_owned(), "-e".to_owned()]);
+        }
+        spawn_detached(&argv, None)
+    }
+
+    /// Make `id` what opens files of `path`'s type, from now on: a line in
+    /// the user's `mimeapps.list`, the one other programs read too. Returns
+    /// the type.
+    pub fn set_default(&self, path: &Path, id: &str) -> io::Result<String> {
+        let mime = self
+            .types(path, path.is_dir())
+            .into_iter()
+            .next()
+            .ok_or_else(|| io::Error::other("its type isn't known"))?;
+        let file = self
+            .config_dirs
+            .first()
+            .ok_or_else(|| io::Error::other("no config directory"))?
+            .join("mimeapps.list");
+        let text = fs::read_to_string(&file).unwrap_or_default();
+        let text = set_in_group(&text, "[Default Applications]", &mime, id);
+        if let Some(dir) = file.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(&file, text)?;
+        Ok(mime)
+    }
+
+    /// The name desktop entry `id` gives itself.
+    fn name(&self, id: &str) -> Option<String> {
+        let text = self.entry(id)?;
+        let mut in_entry = false;
+        for line in text.lines().map(str::trim) {
+            if line.starts_with('[') {
+                in_entry = line == "[Desktop Entry]";
+            } else if in_entry
+                && let Some((key, value)) = line.split_once('=')
+                && key.trim_end() == "Name"
+            {
+                return Some(value.trim().to_owned());
+            }
+        }
+        None
+    }
+
+    /// The text of desktop entry `id`.
+    fn entry(&self, id: &str) -> Option<String> {
+        self.app_dirs.iter().find_map(|dir| {
+            // `a-b.desktop` may live at `a/b.desktop`.
+            let nested = id.replacen('-', "/", 1);
+            fs::read_to_string(dir.join(id))
+                .or_else(|_| fs::read_to_string(dir.join(nested)))
+                .ok()
+        })
     }
 
     /// The file's MIME type followed by the broader types it is a kind of.
@@ -216,13 +311,7 @@ impl Database {
     /// The command line of desktop entry `id` for `file`, and whether it
     /// wants a terminal.
     fn command(&self, id: &str, file: &str) -> Option<(Vec<String>, bool)> {
-        let text = self.app_dirs.iter().find_map(|dir| {
-            // `a-b.desktop` may live at `a/b.desktop`.
-            let nested = id.replacen('-', "/", 1);
-            fs::read_to_string(dir.join(id))
-                .or_else(|_| fs::read_to_string(dir.join(nested)))
-                .ok()
-        })?;
+        let text = self.entry(id)?;
         let (mut exec, mut terminal, mut in_entry) = (None, false, false);
         for line in text.lines().map(str::trim) {
             if line.starts_with('[') {
@@ -249,6 +338,45 @@ impl Database {
     }
 }
 
+/// `text` (an INI-style file) with `key=value` set in `group`, every other
+/// line kept as it was; the group is added if missing.
+fn set_in_group(text: &str, group: &str, key: &str, value: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let (mut in_group, mut found_group, mut set) = (false, false, false);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_group && !set {
+                out.push(format!("{key}={value}"));
+                set = true;
+            }
+            in_group = trimmed == group;
+            found_group |= in_group;
+        } else if in_group
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == key)
+        {
+            if !set {
+                out.push(format!("{key}={value}"));
+                set = true;
+            }
+            continue;
+        }
+        out.push(line.to_owned());
+    }
+    if in_group && !set {
+        out.push(format!("{key}={value}"));
+    } else if !found_group {
+        if out.last().is_some_and(|line| !line.is_empty()) {
+            out.push(String::new());
+        }
+        out.push(group.to_owned());
+        out.push(format!("{key}={value}"));
+    }
+    out.join("\n") + "\n"
+}
+
 /// No type by name: call it text if its first kilobyte reads as text.
 fn looks_like_text(path: &Path) -> bool {
     use std::io::Read;
@@ -268,6 +396,30 @@ fn looks_like_text(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn defaults_are_set_without_touching_the_rest() {
+        let list = "[Added Associations]\nimage/png=loupe.desktop;\n\n[Default Applications]\nimage/png=old.desktop\ntext/plain=nvim.desktop\n";
+        let set = set_in_group(list, "[Default Applications]", "image/png", "imv.desktop");
+        assert_eq!(
+            set,
+            "[Added Associations]\nimage/png=loupe.desktop;\n\n[Default Applications]\nimage/png=imv.desktop\ntext/plain=nvim.desktop\n"
+        );
+        let added = set_in_group(
+            "[Added Associations]\na=b\n",
+            "[Default Applications]",
+            "image/png",
+            "imv.desktop",
+        );
+        assert_eq!(
+            added,
+            "[Added Associations]\na=b\n\n[Default Applications]\nimage/png=imv.desktop\n"
+        );
+        assert_eq!(
+            set_in_group("", "[Default Applications]", "x", "y.desktop"),
+            "[Default Applications]\nx=y.desktop\n"
+        );
+    }
 
     /// A sandbox with a small MIME database and two applications.
     fn sandbox(name: &str) -> (PathBuf, Database) {
@@ -314,6 +466,34 @@ mod tests {
             editor: None,
         };
         (root, database)
+    }
+
+    #[test]
+    fn choices_name_every_handler_and_defaults_stick() {
+        let (root, db) = sandbox("choices");
+        let md = root.join("notes.md");
+        fs::write(&md, "").unwrap();
+        let names = |db: &Database| -> Vec<(String, bool)> {
+            db.choices(&md)
+                .into_iter()
+                .map(|choice| (choice.id, choice.default))
+                .collect()
+        };
+        // Only the text/plain handler that exists.
+        assert_eq!(names(&db), [("edit.desktop".to_owned(), true)]);
+        assert_eq!(
+            db.set_default(&md, "viewer.desktop").unwrap(),
+            "text/markdown"
+        );
+        assert_eq!(
+            names(&db),
+            [
+                ("viewer.desktop".to_owned(), true),
+                ("edit.desktop".to_owned(), false)
+            ]
+        );
+        assert_eq!(argv(db.plan(&md, "term"))[0], "viewer");
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn argv(plan: Option<Plan>) -> Vec<String> {

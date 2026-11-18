@@ -221,6 +221,7 @@ impl Files {
             ("Ctrl+Shift+C", "copy the path"),
             ("Menu  ·  right-click", "more"),
             ("Ctrl+R", "reload"),
+            ("Ctrl+Shift+Enter", "where a link leads"),
         ];
         if let Some(picker) = &self.picker {
             keys.push(("Ctrl+Enter", "finish"));

@@ -810,6 +810,13 @@ Also:
 
 ## 10. Phases
 
+Progress, 2026-11-18: **P0** done (the window role, xdg-foreign, the
+clipboard, the widget set, enso-fs). **P1** done (the picker behind the
+portal, set up by `enso-files portal enable`). **P2** done: opening and
+"Open with…", file operations with undo, the trash, drives through udisks2,
+live updates, settings, version control's basics, "Show in folder",
+links' real paths, and programs that run only when asked. Next: **P3**.
+
 Each phase ends usable, tested, committed, and measured against §8.
 
 **P0 — Foundations.**

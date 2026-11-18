@@ -80,7 +80,8 @@ impl Files {
             menu::Response::Changed => {}
             menu::Response::Closed => self.menu = None,
             menu::Response::Chosen(index) => {
-                if let Some((_, purpose)) = self.menu.take() {
+                if let Some((menu, purpose)) = self.menu.take() {
+                    self.menu_at = (menu.rect().x, menu.rect().y);
                     self.chosen(purpose, index, cx);
                 }
             }
@@ -103,6 +104,35 @@ impl Files {
                 }
             }
             MenuFor::Branches(branches) => self.branch_chosen(branches, index, cx),
+            MenuFor::OpenWith(path, choices) => match choices.get(index) {
+                Some(choice) => {
+                    let db = enso_fs::open::Database::from_env();
+                    if let Err(err) = db.open_with(&choice.id, &path, "alacritty") {
+                        self.toast(format!("Can't open it with {}: {err}", choice.name), cx);
+                    }
+                }
+                // Past the line: "Always use…".
+                None if index == choices.len() + 1 => {
+                    let items = choices
+                        .iter()
+                        .map(|choice| Item::new(&choice.name).checked(choice.default))
+                        .collect();
+                    let (x, y) = self.menu_at;
+                    self.menu = Some((Menu::new(items, x, y), MenuFor::SetDefault(path, choices)));
+                }
+                None => {}
+            },
+            MenuFor::SetDefault(path, choices) => {
+                if let Some(choice) = choices.get(index) {
+                    let db = enso_fs::open::Database::from_env();
+                    match db.set_default(&path, &choice.id) {
+                        Ok(mime) => {
+                            self.toast(format!("{mime} files open with {} now", choice.name), cx)
+                        }
+                        Err(err) => self.toast(format!("Can't change it: {err}"), cx),
+                    }
+                }
+            }
             MenuFor::Choice(which) => {
                 if let Some(picker) = &mut self.picker
                     && let Some(Choice::Options { options, .. }) = picker.choices.get(which)
@@ -175,6 +205,32 @@ impl Files {
             Action::Undo => self.undo_last(cx),
             Action::InitRepo => self.init_repository(cx),
             Action::Restore => self.restore(cx),
+            Action::Run(path) => {
+                let dir = path.parent().map(std::path::Path::to_owned);
+                let argv = vec![path.to_string_lossy().into_owned()];
+                if let Err(err) = enso_fs::apps::spawn_detached(&argv, dir.as_deref()) {
+                    self.toast(format!("Can't run it: {err}"), cx);
+                }
+            }
+            Action::RealPath(path) => match std::fs::canonicalize(&path) {
+                Ok(real) => self.reveal(&real),
+                Err(_) => self.toast("It leads nowhere: what it points to is gone", cx),
+            },
+            Action::OpenWith(path) => {
+                let choices = enso_fs::open::Database::from_env().choices(&path);
+                if choices.is_empty() {
+                    self.toast("Nothing here opens this kind of file", cx);
+                } else {
+                    let mut items: Vec<Item> = choices
+                        .iter()
+                        .map(|choice| Item::new(&choice.name).checked(choice.default))
+                        .collect();
+                    items.push(Item::Separator);
+                    items.push(Item::new("Always use…"));
+                    let (x, y) = self.menu_at;
+                    self.menu = Some((Menu::new(items, x, y), MenuFor::OpenWith(path, choices)));
+                }
+            }
             Action::EmptyTrash => self.ask_empty(cx),
             Action::Settings => {
                 self.learn_git();
@@ -202,6 +258,21 @@ impl Files {
                 (None, false) => "Open",
             };
             add(Item::new(open).keys("Enter"), Some(Action::Open));
+            if !is_dir && self.picker.is_none() {
+                add(
+                    Item::new("Open with…"),
+                    Some(Action::OpenWith(path.clone())),
+                );
+                if super::is_program(&path) {
+                    add(Item::new("Run"), Some(Action::Run(path.clone())));
+                }
+            }
+            if self.pane.entry(row).kind.is_link() {
+                add(
+                    Item::new("Go to the real one").keys("Ctrl+Shift+Enter"),
+                    Some(Action::RealPath(path.clone())),
+                );
+            }
             if self.can_choose(row) && !self.picker.as_ref().is_some_and(|p| p.request.is_save()) {
                 let label = if self.selection.contains(&path) {
                     "Unselect"
@@ -548,6 +619,13 @@ impl Files {
             Key::Char('h') if g && mods.is_plain() => {
                 self.navigate(self.home.clone());
                 false
+            }
+            Key::Enter if mods.ctrl && mods.shift => {
+                if let Some(row) = self.pane.cursor() {
+                    let path = self.pane.path(row);
+                    self.act(super::Action::RealPath(path), cx);
+                }
+                return;
             }
             Key::Enter if mods.ctrl && picking => {
                 self.accept(Under::Nothing, cx);

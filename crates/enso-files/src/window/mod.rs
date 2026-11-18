@@ -133,6 +133,11 @@ enum Action {
     Settings,
     Restore,
     EmptyTrash,
+    OpenWith(PathBuf),
+    /// Start a program, in its folder.
+    Run(PathBuf),
+    /// Go to where a link leads.
+    RealPath(PathBuf),
 }
 
 /// What an open menu is for.
@@ -144,6 +149,10 @@ enum MenuFor {
     Choice(usize),
     /// The branch menu: these branches, then "New branch…" and "Commit as…".
     Branches(Vec<String>),
+    /// The applications that open this file, then "Always use…".
+    OpenWith(PathBuf, Vec<enso_fs::open::Choice>),
+    /// The same applications, to make one the default for the file's type.
+    SetDefault(PathBuf, Vec<enso_fs::open::Choice>),
 }
 
 /// A place in the sidebar.
@@ -220,6 +229,8 @@ pub struct Files {
     /// The drives udisks knows, and the one being mounted.
     volumes: Vec<enso_sys::udisks::Volume>,
     mounting: Option<String>,
+    /// Where the last menu was, for one that follows it.
+    menu_at: (f32, f32),
 }
 
 impl Files {
@@ -276,6 +287,7 @@ impl Files {
             toast: None,
             volumes: Vec::new(),
             mounting: None,
+            menu_at: (0.0, 0.0),
         }
     }
 
@@ -396,7 +408,16 @@ impl Files {
             (Some(Open::Dir(path)), _) => self.navigate(path),
             (Some(Open::File(path)), false) => {
                 if let Err(err) = enso_fs::open::open(&path, "alacritty") {
-                    eprintln!("enso-files: cannot open {}: {err}", path.display());
+                    let name = path
+                        .file_name()
+                        .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+                    // A program is never run by opening it: that's Run's.
+                    let hint = if is_program(&path) {
+                        " · it's a program: Run is in its menu"
+                    } else {
+                        ""
+                    };
+                    self.toast(format!("Can't open “{name}”: {err}{hint}"), cx);
                 }
             }
             (Some(Open::File(path)), true) => {
@@ -563,6 +584,14 @@ impl Files {
         })
         .ok();
     }
+}
+
+/// Whether `path` is a file that can be run: executable by someone, and
+/// not a folder.
+fn is_program(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// The sidebar's places: home, the user folders that exist, the root.
