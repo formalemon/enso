@@ -170,6 +170,8 @@ enum Action {
     RealPath(PathBuf),
     /// Take everything out of this archive, beside it.
     Extract(PathBuf),
+    /// Ask for a repository's address, to clone here.
+    Clone,
     Compress,
     /// Go to a file's folder, with the cursor on it.
     Reveal(PathBuf),
@@ -187,8 +189,8 @@ enum MenuFor {
     Context(Vec<Option<Action>>),
     Filters,
     Choice(usize),
-    /// The branch menu: these branches, then "New branch…" and "Commit as…".
-    Branches(Vec<String>),
+    /// The branch menu: what each line does (`None` for a separator).
+    Branches(Vec<Option<vcs::BranchLine>>),
     /// The applications that open this file, then "Always use…".
     OpenWith(PathBuf, Vec<enso_fs::open::Choice>),
     /// The same applications, to make one the default for the file's type.
@@ -1019,6 +1021,7 @@ impl App for Files {
             }
             Event::Message(Message::Edited(result)) => self.edited(result, cx),
             Event::Message(Message::Toast(text)) => self.toast(text, cx),
+            Event::Message(Message::Remote { said, result }) => self.remote_done(said, result, cx),
             Event::DragOver { x, y } => self.drag_over(x, y, cx),
             Event::DragLeave => self.drag_leave(cx),
             Event::Drop {

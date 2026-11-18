@@ -44,7 +44,44 @@ pub(super) enum Vcs {
     Identity(IdentityEdit),
     /// A new branch's name.
     NewBranch(TextField, Option<String>),
+    /// A repository's address, to clone into the folder shown.
+    Clone(TextField, Option<String>),
 }
+
+/// What a line of the branch menu does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum BranchLine {
+    Local(String),
+    /// A remote's branch not here yet: check it out, tracking.
+    Remote(String),
+    Fetch,
+    Pull,
+    Push,
+    /// Its page on the forge.
+    Web(String),
+    NewBranch,
+    CommitAs,
+}
+
+/// Work with a remote, on a thread.
+#[derive(Clone, Debug)]
+enum Remote {
+    /// Quietly, if `quiet`: when the menu opens and the last was long ago.
+    Fetch {
+        quiet: bool,
+    },
+    Pull,
+    Push {
+        tracking: bool,
+    },
+    Clone {
+        url: String,
+        into: PathBuf,
+    },
+}
+
+/// How old a fetch can be before the branch menu fetches again.
+const STALE: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl Files {
     /// Whether version control is on.
@@ -174,50 +211,210 @@ impl Files {
         cx.redraw();
     }
 
-    /// The branch pill was clicked: the branches, and a new one.
+    /// The branch pill was clicked: the branches here, those on the
+    /// remotes not here yet, fetching, pulling, pushing, the forge's page,
+    /// a new branch, and who commits.
     pub(super) fn branch_menu(&mut self, rect: Rect) {
-        let Some((root, status)) = &self.repo else {
+        let Some((root, status)) = self.repo.clone() else {
             return;
         };
-        let branches = git::branches(root).unwrap_or_default();
-        let mut items: Vec<Item> = branches
+        let branches = git::branches(&root).unwrap_or_default();
+        let remotes = git::remotes(&root).unwrap_or_default();
+        let mut lines: Vec<(Item, Option<BranchLine>)> = branches
             .iter()
-            .map(|branch| Item::new(branch).checked(status.branch.as_ref() == Some(branch)))
+            .map(|branch| {
+                (
+                    Item::new(branch).checked(status.branch.as_ref() == Some(branch)),
+                    Some(BranchLine::Local(branch.clone())),
+                )
+            })
             .collect();
-        if !items.is_empty() {
-            items.push(Item::Separator);
+        // The remotes' branches with no local branch of their name.
+        let others: Vec<String> = git::remote_branches(&root)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|remote| {
+                let short = remote
+                    .split_once('/')
+                    .map_or(remote.as_str(), |(_, name)| name);
+                !branches.iter().any(|branch| branch == short)
+            })
+            .collect();
+        if !others.is_empty() {
+            lines.push((Item::Separator, None));
+            for other in others {
+                lines.push((Item::new(&other), Some(BranchLine::Remote(other))));
+            }
         }
-        items.push(Item::new("New branch…"));
-        items.push(Item::new("Commit as…"));
+        if !remotes.is_empty() {
+            lines.push((Item::Separator, None));
+            lines.push((Item::new("Fetch"), Some(BranchLine::Fetch)));
+            if status.tracking {
+                let label = if status.behind > 0 {
+                    format!("Pull ({} new)", status.behind)
+                } else {
+                    "Pull".to_owned()
+                };
+                lines.push((Item::new(&label), Some(BranchLine::Pull)));
+            }
+            if status.branch.is_some() {
+                let label = match (status.tracking, status.ahead) {
+                    (false, _) => "Push, as a new branch".to_owned(),
+                    (true, 0) => "Push".to_owned(),
+                    (true, ahead) => format!("Push ({ahead} to send)"),
+                };
+                lines.push((Item::new(&label), Some(BranchLine::Push)));
+            }
+            let origin = remotes
+                .iter()
+                .find(|(name, _)| name == "origin")
+                .or(remotes.first());
+            if let Some(page) = origin.and_then(|(_, url)| git::web_page(url)) {
+                let label = format!("Open on {}", git::forge(&page));
+                lines.push((Item::new(&label), Some(BranchLine::Web(page))));
+            }
+        }
+        lines.push((Item::Separator, None));
+        lines.push((Item::new("New branch…"), Some(BranchLine::NewBranch)));
+        lines.push((Item::new("Commit as…"), Some(BranchLine::CommitAs)));
         let current = branches
             .iter()
             .position(|branch| status.branch.as_ref() == Some(branch))
             .unwrap_or(0);
+        let (items, actions): (Vec<Item>, Vec<Option<BranchLine>>) = lines.into_iter().unzip();
         // Opens upward from the status line.
         let menu = Menu::new(items, rect.x, rect.y).with_selected(current);
-        self.menu = Some((menu, MenuFor::Branches(branches)));
+        self.menu = Some((menu, MenuFor::Branches(actions)));
+        // The remotes' branches as they are now, if it's been a while.
+        if !remotes.is_empty() && git::since_fetch(&root).is_none_or(|age| age > STALE) {
+            self.remote(Remote::Fetch { quiet: true });
+        }
     }
 
-    pub(super) fn branch_chosen(&mut self, branches: Vec<String>, index: usize, cx: &mut Cx<'_>) {
-        let Some((root, _)) = self.repo.clone() else {
+    pub(super) fn branch_chosen(
+        &mut self,
+        lines: Vec<Option<BranchLine>>,
+        index: usize,
+        cx: &mut Cx<'_>,
+    ) {
+        let Some((root, status)) = self.repo.clone() else {
             return;
         };
-        match index {
-            i if i < branches.len() => match git::switch(&root, &branches[i]) {
-                Ok(()) => {
-                    self.toast(format!("On {} now", branches[i]), cx);
-                    let request = self.pane.reload();
-                    if let Some(proxy) = &self.proxy {
-                        self.loader.load(request, proxy);
-                    }
+        let Some(Some(line)) = lines.into_iter().nth(index) else {
+            return;
+        };
+        let switched = |files: &mut Self,
+                        result: std::io::Result<()>,
+                        name: &str,
+                        cx: &mut Cx<'_>| match result {
+            Ok(()) => {
+                files.toast(format!("On {name} now"), cx);
+                let request = files.pane.reload();
+                if let Some(proxy) = &files.proxy {
+                    files.loader.load(request, proxy);
                 }
-                Err(err) => self.toast(format!("Can't switch: {err}"), cx),
-            },
-            // Past the branches (and the line): new branch, then identity.
-            i if i == branches.len() + usize::from(!branches.is_empty()) => {
-                self.vcs = Some(Vcs::NewBranch(TextField::default(), None));
+                files.refresh_git(files.pane.generation());
             }
-            _ => self.edit_identity(Scope::Repository(root)),
+            Err(err) => files.toast(format!("Can't switch: {err}"), cx),
+        };
+        match line {
+            BranchLine::Local(branch) => switched(self, git::switch(&root, &branch), &branch, cx),
+            BranchLine::Remote(remote) => {
+                let short = remote
+                    .split_once('/')
+                    .map_or(remote.clone(), |(_, name)| name.to_owned());
+                switched(self, git::track(&root, &remote), &short, cx);
+            }
+            BranchLine::Fetch => {
+                self.toast("Fetching…", cx);
+                self.remote(Remote::Fetch { quiet: false });
+            }
+            BranchLine::Pull => {
+                self.toast("Pulling…", cx);
+                self.remote(Remote::Pull);
+            }
+            BranchLine::Push => {
+                self.toast("Pushing…", cx);
+                self.remote(Remote::Push {
+                    tracking: status.tracking,
+                });
+            }
+            BranchLine::Web(page) => {
+                if let Err(err) = enso_fs::open::uri(&page) {
+                    self.toast(format!("Can't open it: {err}"), cx);
+                }
+            }
+            BranchLine::NewBranch => self.vcs = Some(Vcs::NewBranch(TextField::default(), None)),
+            BranchLine::CommitAs => self.edit_identity(Scope::Repository(root)),
+        }
+        cx.redraw();
+    }
+
+    /// Ask for a repository's address to clone here.
+    pub(super) fn ask_clone(&mut self) {
+        self.vcs = Some(Vcs::Clone(TextField::default(), None));
+    }
+
+    /// Run `work` with a remote on a thread; what came of it arrives as
+    /// [`Message::Remote`].
+    fn remote(&mut self, work: Remote) {
+        let (Some(proxy), Some(root)) = (
+            self.proxy.clone(),
+            self.repo
+                .as_ref()
+                .map(|(root, _)| root.clone())
+                .or_else(|| match &work {
+                    Remote::Clone { into, .. } => Some(into.clone()),
+                    _ => None,
+                }),
+        ) else {
+            return;
+        };
+        let _ = thread::Builder::new()
+            .name("enso-files-remote".to_owned())
+            .spawn(move || {
+                let (said, result) = match &work {
+                    Remote::Fetch { quiet } => (
+                        (!quiet).then(|| "Up to date with the remotes".to_owned()),
+                        git::fetch(&root).map(|()| None),
+                    ),
+                    Remote::Pull => (Some("Pulled".to_owned()), git::pull(&root).map(|()| None)),
+                    Remote::Push { tracking } => (
+                        Some("Pushed".to_owned()),
+                        git::push(&root, *tracking).map(|()| None),
+                    ),
+                    Remote::Clone { url, into } => {
+                        (Some("Cloned".to_owned()), git::clone(url, into).map(Some))
+                    }
+                };
+                let quiet_failure = matches!(work, Remote::Fetch { quiet: true });
+                let result = result.map_err(|err| err.to_string());
+                // A fetch nobody asked for fails quietly: offline is fine.
+                if quiet_failure && result.is_err() {
+                    return;
+                }
+                proxy.send(Message::Remote { said, result });
+            });
+    }
+
+    /// Work with a remote finished.
+    pub(super) fn remote_done(
+        &mut self,
+        said: Option<String>,
+        result: Result<Option<PathBuf>, String>,
+        cx: &mut Cx<'_>,
+    ) {
+        match result {
+            Ok(folder) => {
+                if let Some(said) = said {
+                    self.toast(said, cx);
+                }
+                if let Some(folder) = folder {
+                    self.reveal(&folder);
+                }
+                self.refresh_git(self.pane.generation());
+            }
+            Err(why) => self.toast(format!("Git says: {why}"), cx),
         }
         cx.redraw();
     }
@@ -291,6 +488,22 @@ impl Files {
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
                 _ => *error = None,
             },
+            Vcs::Clone(field, error) => match field.key(key) {
+                field::Response::Submit => {
+                    let url = field.text().trim().to_owned();
+                    if url.is_empty() {
+                        *error = Some("The repository's address goes here".to_owned());
+                    } else {
+                        self.vcs = None;
+                        self.toast("Cloning…", cx);
+                        let into = self.pane.location().to_owned();
+                        self.remote(Remote::Clone { url, into });
+                    }
+                }
+                field::Response::Cancel => self.vcs = None,
+                field::Response::Paste => cx.paste(&TEXT_TYPES),
+                _ => *error = None,
+            },
         }
         cx.redraw();
         true
@@ -308,7 +521,7 @@ impl Files {
                 .insert(text);
                 true
             }
-            Some(Vcs::NewBranch(field, _)) => {
+            Some(Vcs::NewBranch(field, _) | Vcs::Clone(field, _)) => {
                 field.insert(text);
                 true
             }
@@ -347,7 +560,7 @@ impl Files {
             }
             Some(Hit::FormSave) => match &self.vcs {
                 Some(Vcs::Identity(_)) => self.save_identity(cx),
-                Some(Vcs::NewBranch(..)) => {
+                Some(Vcs::NewBranch(..) | Vcs::Clone(..)) => {
                     let enter = KeyEvent {
                         key: Key::Enter,
                         mods: Default::default(),
@@ -449,6 +662,12 @@ impl Files {
                 1,
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Create", Kind::Primary, Hit::FormSave)],
             ),
+            Vcs::Clone(..) => (
+                "Clone a repository".to_owned(),
+                "Its address, from GitHub or anywhere: copied into this folder, under its own name.".to_owned(),
+                1,
+                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Clone", Kind::Primary, Hit::FormSave)],
+            ),
         };
         let height = 150.0 + fields as f32 * 56.0;
         let inner = controls::dialog(canvas, bounds, 480.0, height, &look, 1.0);
@@ -478,6 +697,12 @@ impl Files {
         let mut y = inner.y + 78.0;
         let mut error = None;
         let mut field_rects = Vec::new();
+        // A one-field form's example.
+        let single_placeholder = if matches!(self.vcs, Some(Vcs::Clone(..))) {
+            "https://github.com/owner/repository"
+        } else {
+            "feature/quiet-mode"
+        };
         match &mut self.vcs {
             Some(Vcs::Identity(edit)) => {
                 for (index, (label, placeholder)) in
@@ -515,14 +740,14 @@ impl Files {
                 }
                 error = edit.error.clone();
             }
-            Some(Vcs::NewBranch(field, problem)) => {
+            Some(Vcs::NewBranch(field, problem) | Vcs::Clone(field, problem)) => {
                 let rect = Rect::new(inner.x, y, inner.w, controls::HEIGHT);
                 canvas.fill(rect, radius::pill(rect.h), colors.base);
                 canvas.stroke(rect, radius::pill(rect.h), stroke::HAIRLINE, accent);
                 field.draw(
                     canvas,
                     rect.inset_xy(space::LG, 0.0),
-                    &style("feature/quiet-mode"),
+                    &style(single_placeholder),
                     true,
                 );
                 error = problem.clone();

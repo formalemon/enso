@@ -2132,6 +2132,75 @@ mod tests {
     }
 
     #[test]
+    fn the_branch_menu_reaches_the_remote() {
+        use super::super::vcs::BranchLine;
+        let root = std::env::temp_dir().join(format!("enso-files-remote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("work")).unwrap();
+        let work = root.join("work");
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let done = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(
+                done.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&done.stderr)
+            );
+        };
+        git(&root, &["init", "--quiet", "--bare", "server.git"]);
+        git(&work, &["init", "--quiet", "--initial-branch=main"]);
+        git(
+            &work,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@e",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "one",
+            ],
+        );
+        git(
+            &work,
+            &[
+                "remote",
+                "add",
+                "origin",
+                root.join("server.git").to_str().unwrap(),
+            ],
+        );
+        git(&work, &["push", "--quiet", "-u", "origin", "main"]);
+        git(&work, &["push", "--quiet", "origin", "main:feature"]);
+        git(&work, &["fetch", "--quiet"]);
+
+        let mut files = files();
+        let status = enso_fs::git::status(&work).unwrap();
+        files.repo = Some((work.clone(), status));
+        files.branch_menu(Rect::new(700.0, 400.0, 100.0, 24.0));
+        let Some((_, super::super::MenuFor::Branches(lines))) = &files.menu else {
+            panic!("no branch menu");
+        };
+        let lines: Vec<&BranchLine> = lines.iter().flatten().collect();
+        assert!(lines.contains(&&BranchLine::Local("main".into())));
+        assert!(lines.contains(&&BranchLine::Remote("origin/feature".into())));
+        assert!(
+            !lines.contains(&&BranchLine::Remote("origin/main".into())),
+            "main is here already"
+        );
+        for wanted in [BranchLine::Fetch, BranchLine::Pull, BranchLine::Push] {
+            assert!(lines.contains(&&wanted), "{wanted:?}");
+        }
+        snapshot(&render(&mut files, (900, 480)), "enso-files-branches");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn crumbs_start_at_home_or_the_root() {
         let home = Path::new("/home/me");
         let labels = |path: &str| -> Vec<String> {

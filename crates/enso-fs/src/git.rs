@@ -125,6 +125,137 @@ pub fn create_branch(root: &Path, branch: &str) -> io::Result<()> {
     run(root, &["switch", "--create", branch]).map(drop)
 }
 
+/// The branches on the remotes, as `origin/main`, without the remotes'
+/// `HEAD` pointers.
+pub fn remote_branches(root: &Path) -> io::Result<Vec<String>> {
+    let output = run(
+        root,
+        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
+    )?;
+    Ok(String::from_utf8_lossy(&output)
+        .lines()
+        .filter(|line| !line.is_empty() && !line.ends_with("/HEAD") && line.contains('/'))
+        .map(str::to_owned)
+        .collect())
+}
+
+/// The remotes, by name, and where each fetches from.
+pub fn remotes(root: &Path) -> io::Result<Vec<(String, String)>> {
+    let output = run(root, &["remote", "-v"])?;
+    let mut remotes: Vec<(String, String)> = Vec::new();
+    for line in String::from_utf8_lossy(&output).lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(name), Some(url), Some("(fetch)")) = (parts.next(), parts.next(), parts.next())
+        {
+            remotes.push((name.to_owned(), url.to_owned()));
+        }
+    }
+    Ok(remotes)
+}
+
+/// How long ago the remotes were last fetched from, if ever.
+pub fn since_fetch(root: &Path) -> Option<std::time::Duration> {
+    let head = run(root, &["rev-parse", "--git-dir"]).ok()?;
+    let git_dir = root.join(String::from_utf8_lossy(&head).trim());
+    std::fs::metadata(git_dir.join("FETCH_HEAD"))
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()
+}
+
+/// Bring the remotes' branches up to date (`git fetch --all --prune`).
+pub fn fetch(root: &Path) -> io::Result<()> {
+    run(root, &["fetch", "--all", "--prune", "--quiet"]).map(drop)
+}
+
+/// Bring the branch up to date with its upstream, only by going forward.
+pub fn pull(root: &Path) -> io::Result<()> {
+    run(root, &["pull", "--ff-only", "--quiet"]).map(drop)
+}
+
+/// Send the branch to its upstream — to `origin`, as a new branch there,
+/// if it has none yet.
+pub fn push(root: &Path, tracking: bool) -> io::Result<()> {
+    if tracking {
+        run(root, &["push", "--quiet"]).map(drop)
+    } else {
+        run(
+            root,
+            &["push", "--quiet", "--set-upstream", "origin", "HEAD"],
+        )
+        .map(drop)
+    }
+}
+
+/// Check out a remote's branch (`origin/feature`) as a local one that
+/// tracks it.
+pub fn track(root: &Path, remote_branch: &str) -> io::Result<()> {
+    run(root, &["switch", "--track", "--", remote_branch]).map(drop)
+}
+
+/// Copy the repository at `url` into `into`, as a folder of its own name.
+/// Returns the folder.
+pub fn clone(url: &str, into: &Path) -> io::Result<PathBuf> {
+    let name = url
+        .trim_end_matches('/')
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or("repository")
+        .trim_end_matches(".git");
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(io::Error::other("that address names no repository"));
+    }
+    let folder = into.join(name);
+    if folder.exists() {
+        return Err(io::Error::other(format!("there's already a “{name}” here")));
+    }
+    run(into, &["clone", "--quiet", "--", url, name])?;
+    Ok(folder)
+}
+
+/// The web page for a remote's address, where it's a forge with one
+/// (GitHub, GitLab, Codeberg…): `git@github.com:me/repo.git` and
+/// `https://github.com/me/repo.git` both become
+/// `https://github.com/me/repo`.
+pub fn web_page(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches('/').trim_end_matches(".git");
+    let (host, path) = if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    {
+        let rest = rest.split_once('@').map_or(rest, |(_, after)| after);
+        rest.split_once('/')?
+    } else if let Some(rest) = url.strip_prefix("ssh://") {
+        let rest = rest.split_once('@').map_or(rest, |(_, after)| after);
+        let (host, path) = rest.split_once('/')?;
+        (host.split(':').next()?, path)
+    } else {
+        // scp-like: git@host:owner/repo
+        let rest = url.split_once('@').map_or(url, |(_, after)| after);
+        rest.split_once(':')?
+    };
+    (!host.is_empty() && path.contains('/')).then(|| format!("https://{host}/{path}"))
+}
+
+/// The forge's name for a web page, for "Open on …".
+pub fn forge(page: &str) -> &str {
+    let host = page
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    match host {
+        "github.com" => "GitHub",
+        "gitlab.com" => "GitLab",
+        "codeberg.org" => "Codeberg",
+        "bitbucket.org" => "Bitbucket",
+        _ if host.starts_with("gitlab.") => "GitLab",
+        _ => host,
+    }
+}
+
 /// Make `dir` a repository (`git init`, on `init.defaultBranch`).
 pub fn init(dir: &Path) -> io::Result<()> {
     run(dir, &["init", "--quiet"]).map(drop)
@@ -247,6 +378,83 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn remotes_have_web_pages() {
+        for url in [
+            "git@github.com:formalemon/enso.git",
+            "https://github.com/formalemon/enso.git",
+            "https://token@github.com/formalemon/enso",
+            "ssh://git@github.com:22/formalemon/enso.git",
+        ] {
+            assert_eq!(
+                web_page(url).as_deref(),
+                Some("https://github.com/formalemon/enso"),
+                "{url}"
+            );
+        }
+        assert_eq!(forge("https://github.com/a/b"), "GitHub");
+        assert_eq!(forge("https://gitlab.example.org/a/b"), "GitLab");
+        assert!(web_page("/srv/git/local.git").is_none());
+    }
+
+    #[test]
+    fn branches_go_and_come_back_through_a_remote() {
+        let root = std::env::temp_dir().join(format!("enso-fs-remote-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("work")).unwrap();
+        let work = root.join("work");
+        let git = |dir: &Path, args: &[&str]| run(dir, args).unwrap();
+        // A bare repository standing in for GitHub.
+        git(&root, &["init", "--quiet", "--bare", "server.git"]);
+        git(&work, &["init", "--quiet", "--initial-branch=main"]);
+        git(
+            &work,
+            &[
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@e",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "one",
+            ],
+        );
+        git(
+            &work,
+            &[
+                "remote",
+                "add",
+                "origin",
+                root.join("server.git").to_str().unwrap(),
+            ],
+        );
+        push(&work, false).unwrap();
+        git(&work, &["switch", "--quiet", "-c", "feature"]);
+        push(&work, false).unwrap();
+        git(&work, &["switch", "--quiet", "main"]);
+        git(&work, &["branch", "-D", "feature"]);
+        fetch(&work).unwrap();
+        assert_eq!(
+            remote_branches(&work).unwrap(),
+            ["origin/feature", "origin/main"]
+        );
+        assert!(since_fetch(&work).is_some());
+        track(&work, "origin/feature").unwrap();
+        assert_eq!(status(&work).unwrap().branch.as_deref(), Some("feature"));
+        assert!(status(&work).unwrap().tracking);
+        // And a copy of it all, elsewhere.
+        let copy = clone(root.join("server.git").to_str().unwrap(), &root).unwrap();
+        assert_eq!(copy, root.join("server"));
+        assert!(
+            clone(root.join("server.git").to_str().unwrap(), &root).is_err(),
+            "already there"
+        );
+        assert_eq!(remotes(&copy).unwrap()[0].0, "origin");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn status_lines_are_read() {

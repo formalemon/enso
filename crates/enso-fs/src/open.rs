@@ -39,6 +39,23 @@ pub fn open(path: &Path, terminal: &str) -> io::Result<()> {
     spawn_detached(&plan.argv, plan.cwd.as_deref())
 }
 
+/// Open a web address (or any URI) with what handles its scheme: the
+/// browser, for `https`.
+pub fn uri(uri: &str) -> io::Result<()> {
+    let database = Database::from_env();
+    let scheme = uri.split(':').next().unwrap_or_default();
+    let argv = database
+        .handlers(&format!("x-scheme-handler/{scheme}"))
+        .into_iter()
+        .find_map(|id| database.command(&id, uri).map(|(argv, _)| argv))
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "no application is set up to open {scheme} addresses"
+            ))
+        })?;
+    spawn_detached(&argv, None)
+}
+
 /// Where the MIME and application databases live.
 #[derive(Clone, Debug, Default)]
 pub struct Database {

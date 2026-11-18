@@ -26,6 +26,12 @@ use crate::pane::{Request, Source, describe};
 
 #[derive(Debug)]
 pub enum Message {
+    /// Work with a remote finished: what to say (if it went well and it
+    /// was asked for), a folder to go to (a clone), or what went wrong.
+    Remote {
+        said: Option<String>,
+        result: Result<Option<PathBuf>, String>,
+    },
     /// Something to say, from a worker.
     Toast(String),
     /// How much is in what the properties show, so far or in all.

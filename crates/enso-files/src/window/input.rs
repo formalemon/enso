@@ -281,6 +281,7 @@ impl Files {
             Action::Reveal(path) => self.reveal(&path),
             Action::Extract(archive) => self.extract(archive, cx),
             Action::Compress => self.ask_compress(cx),
+            Action::Clone => self.ask_clone(),
             Action::NewTab(path) => self.open_tab(path, false, cx),
             Action::Bookmark(path) => self.toggle_bookmark(&path, cx),
             Action::ShiftBookmark(path, step) => self.shift_bookmark(&path, step, cx),
@@ -427,11 +428,14 @@ impl Files {
                 Some(Action::NewFolder),
             );
         }
-        if self.git_on() && enso_fs::git::root(self.pane.location()).is_none() {
-            add(
-                Item::new("Start a Git repository here"),
-                Some(Action::InitRepo),
-            );
+        if self.git_on() && folder && self.picker.is_none() {
+            if enso_fs::git::root(self.pane.location()).is_none() {
+                add(
+                    Item::new("Start a Git repository here"),
+                    Some(Action::InitRepo),
+                );
+            }
+            add(Item::new("Clone a repository here…"), Some(Action::Clone));
         }
         if self.picker.is_none() && folder && row.is_none() {
             let here = self.pane.location().to_owned();
