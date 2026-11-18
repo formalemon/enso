@@ -1,5 +1,7 @@
 //! Files without a window: what the enso tools that deal in files share.
 //!
+//! - [`git`] — the repository a folder is in, its branch, identities,
+//!   through the `git` program.
 //! - [`list`] — a directory's entries in two passes: names and kinds at
 //!   once, sizes and dates from a pool of threads after.
 //! - [`sort`] — natural ordering of a listing, by name, size, date, or
@@ -25,7 +27,8 @@
 //! - [`fuzzy`] — the fuzzy matcher the launcher and the file manager share.
 //!
 //! Nothing here draws, and nothing shells out: the freedesktop databases
-//! and specifications are read and written directly.
+//! and specifications are read and written directly. The one exception is
+//! [`git`], which runs the `git` program itself (never through a shell).
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -33,6 +36,7 @@ mod app_index;
 pub mod apps;
 pub mod format;
 pub mod fuzzy;
+pub mod git;
 pub mod ignores;
 pub mod list;
 pub mod mime;
