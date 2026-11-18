@@ -120,10 +120,12 @@ fn serve() -> Result<(), String> {
     let state: service::State = Arc::new(Mutex::new(service::Shared::new(keyring)));
     let connection = zbus::block_on(async {
         let connection = zbus::connection::Builder::session().build().await?;
+        // Everything on the bus before the name is taken: the call that
+        // started this arrives the moment it is, and must find its object.
+        service::publish(&connection, &state).await?;
         connection
             .request_name_with_flags(service::NAME, zbus::fdo::RequestNameFlags::DO_NOT_QUEUE)
             .await?;
-        service::publish(&connection, &state).await?;
         zbus::Result::Ok(connection)
     })
     .map_err(|err| format!("can't be the keyring (is another running?): {err}"))?;
