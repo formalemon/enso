@@ -37,6 +37,9 @@ zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
 # PNG decoding and encoding with text chunks, for thumbnails. Pure Rust;
 # tiny-skia already builds on it.
 png = "0.18"
+# WebP and GIF thumbnails, pure Rust.
+image-webp = "0.2"
+gif = { version = "0.14", default-features = false, features = ["std"] }
 cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
 
 # System interfaces.

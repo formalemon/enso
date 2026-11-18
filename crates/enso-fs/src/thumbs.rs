@@ -7,8 +7,9 @@
 //! What can't be thumbnailed is remembered too (`fail/enso-files/`), so a
 //! broken picture is tried once, not on every scroll past.
 //!
-//! PNG and JPEG are decoded in pure Rust; anything else is only shown if
-//! another program has already made its thumbnail.
+//! PNG, JPEG, WebP, and GIF (its first frame) are decoded in pure Rust;
+//! anything else is only shown if another program has already made its
+//! thumbnail.
 
 use std::{
     fs,
@@ -72,7 +73,7 @@ const MAX_SIDE: u32 = 16_384;
 /// Whether a file of this name is one this module can thumbnail itself.
 pub fn can_make(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    [".png", ".jpg", ".jpeg", ".jpe"]
+    [".png", ".jpg", ".jpeg", ".jpe", ".webp", ".gif"]
         .iter()
         .any(|ext| lower.ends_with(ext))
 }
@@ -150,6 +151,10 @@ pub fn decode(path: &Path, max_side: u32) -> Option<Thumb> {
         decode_png(&bytes)?
     } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
         decode_jpeg(&bytes)?
+    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        decode_webp(&bytes)?
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        decode_gif(&bytes)?
     } else {
         return None;
     };
@@ -184,6 +189,59 @@ fn decode_png(bytes: &[u8]) -> Option<Thumb> {
         png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
         png::ColorType::Indexed => return None,
     };
+    Some(Thumb {
+        width,
+        height,
+        rgba,
+    })
+}
+
+fn decode_webp(bytes: &[u8]) -> Option<Thumb> {
+    let mut decoder = image_webp::WebPDecoder::new(io::Cursor::new(bytes)).ok()?;
+    let (width, height) = decoder.dimensions();
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return None;
+    }
+    let mut buffer = vec![0; decoder.output_buffer_size()?];
+    decoder.read_image(&mut buffer).ok()?;
+    let rgba = if decoder.has_alpha() {
+        buffer
+    } else {
+        buffer
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect()
+    };
+    Some(Thumb {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// A GIF's first frame, placed on its canvas.
+fn decode_gif(bytes: &[u8]) -> Option<Thumb> {
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let mut decoder = options.read_info(io::Cursor::new(bytes)).ok()?;
+    let (width, height) = (u32::from(decoder.width()), u32::from(decoder.height()));
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+        return None;
+    }
+    let frame = decoder.read_next_frame().ok()??;
+    let mut rgba = vec![0; (width * height * 4) as usize];
+    let (left, top) = (u32::from(frame.left), u32::from(frame.top));
+    for y in 0..u32::from(frame.height) {
+        for x in 0..u32::from(frame.width) {
+            let (cx, cy) = (left + x, top + y);
+            if cx >= width || cy >= height {
+                continue;
+            }
+            let from = ((y * u32::from(frame.width) + x) * 4) as usize;
+            let to = ((cy * width + cx) * 4) as usize;
+            rgba[to..to + 4].copy_from_slice(frame.buffer.get(from..from + 4)?);
+        }
+    }
     Some(Thumb {
         width,
         height,
@@ -431,6 +489,47 @@ mod tests {
             hex(&md5(b"file:///home/jens/photos/me.png")),
             "c6ee772d9e49320e97ec29a7eb5b1697"
         );
+    }
+
+    #[test]
+    fn webp_and_gif_decode() {
+        let root = std::env::temp_dir().join(format!("enso-fs-formats-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        // A 4×2 lossless WebP: red left, blue right.
+        let pixels: Vec<u8> = (0..8)
+            .flat_map(|i| if i % 4 < 2 { [255, 0, 0] } else { [0, 0, 255] })
+            .collect();
+        let mut webp = Vec::new();
+        image_webp::WebPEncoder::new(&mut webp)
+            .encode(&pixels, 4, 2, image_webp::ColorType::Rgb8)
+            .unwrap();
+        fs::write(root.join("a.webp"), webp).unwrap();
+        let decoded = decode(&root.join("a.webp"), 100).unwrap();
+        assert_eq!((decoded.width, decoded.height), (4, 2));
+        assert_eq!(&decoded.rgba[..4], &[255, 0, 0, 255]);
+        assert_eq!(&decoded.rgba[12..16], &[0, 0, 255, 255]);
+
+        // A 3×3 GIF whose first frame is green; the second isn't looked at.
+        let mut gif_bytes = Vec::new();
+        {
+            let palette = [0, 255, 0, 255, 0, 255];
+            let mut encoder = gif::Encoder::new(&mut gif_bytes, 3, 3, &palette).unwrap();
+            for index in [0u8, 1] {
+                let mut frame = gif::Frame::default();
+                frame.width = 3;
+                frame.height = 3;
+                frame.buffer = std::borrow::Cow::Owned(vec![index; 9]);
+                encoder.write_frame(&frame).unwrap();
+            }
+        }
+        fs::write(root.join("b.gif"), gif_bytes).unwrap();
+        let decoded = decode(&root.join("b.gif"), 100).unwrap();
+        assert_eq!((decoded.width, decoded.height), (3, 3));
+        assert_eq!(&decoded.rgba[..4], &[0, 255, 0, 255]);
+        assert!(can_make("Clip.GIF") && can_make("x.webp"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
