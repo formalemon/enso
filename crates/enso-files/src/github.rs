@@ -34,7 +34,10 @@ fn json(response: Result<ureq::http::Response<ureq::Body>, ureq::Error>) -> Resu
         .read_json()
         .map_err(|err| format!("GitHub's answer doesn't read: {err}"))?;
     if status.is_client_error() || status.is_server_error() {
-        let message = value["message"].as_str().unwrap_or("it said no");
+        let message = value["message"]
+            .as_str()
+            .or(value["error_description"].as_str())
+            .map_or_else(|| format!("it said no ({status})"), str::to_owned);
         return Err(format!("GitHub: {message}"));
     }
     Ok(value)
@@ -58,7 +61,14 @@ pub fn begin(client_id: &str) -> Result<DeviceCode, String> {
             .post("https://github.com/login/device/code")
             .header("Accept", "application/json")
             .send_form([("client_id", client_id), ("scope", SCOPE)]),
-    )?;
+    )
+    .map_err(|why| {
+        if why.contains("404") {
+            "GitHub doesn't know that client ID: check it on your OAuth app's page".to_owned()
+        } else {
+            why
+        }
+    })?;
     if let Some(error) = value["error_description"]
         .as_str()
         .or(value["error"].as_str())
@@ -319,5 +329,14 @@ mod tests {
             })
         );
         assert!(repo(&serde_json::json!({"name": "no full name"})).is_none());
+    }
+
+    /// GitHub, for real: a made-up app is refused, in GitHub's words.
+    #[test]
+    #[ignore = "reaches github.com"]
+    fn github_answers() {
+        let refused = begin("enso-files-made-up-client").unwrap_err();
+        assert!(refused.starts_with("GitHub"), "{refused}");
+        eprintln!("{refused}");
     }
 }
