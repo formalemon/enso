@@ -10,8 +10,9 @@
 
 use std::{
     collections::HashMap,
-    io,
+    fmt, io,
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use enso_fs::{
@@ -38,6 +39,26 @@ pub enum Open {
     File(PathBuf),
 }
 
+/// Which entries a pane shows at all, beyond dotfiles and the filter: a
+/// picker's file types, say. Given a name and whether it's a folder.
+#[derive(Clone)]
+pub struct Keep(pub Rc<KeepFn>);
+
+/// Whether to show an entry, given its name and whether it's a folder.
+pub type KeepFn = dyn Fn(&str, bool) -> bool;
+
+impl Keep {
+    pub fn new(keep: impl Fn(&str, bool) -> bool + 'static) -> Self {
+        Self(Rc::new(keep))
+    }
+}
+
+impl fmt::Debug for Keep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Keep")
+    }
+}
+
 /// A folder to load: the request a navigation makes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
@@ -59,6 +80,9 @@ pub struct Pane {
     /// What the folder is being filtered by, as typed and as prepared.
     filter: String,
     pattern: Pattern,
+    keep: Option<Keep>,
+    /// How many entries would show without the filter.
+    unfiltered: usize,
     load: Load,
     generation: u64,
     /// How many entries' metadata has arrived for this generation.
@@ -84,6 +108,8 @@ impl Pane {
             hidden,
             filter: String::new(),
             pattern: Pattern::default(),
+            keep: None,
+            unfiltered: 0,
             load: Load::Loading,
             generation: 0,
             statted: 0,
@@ -126,7 +152,7 @@ impl Pane {
 
     /// How many entries there are before the filter.
     pub fn unfiltered_len(&self) -> usize {
-        self.listing.len() - self.hidden_count()
+        self.unfiltered
     }
 
     pub fn filter(&self) -> &str {
@@ -180,6 +206,17 @@ impl Pane {
             self.back.push(from);
         }
         self.forward.clear();
+        Some(request)
+    }
+
+    /// Go to `path` with the cursor on the entry called `name`.
+    pub fn navigate_to(&mut self, path: PathBuf, name: &[u8]) -> Option<Request> {
+        let request = if path == self.location {
+            self.reload()
+        } else {
+            self.navigate(path)?
+        };
+        self.want = Some(name.to_vec());
         Some(request)
     }
 
@@ -318,6 +355,27 @@ impl Pane {
         }
     }
 
+    pub fn sort(&self) -> Sort {
+        self.sort
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) {
+        if sort != self.sort {
+            self.sort = sort;
+            self.refresh(self.cursor_name());
+        }
+    }
+
+    /// Show only what `keep` keeps (and everything, with `None`).
+    pub fn set_keep(&mut self, keep: Option<Keep>) {
+        self.keep = keep;
+        self.refresh(self.cursor_name());
+    }
+
+    pub fn shows_hidden(&self) -> bool {
+        self.hidden
+    }
+
     pub fn toggle_hidden(&mut self) {
         self.hidden = !self.hidden;
         self.refresh(self.cursor_name());
@@ -332,6 +390,16 @@ impl Pane {
         if !self.hidden {
             shown.retain(|&index| !self.listing.is_hidden(index as usize));
         }
+        if let Some(Keep(keep)) = &self.keep {
+            shown.retain(|&index| {
+                let index = index as usize;
+                keep(
+                    &self.listing.display_name(index),
+                    self.listing.entry(index).kind.is_dir(),
+                )
+            });
+        }
+        self.unfiltered = shown.len();
         if !self.filter.is_empty() {
             shown.retain(|&index| {
                 self.pattern

@@ -1,0 +1,1195 @@
+//! Drawing the window, and recording where everything that answers the
+//! pointer went.
+
+use std::{
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+use enso_core::{
+    Rgba,
+    style::{icon, opacity, radius, space, stroke, type_scale},
+};
+use enso_fs::{format, places};
+use enso_ui::{
+    Align, Canvas, Paint, Rect, Text,
+    widget::{Button, Interaction, Kind, controls, field},
+};
+
+use super::{Files, Hit};
+use crate::{pane::Load, pick::Choice, picker::Under};
+
+pub(super) const TITLE_HEIGHT: f32 = 52.0;
+const HEADER_HEIGHT: f32 = 30.0;
+const STATUS_HEIGHT: f32 = 32.0;
+const BAR_HEIGHT: f32 = 64.0;
+/// Room for the size and date columns.
+const SIZE_WIDTH: f32 = 96.0;
+const DATE_WIDTH: f32 = 128.0;
+/// The window needs this much width before the sidebar is shown.
+const SIDEBAR_FROM: f32 = 640.0;
+const PLACE_HEIGHT: f32 = 32.0;
+
+impl Files {
+    pub(super) fn draw_window(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
+        let bounds = canvas.bounds();
+        canvas.clear(self.ctx.theme.colors.base);
+        self.hits.clear();
+        let title = Rect::new(0.0, 0.0, bounds.w, TITLE_HEIGHT);
+        let status = Rect::new(0.0, bounds.h - STATUS_HEIGHT, bounds.w, STATUS_HEIGHT);
+        let bar = self
+            .picker
+            .is_some()
+            .then(|| Rect::new(0.0, status.y - BAR_HEIGHT, bounds.w, BAR_HEIGHT));
+        let body_bottom = bar.map_or(status.y, |bar| bar.y);
+        let body = Rect::new(0.0, title.bottom(), bounds.w, body_bottom - title.bottom());
+
+        let mut animating = false;
+        self.draw_title(canvas, title);
+        let list = if self.sidebar_open && bounds.w >= SIDEBAR_FROM {
+            let width = self.sidebar.at.min(bounds.w * 0.4);
+            self.draw_sidebar(canvas, Rect::new(body.x, body.y, width, body.h));
+            Rect::new(width, body.y, body.w - width, body.h)
+        } else {
+            body
+        };
+        animating |= self.draw_list(canvas, list, now);
+        if let Some(bar) = bar {
+            self.draw_bar(canvas, bar);
+        }
+        self.draw_status(canvas, status);
+        let look = self.look();
+        if let Some((menu, _)) = &mut self.menu {
+            menu.draw(canvas, bounds, &look.menu());
+        }
+        self.draw_confirm(canvas, bounds);
+        Paint::when(animating)
+    }
+
+    fn draw_title(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
+        let colors = self.ctx.theme.colors.clone();
+        let accent = self.ctx.accent();
+        self.hits.push((area, Hit::Title));
+
+        // Back and forward.
+        let button = 32.0;
+        let mut x = area.x + space::MD;
+        for (icon, hit, enabled) in [
+            (icon::CHEVRON_LEFT, Hit::Back, self.pane.can_go_back()),
+            (
+                icon::CHEVRON_RIGHT,
+                Hit::Forward,
+                self.pane.can_go_forward(),
+            ),
+        ] {
+            let rect = Rect::new(x, area.y + (area.h - button) / 2.0, button, button);
+            if enabled && self.hover.as_ref() == Some(&hit) {
+                canvas.fill(rect, radius::CONTROL, colors.highlight_low);
+            }
+            let color = if enabled {
+                colors.text
+            } else {
+                colors.muted.alpha(opacity::DISABLED)
+            };
+            canvas.icon(icon, 18.0, color, rect, Align::Center);
+            if enabled {
+                self.hits.push((rect, hit));
+            }
+            x += button + space::XS;
+        }
+        x += space::SM;
+
+        // The path, as crumbs: home is "~", and what's above the last few
+        // folders is folded away when there isn't room.
+        let crumbs = crumbs(self.pane.location(), &self.home);
+        let size = self.font(type_scale::BODY);
+        let separator = Text::new("›", size, colors.muted);
+        let gap = canvas.measure(&separator).w + space::SM * 2.0;
+        let right = self.draw_filter(canvas, area) - space::LG;
+        let widths: Vec<f32> = crumbs
+            .iter()
+            .enumerate()
+            .map(|(i, (label, _))| {
+                let text = Text::new(label, size, colors.text);
+                let text = if i + 1 == crumbs.len() {
+                    text.medium()
+                } else {
+                    text
+                };
+                canvas.measure(&text).w + space::SM * 2.0
+            })
+            .collect();
+        // Fold from the left until the rest fits.
+        let mut first = 0;
+        while first + 1 < crumbs.len()
+            && widths[first..].iter().sum::<f32>() + gap * (crumbs.len() - first) as f32 > right - x
+        {
+            first += 1;
+        }
+        if first > 0 {
+            let ellipsis = Text::new("…", size, colors.muted);
+            x += canvas
+                .text_in(&ellipsis, Rect::new(x, area.y, 24.0, area.h), Align::Start)
+                .w;
+            x += space::SM;
+        }
+        let pill = 30.0;
+        for (i, (label, path)) in crumbs.iter().enumerate().skip(first) {
+            let last = i + 1 == crumbs.len();
+            if i > first {
+                canvas.text_in(&separator, Rect::new(x, area.y, gap, area.h), Align::Center);
+                x += gap;
+            }
+            // The last crumb may have to stop short of the edge.
+            let width = widths[i].min((right - x).max(0.0));
+            let rect = Rect::new(x, area.y + (area.h - pill) / 2.0, width, pill);
+            let hit = Hit::Crumb(path.clone());
+            if last {
+                canvas.fill(rect, radius::pill(pill), accent.alpha(opacity::TINT));
+            } else if self.hover.as_ref() == Some(&hit) {
+                canvas.fill(rect, radius::pill(pill), colors.highlight_low);
+            }
+            let text = Text::new(label, size, if last { colors.text } else { colors.subtle });
+            let text = if last { text.medium() } else { text };
+            canvas.text_in(&text, rect.inset_xy(space::SM, 0.0), Align::Center);
+            if !last {
+                self.hits.push((rect, hit));
+            }
+            x += widths[i];
+        }
+    }
+
+    /// The filter at the right of the title row: a field while it's open
+    /// or a filter is on, a quiet magnifier otherwise. Returns where it
+    /// starts, for the path to stop short of.
+    fn draw_filter(&mut self, canvas: &mut Canvas<'_>, area: Rect) -> f32 {
+        let colors = self.ctx.theme.colors.clone();
+        let accent = self.ctx.accent();
+        let size = self.font(type_scale::BODY);
+        let height = 32.0;
+        let open = self.filter.is_some() || !self.pane.filter().is_empty();
+        let width = if open {
+            (area.w * 0.32).clamp(160.0, 280.0)
+        } else {
+            height
+        };
+        let rect = Rect::new(
+            area.right() - space::MD - width,
+            area.y + (area.h - height) / 2.0,
+            width,
+            height,
+        );
+        let hovered = matches!(self.hover, Some(Hit::Filter(_)));
+        if open {
+            canvas.fill(rect, radius::pill(height), colors.surface);
+            let ring = if self.filter.is_some() {
+                accent
+            } else {
+                colors.highlight_med
+            };
+            canvas.stroke(rect, radius::pill(height), stroke::HAIRLINE, ring);
+        } else if hovered {
+            canvas.fill(rect, radius::pill(height), colors.highlight_low);
+        }
+        let icon_box = Rect::new(rect.x + space::SM, rect.y, 18.0, rect.h);
+        if open {
+            canvas.icon(icon::SEARCH, 16.0, colors.subtle, icon_box, Align::Start);
+        } else {
+            canvas.icon(icon::SEARCH, 16.0, colors.subtle, rect, Align::Center);
+        }
+        let text_rect = Rect::new(
+            icon_box.right() + space::SM,
+            rect.y,
+            (rect.right() - space::MD - icon_box.right() - space::SM).max(0.0),
+            rect.h,
+        );
+        if open {
+            let style = field::Style {
+                size,
+                color: colors.text,
+                placeholder: "Filter",
+                placeholder_color: colors.muted,
+                caret: accent,
+                selection: accent.alpha(opacity::TINT * 2.0),
+            };
+            let focused = self.filter.is_some();
+            match &mut self.filter {
+                Some(field) => field.draw(canvas, text_rect, &style, focused),
+                None => {
+                    canvas.text_in(
+                        &Text::new(self.pane.filter(), size, colors.subtle),
+                        text_rect,
+                        Align::Start,
+                    );
+                }
+            }
+        }
+        self.hits.push((rect, Hit::Filter(text_rect.x)));
+        rect.x
+    }
+
+    fn draw_sidebar(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
+        let colors = self.ctx.theme.colors.clone();
+        let accent = self.ctx.accent();
+        let size = self.font(type_scale::BODY);
+        canvas.fill(area, 0.0, colors.surface);
+        let edge = Rect::new(
+            area.right() - controls::SPLITTER_GRAB,
+            area.y,
+            controls::SPLITTER_GRAB * 2.0,
+            area.h,
+        );
+        let edge_color = if self.sidebar.is_dragging() || self.hover == Some(Hit::SidebarEdge) {
+            accent.alpha(0.5)
+        } else {
+            colors.highlight_low
+        };
+        canvas.fill(
+            Rect::new(area.right() - 1.0, area.y, stroke::HAIRLINE, area.h),
+            0.0,
+            edge_color,
+        );
+
+        let mut y = area.y + space::SM;
+        let location = self.pane.location().to_owned();
+        for place in self.places.clone() {
+            if y + PLACE_HEIGHT > area.bottom() {
+                break;
+            }
+            let row = Rect::new(
+                area.x + space::SM,
+                y,
+                area.w - 2.0 * space::SM,
+                PLACE_HEIGHT,
+            );
+            let here = place.path == location;
+            let hit = Hit::Place(place.path.clone());
+            if here {
+                canvas.fill(row, radius::CONTROL, accent.alpha(opacity::TINT));
+            } else if self.hover.as_ref() == Some(&hit) {
+                canvas.fill(row, radius::CONTROL, colors.highlight_low);
+            }
+            let inner = row.inset_xy(space::MD, 0.0);
+            let color = if here { accent } else { colors.subtle };
+            canvas.icon(
+                place.icon,
+                16.0,
+                color,
+                Rect::new(inner.x, inner.y, 18.0, inner.h),
+                Align::Start,
+            );
+            let label = Text::new(
+                &place.label,
+                size,
+                if here { colors.text } else { colors.subtle },
+            );
+            let label = if here { label.medium() } else { label };
+            canvas.text_in(
+                &label,
+                Rect::new(
+                    inner.x + 18.0 + space::MD,
+                    inner.y,
+                    inner.w - 18.0 - space::MD,
+                    inner.h,
+                ),
+                Align::Start,
+            );
+            self.hits.push((row, hit));
+            y += PLACE_HEIGHT + 2.0;
+        }
+        self.hits.push((edge, Hit::SidebarEdge));
+    }
+
+    /// The list, with its headings. Returns whether anything is moving.
+    fn draw_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, now: Instant) -> bool {
+        let colors = self.ctx.theme.colors.clone();
+        let accent = self.ctx.accent();
+        let row_height = self.row_height();
+        let body = self.font(type_scale::BODY);
+        let small = self.font(type_scale::SMALL);
+
+        // Column headings.
+        let header = Rect::new(area.x, area.y, area.w, HEADER_HEIGHT);
+        let columns = Columns::new(header.inset_xy(space::LG, 0.0));
+        let heading = |label| Text::new(label, small, colors.muted).medium();
+        canvas.text_in(&heading("Name"), columns.name, Align::Start);
+        if columns.size.w > 0.0 {
+            canvas.text_in(&heading("Size"), columns.size, Align::End);
+            canvas.text_in(&heading("Modified"), columns.date, Align::Start);
+        }
+        canvas.fill(
+            Rect::new(
+                area.x + space::LG,
+                header.bottom() - 1.0,
+                area.w - 2.0 * space::LG,
+                stroke::HAIRLINE,
+            ),
+            0.0,
+            colors.highlight_med,
+        );
+
+        let list = Rect::new(area.x, header.bottom(), area.w, area.h - HEADER_HEIGHT);
+        self.list = list;
+        self.scroll
+            .set_extent(self.pane.len() as f32 * row_height, list.h);
+        self.hits.push((list, Hit::Empty));
+
+        match self.pane.load().clone() {
+            Load::Loading if self.pane.is_empty() => return false,
+            Load::Failed(why) => {
+                let text = Text::new(&why, body, colors.subtle)
+                    .max_width(list.w * 0.6)
+                    .max_lines(3);
+                canvas.text_in(&text, list.centered(list.w * 0.6, 80.0), Align::Center);
+                return false;
+            }
+            _ if self.pane.is_empty() => {
+                let message = if !self.pane.filter().is_empty() {
+                    format!(
+                        "Nothing here matches “{}” — Esc shows everything",
+                        self.pane.filter()
+                    )
+                } else {
+                    match self.pane.hidden_count() {
+                        0 => "Nothing here yet".to_owned(),
+                        n => format!(
+                            "Nothing here but {} — Ctrl+H shows {}",
+                            format::count(n, "hidden file", "hidden files"),
+                            if n == 1 { "it" } else { "them" }
+                        ),
+                    }
+                };
+                canvas.text_in(
+                    &Text::new(&message, body, colors.muted),
+                    list,
+                    Align::Center,
+                );
+                return false;
+            }
+            _ => {}
+        }
+
+        let scroll = self.scroll.get(now);
+        let first = (scroll / row_height).floor().max(0.0) as usize;
+        let last = (((scroll + list.h) / row_height).ceil() as usize).min(self.pane.len());
+        let zone = jiff::Zoned::now();
+        let cursor = self.pane.cursor();
+        let highlight = self.highlight.get(now);
+        let chosen = colors.iris;
+
+        canvas.with_clip(list, |canvas| {
+            // The cursor's highlight glides on its own, under the rows.
+            if cursor.is_some() {
+                let y = list.y + highlight - scroll;
+                let rect = Rect::new(
+                    list.x + space::SM,
+                    y + 1.0,
+                    list.w - space::SM * 2.0,
+                    row_height - 2.0,
+                );
+                canvas.fill(rect, radius::CONTROL, accent.alpha(opacity::TINT));
+                canvas.pill(
+                    Rect::new(
+                        rect.x + space::XS,
+                        rect.y + rect.h * 0.25,
+                        3.0,
+                        rect.h * 0.5,
+                    ),
+                    accent,
+                );
+            }
+            for row in first..last {
+                let y = list.y + row as f32 * row_height - scroll;
+                let rect = Rect::new(list.x, y, list.w, row_height);
+                let band = Rect::new(
+                    list.x + space::SM,
+                    y + 1.0,
+                    list.w - space::SM * 2.0,
+                    row_height - 2.0,
+                );
+                let columns = Columns::new(rect.inset_xy(space::LG, 0.0));
+                let path = self.pane.path(row);
+                let selected = self.selection.contains(&path);
+                if selected {
+                    canvas.fill(band, radius::CONTROL, chosen.alpha(opacity::TINT));
+                } else if self.hover == Some(Hit::Row(row)) && cursor != Some(row) {
+                    canvas.fill(band, radius::CONTROL, colors.highlight_low);
+                }
+                let entry = *self.pane.entry(row);
+                let dir = entry.kind.is_dir();
+                let faded = |color: Rgba| {
+                    if self.pane.is_hidden(row) {
+                        color.alpha(0.7)
+                    } else {
+                        color
+                    }
+                };
+                let (icon, icon_color) = if selected {
+                    (icon::CHECK, chosen)
+                } else if dir {
+                    (icon::FOLDER, accent)
+                } else {
+                    (icon::FILE, colors.subtle)
+                };
+                canvas.icon(icon, 18.0, faded(icon_color), columns.icon, Align::Center);
+                let name = self.pane.name(row);
+                canvas.text_in(
+                    &Text::new(&name, body, faded(colors.text)),
+                    columns.name,
+                    Align::Start,
+                );
+                if let Some(meta) = entry.meta
+                    && columns.size.w > 0.0
+                {
+                    if !dir {
+                        let size = format::size(meta.size);
+                        canvas.text_in(
+                            &Text::new(&size, small, colors.subtle),
+                            columns.size,
+                            Align::End,
+                        );
+                    }
+                    let when = format::when(meta.modified, &zone);
+                    canvas.text_in(
+                        &Text::new(&when, small, colors.subtle),
+                        columns.date,
+                        Align::Start,
+                    );
+                }
+            }
+        });
+        for row in first..last {
+            let y = list.y + row as f32 * row_height - scroll;
+            let top = y.max(list.y);
+            let rect = Rect::new(
+                list.x,
+                top,
+                list.w,
+                (y + row_height).min(list.bottom()) - top,
+            );
+            if rect.h > 0.0 {
+                self.hits.push((rect, Hit::Row(row)));
+            }
+        }
+        let hovered_bar = self.hover == Some(Hit::ScrollBar);
+        self.scroll
+            .draw_bar(canvas, list, colors.subtle, hovered_bar, now);
+        if self.scroll.max() > 0.0 {
+            let strip = Rect::new(list.right() - 14.0, list.y, 14.0, list.h);
+            self.hits.push((strip, Hit::ScrollBar));
+        }
+        self.scroll.is_animating(now) || self.highlight.is_animating(now)
+    }
+
+    /// The picker's bar: what's chosen (or the name to save as) on the
+    /// left; the file types, the application's questions, and the buttons
+    /// on the right.
+    fn draw_bar(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
+        let Some(picker) = &self.picker else { return };
+        let look = self.look();
+        let colors = self.ctx.theme.colors.clone();
+        let small = self.font(type_scale::SMALL);
+        canvas.fill(area, 0.0, colors.surface);
+        canvas.fill(
+            Rect::new(area.x, area.y, area.w, stroke::HAIRLINE),
+            0.0,
+            colors.highlight_low,
+        );
+        let inner = area.inset_xy(space::LG, 0.0);
+        let height = controls::HEIGHT;
+        let y = inner.y + (inner.h - height) / 2.0;
+        let mut right = inner.right();
+        let mut hits = Vec::new();
+
+        // Buttons, right to left.
+        let under = match self.under() {
+            Under::Dir(_) => Under::Nothing,
+            under => under,
+        };
+        let ready = picker.ready(self.pane.location(), &self.selection, &under);
+        let count = self.selection.len().max(1);
+        let accept_label = picker.request.accept(count);
+        let accept = Button::new(&accept_label, Kind::Primary);
+        let width = accept.width(canvas, &look);
+        let rect = Rect::new(right - width, y, width, height);
+        accept.draw(
+            canvas,
+            rect,
+            &look,
+            Interaction {
+                hovered: self.hover == Some(Hit::Accept),
+                disabled: !ready,
+                ..Interaction::default()
+            },
+        );
+        if ready {
+            hits.push((rect, Hit::Accept));
+        }
+        right = rect.x - space::SM;
+        let cancel = Button::new("Cancel", Kind::Secondary);
+        let width = cancel.width(canvas, &look);
+        let rect = Rect::new(right - width, y, width, height);
+        cancel.draw(
+            canvas,
+            rect,
+            &look,
+            Interaction {
+                hovered: self.hover == Some(Hit::Cancel),
+                ..Interaction::default()
+            },
+        );
+        hits.push((rect, Hit::Cancel));
+        right = rect.x - space::LG;
+
+        // The application's questions.
+        for (index, choice) in picker.choices.iter().enumerate().rev() {
+            let hovered = self.hover == Some(Hit::Choice(index));
+            let rect = match choice {
+                Choice::Toggle { label, on, .. } => {
+                    let text = Text::new(label, small, colors.subtle);
+                    let width = canvas.measure(&text).w + controls::TOGGLE.0 + space::SM;
+                    let rect = Rect::new(right - width, y, width, height);
+                    let toggle = Rect::new(
+                        rect.x,
+                        y + (height - controls::TOGGLE.1) / 2.0,
+                        controls::TOGGLE.0,
+                        controls::TOGGLE.1,
+                    );
+                    enso_ui::widget::Toggle::new(*on).draw(
+                        canvas,
+                        toggle,
+                        &look,
+                        Interaction {
+                            hovered,
+                            ..Interaction::default()
+                        },
+                        Instant::now(),
+                    );
+                    canvas.text_in(
+                        &text,
+                        Rect::new(toggle.right() + space::SM, y, width, height),
+                        Align::Start,
+                    );
+                    rect
+                }
+                Choice::Options {
+                    label,
+                    options,
+                    selected,
+                    ..
+                } => {
+                    let value = options
+                        .iter()
+                        .find(|(id, _)| id == selected)
+                        .map_or(selected.as_str(), |(_, label)| label.as_str());
+                    let text = format!("{label}: {value}");
+                    dropdown(canvas, &look, &text, right, y, hovered)
+                }
+            };
+            hits.push((rect, Hit::Choice(index)));
+            right = rect.x - space::MD;
+        }
+
+        // The file types.
+        if let Some(filter) = picker
+            .filter
+            .and_then(|index| picker.request.filters.get(index))
+        {
+            let hovered = self.hover == Some(Hit::FilterMenu);
+            let rect = dropdown(canvas, &look, &filter.name, right, y, hovered);
+            if picker.request.filters.len() > 1 {
+                hits.push((rect, Hit::FilterMenu));
+            }
+            right = rect.x - space::LG;
+        }
+
+        // Left: the name to save as, or what's chosen.
+        let left = Rect::new(inner.x, y, (right - inner.x).max(0.0), height);
+        let typing = self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.typing_name);
+        if let Some(name) = self.picker.as_mut().and_then(|picker| picker.name.as_mut()) {
+            let field_rect = Rect::new(left.x, left.y, left.w.min(420.0), left.h);
+            canvas.fill(field_rect, radius::pill(height), colors.base);
+            canvas.stroke(
+                field_rect,
+                radius::pill(height),
+                stroke::HAIRLINE,
+                if typing {
+                    look.accent
+                } else {
+                    colors.highlight_med
+                },
+            );
+            let text_rect = field_rect.inset_xy(space::LG, 0.0);
+            name.draw(
+                canvas,
+                text_rect,
+                &field::Style {
+                    size: look.size,
+                    color: colors.text,
+                    placeholder: "Name",
+                    placeholder_color: colors.muted,
+                    caret: look.accent,
+                    selection: look.accent.alpha(opacity::TINT * 2.0),
+                },
+                typing,
+            );
+            hits.push((field_rect, Hit::Name(text_rect.x)));
+        } else {
+            self.draw_chips(canvas, left, &mut hits);
+        }
+        self.hits.extend(hits);
+    }
+
+    /// What's chosen, as removable chips; what doesn't fit is counted.
+    fn draw_chips(&mut self, canvas: &mut Canvas<'_>, area: Rect, hits: &mut Vec<(Rect, Hit)>) {
+        let colors = self.ctx.theme.colors.clone();
+        let small = self.font(type_scale::SMALL);
+        let chip = 28.0;
+        let y = area.y + (area.h - chip) / 2.0;
+        if self.selection.is_empty() {
+            let hint = match &self.picker {
+                Some(picker) if picker.request.directory() => {
+                    "Enter goes in · Ctrl+Enter chooses this folder"
+                }
+                Some(picker) if picker.request.multiple() => {
+                    "Space or Ctrl+click to choose · from any folder"
+                }
+                _ => "Double-click or Enter to choose",
+            };
+            canvas.text_in(&Text::new(hint, small, colors.muted), area, Align::Start);
+            return;
+        }
+        let mut x = area.x;
+        let paths: Vec<PathBuf> = self.selection.paths().to_vec();
+        for (shown, path) in paths.iter().enumerate() {
+            let name = path
+                .file_name()
+                .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+            let text = Text::new(&name, small, colors.text).max_width(160.0);
+            let width = canvas.measure(&text).w + space::MD + 16.0 + space::SM;
+            let more = paths.len() - shown;
+            let room_for_more = if more > 1 { 64.0 } else { 0.0 };
+            if x + width + room_for_more > area.right() {
+                let label = format!("+{more} more");
+                canvas.text_in(
+                    &Text::new(&label, small, colors.subtle),
+                    Rect::new(x, area.y, area.right() - x, area.h),
+                    Align::Start,
+                );
+                break;
+            }
+            let rect = Rect::new(x, y, width, chip);
+            let hovered = self.hover == Some(Hit::Chip(path.clone()));
+            canvas.fill(
+                rect,
+                radius::pill(chip),
+                if hovered {
+                    colors.highlight_med
+                } else {
+                    colors.overlay
+                },
+            );
+            canvas.text_in(
+                &text,
+                Rect::new(rect.x + space::MD, rect.y, width, chip),
+                Align::Start,
+            );
+            let close = Rect::new(
+                rect.right() - 16.0 - space::SM,
+                rect.y,
+                16.0 + space::SM,
+                chip,
+            );
+            let close_hovered = self.hover == Some(Hit::Unchoose(path.clone()));
+            canvas.icon(
+                icon::CLOSE,
+                12.0,
+                if close_hovered {
+                    colors.love
+                } else {
+                    colors.subtle
+                },
+                close,
+                Align::Center,
+            );
+            hits.push((rect, Hit::Chip(path.clone())));
+            hits.push((close, Hit::Unchoose(path.clone())));
+            x = rect.right() + space::SM;
+        }
+    }
+
+    fn draw_status(&self, canvas: &mut Canvas<'_>, area: Rect) {
+        let colors = &self.ctx.theme.colors;
+        let small = self.font(type_scale::SMALL);
+        canvas.fill(
+            Rect::new(area.x, area.y, area.w, stroke::HAIRLINE),
+            0.0,
+            colors.highlight_low,
+        );
+        let inner = area.inset_xy(space::LG, 0.0);
+        let mut left = match self.pane.load() {
+            Load::Loading => "Loading…".to_owned(),
+            Load::Failed(_) => String::new(),
+            Load::Ready if !self.pane.filter().is_empty() => format!(
+                "{} of {} match",
+                self.pane.len(),
+                format::count(self.pane.unfiltered_len(), "item", "items")
+            ),
+            Load::Ready => format::count(self.pane.len(), "item", "items"),
+        };
+        if self.pane.hidden_count() > 0 {
+            left += &format!(" · {} hidden", self.pane.hidden_count());
+        }
+        if !self.selection.is_empty() {
+            left += &format!(" · {} selected", self.selection.len());
+            let folders = self.selection.folders();
+            if folders > 1 {
+                left += &format!(" in {folders} folders");
+            }
+        }
+        canvas.text_in(&Text::new(&left, small, colors.subtle), inner, Align::Start);
+        if let Ok(space) = places::space(self.pane.location()) {
+            let free = format!("{} free", format::size(space.free));
+            canvas.text_in(&Text::new(&free, small, colors.subtle), inner, Align::End);
+        }
+    }
+
+    /// The question about saving over a file, if it's being asked.
+    fn draw_confirm(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
+        let Some(path) = self
+            .picker
+            .as_ref()
+            .and_then(|picker| picker.confirm.clone())
+        else {
+            return;
+        };
+        let look = self.look();
+        let colors = self.ctx.theme.colors.clone();
+        // Everything under the question is out of reach.
+        self.hits.clear();
+        let inner = controls::dialog(canvas, bounds, 420.0, 168.0, &look, 1.0);
+        let name = path
+            .file_name()
+            .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+        let title = format!("Replace “{name}”?");
+        canvas.text(
+            &Text::new(&title, self.font(type_scale::TITLE), colors.text)
+                .medium()
+                .max_width(inner.w),
+            inner.x,
+            inner.y,
+        );
+        let folder = path
+            .parent()
+            .map(|folder| folder.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let detail =
+            format!("A file with this name is already in {folder}. Saving replaces what's in it.");
+        canvas.text(
+            &Text::new(&detail, self.font(type_scale::SMALL), colors.subtle)
+                .max_width(inner.w)
+                .max_lines(2),
+            inner.x,
+            inner.y + 30.0,
+        );
+        let y = inner.bottom() - controls::HEIGHT;
+        let replace = Button::new("Replace", Kind::Danger);
+        let width = replace.width(canvas, &look);
+        let replace_rect = Rect::new(inner.right() - width, y, width, controls::HEIGHT);
+        replace.draw(
+            canvas,
+            replace_rect,
+            &look,
+            Interaction {
+                hovered: self.hover == Some(Hit::Replace),
+                focused: true,
+                ..Interaction::default()
+            },
+        );
+        let keep = Button::new("Cancel", Kind::Secondary);
+        let width = keep.width(canvas, &look);
+        let keep_rect = Rect::new(
+            replace_rect.x - space::SM - width,
+            y,
+            width,
+            controls::HEIGHT,
+        );
+        keep.draw(
+            canvas,
+            keep_rect,
+            &look,
+            Interaction {
+                hovered: self.hover == Some(Hit::KeepFile),
+                ..Interaction::default()
+            },
+        );
+        self.hits.push((replace_rect, Hit::Replace));
+        self.hits.push((keep_rect, Hit::KeepFile));
+    }
+}
+
+/// A dropdown button whose right edge is at `right`: its value and a
+/// chevron. Returns where it went.
+fn dropdown(
+    canvas: &mut Canvas<'_>,
+    look: &enso_ui::widget::Look,
+    text: &str,
+    right: f32,
+    y: f32,
+    hovered: bool,
+) -> Rect {
+    let label = Text::new(text, look.size * type_scale::SMALL, look.text).max_width(220.0);
+    let width = canvas.measure(&label).w + 2.0 * space::MD + 16.0 + space::XS;
+    let rect = Rect::new(right - width, y, width, controls::HEIGHT);
+    canvas.fill(
+        rect,
+        radius::pill(rect.h),
+        if hovered {
+            look.highlight_med
+        } else {
+            look.overlay
+        },
+    );
+    canvas.text_in(&label, rect.inset_xy(space::MD, 0.0), Align::Start);
+    canvas.icon(
+        icon::CHEVRON_DOWN,
+        14.0,
+        look.subtle,
+        Rect::new(rect.right() - space::MD - 16.0, y, 16.0, rect.h),
+        Align::Center,
+    );
+    rect
+}
+
+/// Where each column of a row goes. Narrow lists drop the size and date.
+struct Columns {
+    icon: Rect,
+    name: Rect,
+    size: Rect,
+    date: Rect,
+}
+
+impl Columns {
+    fn new(row: Rect) -> Self {
+        let icon = Rect::new(row.x, row.y, 24.0, row.h);
+        let name_x = icon.right() + space::MD;
+        if row.w < 420.0 {
+            return Self {
+                icon,
+                name: Rect::new(name_x, row.y, (row.right() - name_x).max(0.0), row.h),
+                size: Rect::new(row.right(), row.y, 0.0, row.h),
+                date: Rect::new(row.right(), row.y, 0.0, row.h),
+            };
+        }
+        let date = Rect::new(row.right() - DATE_WIDTH, row.y, DATE_WIDTH, row.h);
+        let size = Rect::new(date.x - space::XL - SIZE_WIDTH, row.y, SIZE_WIDTH, row.h);
+        let name = Rect::new(name_x, row.y, (size.x - space::XL - name_x).max(0.0), row.h);
+        Self {
+            icon,
+            name,
+            size,
+            date,
+        }
+    }
+}
+
+/// The crumbs of `path`: a label and where it goes, from the root (or from
+/// home, shown as `~`) down.
+fn crumbs(path: &Path, home: &Path) -> Vec<(String, PathBuf)> {
+    let mut crumbs = Vec::new();
+    let mut at = Some(path);
+    while let Some(dir) = at {
+        if dir == home {
+            crumbs.push(("~".to_owned(), dir.to_owned()));
+            break;
+        }
+        let label = match dir.file_name() {
+            Some(name) => name.to_string_lossy().into_owned(),
+            None => "/".to_owned(),
+        };
+        crumbs.push((label, dir.to_owned()));
+        at = dir.parent();
+    }
+    crumbs.reverse();
+    crumbs
+}
+
+/// The window title: the folder's name, and where it is.
+pub(super) fn title(path: &Path, home: &Path) -> String {
+    let name = if path == home {
+        "Home".to_owned()
+    } else {
+        path.file_name().map_or_else(
+            || "/".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    };
+    format!("{name} — Files")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use enso_core::{Context, Paths};
+    use enso_fs::list::{Kind, Listing, Meta, Target};
+    use enso_ui::{Offscreen, TextEngine, widget::TextField};
+
+    use super::*;
+    use crate::{
+        config::FilesConfig,
+        pick::{self, Filter, Mode},
+        picker::Outcome,
+    };
+
+    fn context() -> Context {
+        Context::load_from(Paths::rooted("/nonexistent/enso-files-test"))
+    }
+
+    fn fill(files: &mut Files) {
+        let request = files.pending.take().unwrap();
+        let entries = [
+            ("crates", Kind::Dir),
+            ("docs", Kind::Dir),
+            ("target", Kind::Dir),
+            ("latest", Kind::Link(Target::Dir)),
+            (".git", Kind::Dir),
+            ("Cargo.lock", Kind::File),
+            ("Cargo.toml", Kind::File),
+            (
+                "a file with a name far too long to fit in its column at all.txt",
+                Kind::File,
+            ),
+            ("README.md", Kind::File),
+            ("photo.png", Kind::File),
+        ];
+        let listing = Listing::from_entries(request.path.clone(), entries);
+        let now = jiff::Timestamp::now().as_nanosecond() as i64;
+        let metas: Vec<Option<Meta>> = (0..entries.len())
+            .map(|i| {
+                Some(Meta {
+                    size: 1500 * (i as u64 + 1).pow(4),
+                    modified: now - (i as i64) * 7_200_000_000_000,
+                    created: None,
+                    accessed: now,
+                    mode: 0o644,
+                    uid: 1000,
+                    gid: 1000,
+                    link_size: None,
+                })
+            })
+            .collect();
+        assert!(files.pane.set_listing(request.generation, Ok(listing)));
+        assert!(files.pane.apply_stats(request.generation, 0, &metas));
+    }
+
+    /// The manager onto a made-up folder, its listing and sizes arrived.
+    fn files() -> Files {
+        let mut files = Files::new(
+            context(),
+            FilesConfig::default(),
+            "/home/me/dev/enso".into(),
+        );
+        files.home = "/home/me".into();
+        files.places = Vec::new();
+        fill(&mut files);
+        files
+    }
+
+    fn render(files: &mut Files, size: (u32, u32)) -> Offscreen {
+        let later = Instant::now() + Duration::from_secs(2);
+        let mut text = TextEngine::new(&files.ctx.config.appearance);
+        Offscreen::render(&mut text, size, 2, |canvas| {
+            assert_eq!(files.draw_window(canvas, later), Paint::Idle);
+        })
+    }
+
+    fn snapshot(frame: &Offscreen, name: &str) {
+        frame
+            .save_png(format!(
+                "{}/../../target/snapshots/{name}.png",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .unwrap();
+    }
+
+    fn rows(files: &Files) -> usize {
+        files
+            .hits
+            .iter()
+            .filter(|(_, hit)| matches!(hit, Hit::Row(_)))
+            .count()
+    }
+
+    #[test]
+    fn renders_a_folder() {
+        let mut files = files();
+        files.pane.set_cursor(1);
+        files
+            .selection
+            .insert("/home/me/dev/enso/Cargo.toml".into());
+        files.places = vec![super::super::Place {
+            label: "Home".into(),
+            icon: icon::FOLDER,
+            path: "/home/me".into(),
+        }];
+        let frame = render(&mut files, (900, 420));
+        snapshot(&frame, "enso-files");
+        assert_eq!(rows(&files), 9);
+        assert!(
+            files
+                .hits
+                .iter()
+                .all(|(rect, hit)| !matches!(hit, Hit::Row(_)) || rect.y >= TITLE_HEIGHT)
+        );
+        let crumbs: Vec<&Hit> = files
+            .hits
+            .iter()
+            .map(|(_, hit)| hit)
+            .filter(|hit| matches!(hit, Hit::Crumb(_)))
+            .collect();
+        assert_eq!(
+            crumbs,
+            [
+                &Hit::Crumb("/home/me".into()),
+                &Hit::Crumb("/home/me/dev".into())
+            ]
+        );
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| *hit == Hit::Place("/home/me".into()))
+        );
+    }
+
+    #[test]
+    fn renders_the_filter() {
+        let mut files = files();
+        let mut field = TextField::new("carg");
+        field.select(1..3);
+        files.filter = Some(field);
+        files.pane.set_filter("carg");
+        snapshot(&render(&mut files, (900, 300)), "enso-files-filter");
+        assert_eq!(files.pane.len(), 2);
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Filter(_)))
+        );
+    }
+
+    #[test]
+    fn renders_narrow_and_empty() {
+        let mut files = files();
+        snapshot(&render(&mut files, (420, 300)), "enso-files-narrow");
+        assert!(
+            !files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Place(_))),
+            "no sidebar when narrow"
+        );
+
+        let mut empty = Files::new(context(), FilesConfig::default(), "/home/me/new".into());
+        let request = empty.pending.take().unwrap();
+        let only_hidden = Listing::from_entries("/home/me/new", [(".keep", Kind::File)]);
+        assert!(empty.pane.set_listing(request.generation, Ok(only_hidden)));
+        snapshot(&render(&mut empty, (600, 300)), "enso-files-empty");
+        assert_eq!(rows(&empty), 0);
+    }
+
+    fn picker(mode: Mode) -> Files {
+        let mut request = pick::Request::new(mode);
+        request.title = "Upload a file — file.io".into();
+        request.folder = Some("/".into());
+        request.filters = vec![
+            Filter::parse("All files:*").unwrap(),
+            Filter::parse("Images:*.png,*.jpg").unwrap(),
+        ];
+        request.choices = vec![pick::Choice::Toggle {
+            id: "ro".into(),
+            label: "Read-only".into(),
+            on: true,
+        }];
+        let mut files = Files::picker(
+            context(),
+            FilesConfig::default(),
+            request,
+            Outcome::default(),
+        );
+        files.home = "/home/me".into();
+        files.places = Vec::new();
+        fill(&mut files);
+        files
+    }
+
+    #[test]
+    fn renders_a_picker_with_its_basket() {
+        let mut files = picker(Mode::Open {
+            multiple: true,
+            directory: false,
+        });
+        files.selection.insert("/Cargo.toml".into());
+        files
+            .selection
+            .insert("/home/me/Pictures/samurai_bebop.png".into());
+        files.selection.insert("/home/me/notes.txt".into());
+        snapshot(&render(&mut files, (980, 480)), "enso-files-picker");
+        let hits: Vec<&Hit> = files.hits.iter().map(|(_, hit)| hit).collect();
+        assert!(hits.contains(&&Hit::Accept), "three chosen: ready");
+        assert!(hits.contains(&&Hit::Cancel));
+        assert!(hits.contains(&&Hit::FilterMenu));
+        assert!(hits.contains(&&Hit::Choice(0)));
+        assert!(hits.contains(&&Hit::Unchoose("/home/me/notes.txt".into())));
+    }
+
+    #[test]
+    fn renders_a_save_dialog_and_its_question() {
+        let mut files = picker(Mode::Save {
+            name: "report.pdf".into(),
+        });
+        snapshot(&render(&mut files, (900, 420)), "enso-files-save");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Name(_)))
+        );
+        files.picker.as_mut().unwrap().confirm = Some("/Cargo.toml".into());
+        snapshot(&render(&mut files, (900, 420)), "enso-files-replace");
+        let hits: Vec<&Hit> = files.hits.iter().map(|(_, hit)| hit).collect();
+        assert_eq!(
+            hits,
+            [&Hit::Replace, &Hit::KeepFile],
+            "only the question answers"
+        );
+    }
+
+    #[test]
+    fn crumbs_start_at_home_or_the_root() {
+        let home = Path::new("/home/me");
+        let labels = |path: &str| -> Vec<String> {
+            crumbs(Path::new(path), home)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect()
+        };
+        assert_eq!(labels("/home/me/dev/enso"), ["~", "dev", "enso"]);
+        assert_eq!(labels("/home/me"), ["~"]);
+        assert_eq!(labels("/usr/lib"), ["/", "usr", "lib"]);
+        assert_eq!(labels("/"), ["/"]);
+    }
+
+    #[test]
+    fn titles_name_the_folder() {
+        let home = Path::new("/home/me");
+        assert_eq!(title(Path::new("/home/me"), home), "Home — Files");
+        assert_eq!(title(Path::new("/home/me/dev"), home), "dev — Files");
+        assert_eq!(title(Path::new("/"), home), "/ — Files");
+    }
+}

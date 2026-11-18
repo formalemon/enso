@@ -136,7 +136,8 @@ impl<'a> Button<'a> {
         let (fill, ink) = match self.kind {
             Kind::Primary => (Some(look.accent), look.base),
             Kind::Danger => (Some(look.danger), look.base),
-            Kind::Secondary => (Some(look.highlight_low), look.text),
+            // `overlay` reads on both the window's base and a surface.
+            Kind::Secondary => (Some(look.overlay), look.text),
             Kind::Quiet => (None, look.text),
         };
         let lift = if state.pressed {

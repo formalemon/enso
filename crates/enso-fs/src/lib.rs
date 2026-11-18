@@ -9,6 +9,8 @@
 //! - [`uri`] — `file://` URIs, URI lists, and the portal's byte paths.
 //! - [`apps`] — installed applications, from freedesktop desktop entries,
 //!   and launching them.
+//! - [`mime`] — file types by name from the shared MIME database, loaded
+//!   once for lookups by the thousand.
 //! - [`open`] — opening a file with the application the desktop associates
 //!   with it, from the shared MIME database and `mimeapps.list`.
 //! - [`search`] — an index of every file under some roots, walked in
@@ -28,6 +30,7 @@ pub mod format;
 pub mod fuzzy;
 pub mod ignores;
 pub mod list;
+pub mod mime;
 pub mod open;
 pub mod places;
 pub mod search;

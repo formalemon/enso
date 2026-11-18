@@ -84,7 +84,7 @@ use smithay_client_toolkit::{
 use crate::{
     canvas::Canvas,
     geom::{Rect, Size},
-    input::{Button, KeyEvent, PointerEvent},
+    input::{Button, KeyEvent, Mods, PointerEvent},
     keymap::Keys,
     text::{Text, TextEngine},
 };
@@ -412,6 +412,7 @@ pub(crate) struct Requests {
 #[derive(Debug)]
 pub struct Cx<'a> {
     size: (u32, u32),
+    mods: Mods,
     text: &'a mut TextEngine,
     pub(crate) requests: Requests,
 }
@@ -420,6 +421,7 @@ impl<'a> Cx<'a> {
     pub(crate) fn new(size: (u32, u32), text: &'a mut TextEngine) -> Self {
         Self {
             size,
+            mods: Mods::default(),
             text,
             requests: Requests::default(),
         }
@@ -428,6 +430,12 @@ impl<'a> Cx<'a> {
     /// Current surface size in logical pixels.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// The modifier keys held as this event happened: what makes a click
+    /// a Ctrl-click.
+    pub fn mods(&self) -> Mods {
+        self.mods
     }
 
     /// Size `text` would occupy, for layout decisions made outside `draw`.
@@ -800,6 +808,7 @@ impl Surface {
 impl<A: App> Runtime<A> {
     fn deliver(&mut self, event: Event<A::Message>) {
         let mut cx = Cx::new(self.size, &mut self.text);
+        cx.mods = self.keys.mods();
         self.app.event(event, &mut cx);
         let requests = cx.requests;
         self.apply(requests);

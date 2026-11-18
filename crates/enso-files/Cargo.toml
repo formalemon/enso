@@ -12,11 +12,11 @@ enso-core.workspace = true
 enso-fs.workspace = true
 enso-ui.workspace = true
 serde.workspace = true
+toml.workspace = true
 lexopt.workspace = true
 jiff.workspace = true
 
 [dev-dependencies]
-toml.workspace = true
 enso-ui = { workspace = true, features = ["png"] }
 
 [lints]
