@@ -5,6 +5,7 @@
 //! is what [`Iwd::watch`] is for.
 
 use zbus::{interface, wire::OwnedObjectPath};
+use zeroize::Zeroizing;
 
 use crate::bus::{self, Error, Objects, Props, Result, Service};
 
@@ -258,7 +259,7 @@ impl Iwd {
 
     fn register_agent(&self, passphrase: &str) -> Result<()> {
         let agent = Agent {
-            passphrase: passphrase.to_owned(),
+            passphrase: Zeroizing::new(passphrase.to_owned()),
         };
         let server = self.service.connection().object_server();
         zbus::block_on(async {
@@ -319,7 +320,7 @@ fn interface<'a>(objects: &'a Objects, path: &str, interface: &str) -> Option<&'
 
 /// Answers iwd's request for a passphrase during [`Iwd::connect_to`].
 struct Agent {
-    passphrase: String,
+    passphrase: Zeroizing<String>,
 }
 
 /// The one error an iwd agent may answer with.
@@ -333,8 +334,9 @@ enum AgentError {
 
 #[interface(name = "net.connman.iwd.Agent")]
 impl Agent {
-    fn request_passphrase(&self, _network: OwnedObjectPath) -> String {
-        self.passphrase.clone()
+    // Lent, not copied: zbus writes it straight into the reply.
+    fn request_passphrase(&self, _network: OwnedObjectPath) -> &str {
+        &self.passphrase
     }
 
     // Enterprise credentials are provisioned as iwd profiles, not typed here.

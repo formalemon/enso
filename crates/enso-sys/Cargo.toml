@@ -8,6 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+zeroize.workspace = true
 zbus = { workspace = true, optional = true }
 pulseaudio = { workspace = true, optional = true }
 

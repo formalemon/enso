@@ -17,6 +17,7 @@ lexopt.workspace = true
 zbus.workspace = true
 # Who is who (uid), and keeping the prompt's memory out of core dumps.
 rustix.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

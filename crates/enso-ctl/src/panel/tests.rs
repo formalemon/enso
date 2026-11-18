@@ -835,7 +835,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
 
     // Letters are text now — j, k, q, and space included — and nothing moves.
     type_text(&mut panel, "jk q matcha");
-    assert_eq!(panel.prompt.as_ref().unwrap().text, "jk q matcha");
+    assert_eq!(panel.prompt.as_ref().unwrap().text.as_str(), "jk q matcha");
     assert_eq!(panel.networks()[panel.selected].name, "Loft 5G");
     press(&mut panel, Key::Backspace);
     let clear = KeyEvent {
@@ -846,7 +846,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
         ..key(Key::Char('u'))
     };
     assert_eq!(panel.on_key(clear), Outcome::Changed);
-    assert_eq!(panel.prompt.as_ref().unwrap().text, "");
+    assert_eq!(panel.prompt.as_ref().unwrap().text.as_str(), "");
     // Nothing typed, nothing sent.
     press(&mut panel, Key::Enter);
     assert!(sent(&requests).is_empty());
@@ -863,7 +863,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
         sent(&requests),
         [Request::WifiConnect {
             network: loft.clone(),
-            passphrase: Some("hunter2".into())
+            passphrase: Some(Zeroizing::new("hunter2".into()))
         }]
     );
     assert_eq!(panel.prompt, None);
@@ -878,7 +878,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
         panel.prompt,
         Some(Prompt {
             network: loft.clone(),
-            text: String::new(),
+            text: Zeroizing::new(String::new()),
             rejected: true
         })
     );

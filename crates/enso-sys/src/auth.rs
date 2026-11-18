@@ -19,6 +19,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+use zeroize::Zeroizing;
+
 /// Where distributions install the helper.
 const HELPERS: &[&str] = &[
     "/usr/bin/unix_chkpwd",
@@ -116,11 +118,11 @@ pub fn verify(password: &[u8]) -> Result<bool, Error> {
         .map_err(Error::Io)?;
 
     // The helper reads one NUL-terminated password from its standard input.
-    let mut line = Vec::with_capacity(password.len() + 1);
+    let mut line = Zeroizing::new(Vec::with_capacity(password.len() + 1));
     line.extend_from_slice(password);
     line.push(0);
     let written = child.stdin.take().map(|mut stdin| stdin.write_all(&line));
-    line.fill(0);
+    drop(line);
 
     let status = child.wait().map_err(Error::Io)?;
     match written {

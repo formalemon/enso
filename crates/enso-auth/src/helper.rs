@@ -20,6 +20,8 @@ use std::{
     process::{Command, Stdio},
 };
 
+use zeroize::Zeroizing;
+
 const SOCKET: &str = "/run/polkit/agent-helper.socket";
 const SETUID: [&str; 2] = [
     "/usr/lib/polkit-1/polkit-agent-helper-1",
@@ -64,8 +66,8 @@ enum Line {
 pub fn check(
     user: &str,
     cookie: &str,
-    password: String,
-    said: impl FnMut(Said) -> Option<String>,
+    password: Zeroizing<String>,
+    said: impl FnMut(Said) -> Option<Zeroizing<String>>,
 ) -> io::Result<Verdict> {
     let (reader, writer) = open(user, cookie)?;
     converse(BufReader::new(reader), writer, password, said)
@@ -115,11 +117,11 @@ fn open(user: &str, cookie: &str) -> io::Result<Ends> {
 fn converse(
     mut reader: impl BufRead,
     mut writer: impl Write,
-    password: String,
-    mut said: impl FnMut(Said) -> Option<String>,
+    password: Zeroizing<String>,
+    mut said: impl FnMut(Said) -> Option<Zeroizing<String>>,
 ) -> io::Result<Verdict> {
     let mut password = Some(password);
-    let verdict = loop {
+    loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
             break Err(io::Error::new(
@@ -160,16 +162,12 @@ fn converse(
                     .and_then(|()| writer.write_all(b"\n"))
                     .and_then(|()| writer.flush())
             };
-            wipe(answer);
+            drop(answer);
             if let Err(err) = sent {
                 break Err(err);
             }
         }
-    };
-    if let Some(password) = password {
-        wipe(password);
     }
-    verdict
 }
 
 fn parse(line: &str) -> Option<Line> {
@@ -230,13 +228,6 @@ fn unescape(text: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Overwrite a secret before its memory is handed back.
-pub fn wipe(secret: String) {
-    let mut bytes = secret.into_bytes();
-    bytes.fill(0);
-    std::hint::black_box(&bytes);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,10 +240,13 @@ mod tests {
     ) -> (io::Result<Verdict>, String, Vec<Said>) {
         let mut sent = Vec::new();
         let mut heard = Vec::new();
-        let verdict = converse(lines.as_bytes(), &mut sent, password.to_owned(), |said| {
+        let password = Zeroizing::new(password.to_owned());
+        let verdict = converse(lines.as_bytes(), &mut sent, password, |said| {
             heard.push(said.clone());
             match said {
-                Said::Ask { .. } => answers.remove(0).map(str::to_owned),
+                Said::Ask { .. } => answers
+                    .remove(0)
+                    .map(|answer| Zeroizing::new(answer.to_owned())),
                 _ => None,
             }
         });

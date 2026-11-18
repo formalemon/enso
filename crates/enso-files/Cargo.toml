@@ -26,6 +26,7 @@ enso-sys = { workspace = true, features = ["systemd", "udisks", "secrets"] }
 # GitHub: signing in (the device flow), its repositories.
 ureq.workspace = true
 serde_json.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

@@ -26,6 +26,8 @@ use enso_ui::{
     widget::{Button, Interaction, Kind, Look, controls},
 };
 
+use zeroize::Zeroizing;
+
 use crate::{
     helper::{self, Said, Verdict},
     request::{Answer, Request},
@@ -43,6 +45,12 @@ const MAX_DOTS: usize = 20;
 const MAX_SECRET: usize = 256;
 const MAX_PIN: usize = 16;
 const PASSKEY_DIGITS: usize = 6;
+
+/// An empty answer with room for the longest (four bytes a character), so
+/// typing never moves it and leaves a copy behind.
+fn fresh() -> Zeroizing<String> {
+    Zeroizing::new(String::with_capacity(MAX_SECRET * 4))
+}
 /// The field's refusal: a quick sideways shake that dies away.
 const SHAKE: Transition = Transition::new(380, Easing::Linear);
 
@@ -98,7 +106,7 @@ pub struct Prompt {
     answered: Option<Answer>,
     presence: Presence,
     phase: Phase,
-    typed: String,
+    typed: Zeroizing<String>,
     dots: Tween<f32>,
     /// Which of the users is answering.
     user: usize,
@@ -108,7 +116,7 @@ pub struct Prompt {
     caps_lock: bool,
     /// A further question from PAM: its words, and whether typing shows.
     further: Option<(String, bool)>,
-    reply: Option<mpsc::Sender<Option<String>>>,
+    reply: Option<mpsc::Sender<Option<Zeroizing<String>>>>,
     proxy: Option<Proxy<Message>>,
     hits: Vec<(Rect, Hit)>,
     hover: Option<Hit>,
@@ -134,8 +142,7 @@ impl Prompt {
             out,
             answered: None,
             phase: Phase::Asking,
-            // Room enough that typing never moves it, leaving copies behind.
-            typed: String::with_capacity(MAX_SECRET * 4),
+            typed: fresh(),
             dots: Tween::new(0.0),
             user: 0,
             notice: None,
@@ -200,10 +207,7 @@ impl Prompt {
     }
 
     fn clear(&mut self, now: Instant) {
-        helper::wipe(std::mem::replace(
-            &mut self.typed,
-            String::with_capacity(MAX_SECRET * 4),
-        ));
+        self.typed = fresh();
         self.set_dots(now);
     }
 
@@ -235,25 +239,21 @@ impl Prompt {
                 if self.typed.is_empty() {
                     return Outcome::Ignored;
                 }
-                let typed =
-                    std::mem::replace(&mut self.typed, String::with_capacity(MAX_SECRET * 4));
+                let typed = std::mem::replace(&mut self.typed, fresh());
                 self.notice = None;
                 self.phase = Phase::Checking;
                 self.set_dots(now);
                 if self.further.take().is_some() {
                     // The answer to PAM's further question.
-                    match &self.reply {
-                        Some(reply) => drop(reply.send(Some(typed))),
-                        None => helper::wipe(typed),
+                    if let Some(reply) = &self.reply {
+                        let _ = reply.send(Some(typed));
                     }
                     return Outcome::Redraw;
                 }
                 if self.preview {
-                    helper::wipe(typed);
                     return self.answer(Answer::Allow);
                 }
                 let (Some(user), Some(proxy)) = (user, self.proxy.clone()) else {
-                    helper::wipe(typed);
                     return self.answer(Answer::Deny);
                 };
                 let (reply, replies) = mpsc::channel();
@@ -273,8 +273,8 @@ impl Prompt {
                 Outcome::Redraw
             }
             Request::Pin { .. } if !self.typed.is_empty() => {
-                let pin = std::mem::take(&mut self.typed);
-                self.answer(Answer::Pin(pin))
+                let pin = std::mem::replace(&mut self.typed, fresh());
+                self.answer(Answer::Pin(pin.as_str().to_owned()))
             }
             Request::Passkey { .. } => match self.typed.parse() {
                 Ok(passkey) => self.answer(Answer::Passkey(passkey)),
@@ -850,12 +850,6 @@ impl App for Prompt {
     }
 }
 
-impl Drop for Prompt {
-    fn drop(&mut self) {
-        helper::wipe(std::mem::take(&mut self.typed));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use enso_core::Paths;
@@ -925,7 +919,7 @@ mod tests {
         );
         type_text(&mut prompt, "hunter2");
         press(&mut prompt, Key::Backspace);
-        assert_eq!(prompt.typed, "hunter");
+        assert_eq!(prompt.typed.as_str(), "hunter");
         assert_eq!(press(&mut prompt, Key::Enter), Outcome::Close);
         assert_eq!(prompt.answered, Some(Answer::Allow));
         assert!(prompt.typed.is_empty());
@@ -990,7 +984,14 @@ mod tests {
         prompt.reply = Some(reply);
         type_text(&mut prompt, "123456");
         prompt.primary(now);
-        assert_eq!(replies.recv().unwrap().as_deref(), Some("123456"));
+        assert_eq!(
+            replies
+                .recv()
+                .unwrap()
+                .as_ref()
+                .map(|answer| answer.as_str()),
+            Some("123456")
+        );
         assert_eq!(prompt.phase, Phase::Checking);
     }
 
@@ -1000,7 +1001,7 @@ mod tests {
             device: "Keyboard".into(),
         });
         type_text(&mut passkey, "12a34567");
-        assert_eq!(passkey.typed, "123456", "digits only, six of them");
+        assert_eq!(passkey.typed.as_str(), "123456", "digits only, six of them");
         assert_eq!(press(&mut passkey, Key::Enter), Outcome::Close);
         assert_eq!(passkey.answered, Some(Answer::Passkey(123_456)));
 

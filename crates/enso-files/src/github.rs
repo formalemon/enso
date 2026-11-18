@@ -12,6 +12,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use serde_json::Value;
+use zeroize::Zeroizing;
 
 const SCOPE: &str = "repo read:user";
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -99,7 +100,7 @@ pub enum Waiting {
     Pending,
     /// Asked too often: wait this many seconds more each time.
     SlowDown,
-    Token(String),
+    Token(Zeroizing<String>),
     /// Declined, expired, or wrong: why.
     Failed(String),
 }
@@ -121,7 +122,7 @@ pub fn poll(client_id: &str, device_code: &str) -> Waiting {
         Err(_) => return Waiting::Pending,
     };
     if let Some(token) = value["access_token"].as_str() {
-        return Waiting::Token(token.to_owned());
+        return Waiting::Token(Zeroizing::new(token.to_owned()));
     }
     match value["error"].as_str() {
         Some("authorization_pending") => Waiting::Pending,
@@ -141,11 +142,16 @@ pub fn poll(client_id: &str, device_code: &str) -> Waiting {
     }
 }
 
+/// The `Authorization` header's value for `token`.
+fn bearer(token: &str) -> Zeroizing<String> {
+    Zeroizing::new(format!("Bearer {token}"))
+}
+
 fn get(token: &str, url: &str) -> Result<Value, String> {
     json(
         agent()
             .get(url)
-            .header("Authorization", &format!("Bearer {token}"))
+            .header("Authorization", bearer(token).as_str())
             .header("Accept", "application/vnd.github+json")
             .call(),
     )
@@ -201,7 +207,7 @@ pub fn create(token: &str, name: &str, private: bool) -> Result<Repo, String> {
     let value = json(
         agent()
             .post("https://api.github.com/user/repos")
-            .header("Authorization", &format!("Bearer {token}"))
+            .header("Authorization", bearer(token).as_str())
             .header("Accept", "application/vnd.github+json")
             .send_json(&body),
     )?;
@@ -229,9 +235,10 @@ pub fn keep(login: &str, token: &str) -> Result<(), String> {
 }
 
 /// The token kept for `login`, unlocking the keyring if need be.
-pub fn token(login: &str) -> Option<String> {
+pub fn token(login: &str) -> Option<Zeroizing<String>> {
     let secret = enso_sys::secrets::lookup(&attributes(login)).ok()??;
-    String::from_utf8(secret).ok()
+    let text = std::str::from_utf8(&secret).ok()?;
+    Some(Zeroizing::new(text.to_owned()))
 }
 
 pub fn forget(login: &str) -> Result<(), String> {
@@ -298,7 +305,7 @@ pub fn git_credential(operation: &str, login: Option<&str>) {
     }
     let Some(login) = login else { return };
     if let Some(token) = token(login) {
-        println!("username={login}\npassword={token}");
+        println!("username={login}\npassword={}", token.as_str());
     }
 }
 

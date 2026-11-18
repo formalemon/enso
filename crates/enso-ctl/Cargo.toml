@@ -15,6 +15,7 @@ serde.workspace = true
 lexopt.workspace = true
 # Reading a Wi-Fi passphrase from the terminal without echoing it.
 rustix = { workspace = true, features = ["termios"] }
+zeroize.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

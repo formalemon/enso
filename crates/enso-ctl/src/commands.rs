@@ -14,6 +14,8 @@ use enso_sys::{
     wifi::{ConnectError, Iwd, Link, Network, Security, Wifi},
 };
 
+use zeroize::Zeroizing;
+
 use crate::{
     cli::{BluetoothCommand, Level, Light, ProfileCommand, VolumeChange, WifiCommand},
     system,
@@ -410,7 +412,7 @@ pub fn wifi(command: &WifiCommand, out: &mut impl Write) -> Outcome {
             let result = match iwd.connect_to(&network.id, None) {
                 Err(ConnectError::NeedsPassphrase) => {
                     let passphrase = read_passphrase(name)?;
-                    iwd.connect_to(&network.id, Some(&passphrase))
+                    iwd.connect_to(&network.id, Some(passphrase.as_str()))
                 }
                 other => other,
             };
@@ -480,11 +482,12 @@ fn print_wifi(wifi: &Wifi, out: &mut impl Write) -> Outcome {
 
 /// Ask for a passphrase: typed unseen at a terminal, or one line of piped
 /// input. Never taken from the command line, where other users could read it.
-fn read_passphrase(network: &str) -> Result<String, String> {
+fn read_passphrase(network: &str) -> Result<Zeroizing<String>, String> {
     use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
 
     let stdin = io::stdin();
-    let mut line = String::new();
+    // Room enough that reading never moves it, leaving a copy behind.
+    let mut line = Zeroizing::new(String::with_capacity(1024));
     if stdin.is_terminal() {
         eprint!("Passphrase for {network}: ");
         let saved = tcgetattr(&stdin).map_err(|err| err.to_string())?;
@@ -504,7 +507,7 @@ fn read_passphrase(network: &str) -> Result<String, String> {
     if passphrase.is_empty() {
         return Err(format!("{network} needs a passphrase"));
     }
-    Ok(passphrase.to_owned())
+    Ok(Zeroizing::new(passphrase.to_owned()))
 }
 
 /// `enso-ctl bluetooth …`.

@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use zbus::export::futures_core::Stream;
 use zbus::{Connection, ObjectPath, OwnedObjectPath, OwnedVariant, Variant};
 
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::bus::{Error, Result};
 
 const NAME: &str = "org.freedesktop.secrets";
@@ -79,7 +81,7 @@ async fn unlock(connection: &Connection, objects: &[OwnedObjectPath]) -> zbus::R
 
 /// The secret kept under these attributes, if there is one (unlocking the
 /// keyring if need be — `Ok(None)` too if that's declined).
-pub fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Vec<u8>>> {
+pub fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Zeroizing<Vec<u8>>>> {
     zbus::block_on(async {
         let (connection, session) = connect().await?;
         let reply = connection
@@ -109,13 +111,15 @@ pub fn lookup(attributes: &HashMap<&str, &str>) -> Result<Option<Vec<u8>>> {
                 &(items.clone(), session),
             )
             .await?;
-        let secrets: HashMap<OwnedObjectPath, Secret> = reply.body().deserialize()?;
-        zbus::Result::Ok(
-            items
-                .iter()
-                .find_map(|item| secrets.get(item))
-                .map(|(_, _, value, _)| value.clone()),
-        )
+        let mut secrets: HashMap<OwnedObjectPath, Secret> = reply.body().deserialize()?;
+        let found = items
+            .iter()
+            .find_map(|item| secrets.remove(item))
+            .map(|(_, _, value, _)| Zeroizing::new(value));
+        for (_, _, value, _) in secrets.values_mut() {
+            value.zeroize();
+        }
+        zbus::Result::Ok(found)
     })
     .map_err(Error::from)
 }
@@ -147,8 +151,9 @@ pub fn store(label: &str, attributes: &HashMap<&str, &str>, secret: &[u8]) -> Re
             "org.freedesktop.Secret.Item.Attributes",
             Variant::from(attributes),
         );
-        let secret: (ObjectPath<'_>, Vec<u8>, Vec<u8>, &str) =
-            (session.as_ref(), Vec::new(), secret.to_vec(), "text/plain");
+        // Lent, not copied: zbus writes it straight into the call.
+        let secret: (ObjectPath<'_>, &[u8], &[u8], &str) =
+            (session.as_ref(), &[], secret, "text/plain");
         connection
             .call_method(
                 Some(NAME),

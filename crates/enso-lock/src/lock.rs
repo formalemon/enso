@@ -25,6 +25,7 @@ use enso_ui::{
 };
 use niri_ipc::{Action, Request, socket::Socket};
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 /// The `[lock]` table of `config.toml`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -114,7 +115,7 @@ enum Outcome {
     Ignored,
     Redraw,
     /// Check this password.
-    Submit(String),
+    Submit(Zeroizing<String>),
 }
 
 /// What has come due on the lock screen's own clock.
@@ -139,7 +140,9 @@ pub struct Lock {
     verify: Verify,
     proxy: Option<Proxy<Message>>,
     phase: Phase,
-    password: String,
+    /// What's typed, with room for the longest, so growing never leaves
+    /// a copy behind; overwritten when dropped.
+    password: Zeroizing<String>,
     caps_lock: bool,
     /// Wrong attempts in a row.
     failures: u32,
@@ -182,7 +185,7 @@ impl Lock {
             verify,
             proxy: None,
             phase: Phase::Asking,
-            password: String::new(),
+            password: fresh_password(),
             caps_lock: false,
             failures: 0,
             locked_out_until: None,
@@ -254,7 +257,7 @@ impl Lock {
 
     /// Forget what was typed, overwriting it first.
     fn clear_password(&mut self, now: Instant) {
-        wipe(std::mem::take(&mut self.password));
+        self.password = fresh_password();
         self.set_dots(now);
     }
 
@@ -288,7 +291,7 @@ impl Lock {
             Key::Enter => {
                 self.phase = Phase::Checking;
                 self.notice = None;
-                return Outcome::Submit(std::mem::take(&mut self.password));
+                return Outcome::Submit(std::mem::replace(&mut self.password, fresh_password()));
             }
             Key::Escape => self.clear_password(now),
             Key::Char('u') if key.mods.ctrl => self.clear_password(now),
@@ -345,15 +348,14 @@ impl Lock {
 
     /// Check `password` on another thread: hashing it takes a deliberate
     /// moment, and the screen should not freeze for it.
-    fn submit(&mut self, password: String) {
+    fn submit(&mut self, password: Zeroizing<String>) {
         let verify = self.verify;
         let Some(proxy) = self.proxy.clone() else {
             return;
         };
         let check = move || {
-            let mut bytes = password.into_bytes();
-            let verdict = verify(&bytes).map_err(|err| err.to_string());
-            bytes.fill(0);
+            let verdict = verify(password.as_bytes()).map_err(|err| err.to_string());
+            drop(password);
             proxy.send(Message::Verdict(verdict));
         };
         if let Err(err) = thread::Builder::new()
@@ -453,10 +455,9 @@ impl Lock {
     }
 }
 
-/// Overwrite a password before its memory is handed back.
-fn wipe(password: String) {
-    let mut bytes = password.into_bytes();
-    bytes.fill(0);
+/// An empty password with room for the longest (four bytes a character).
+fn fresh_password() -> Zeroizing<String> {
+    Zeroizing::new(String::with_capacity(MAX_PASSWORD * 4))
 }
 
 /// Ask Niri to power the screens off or on. Outside Niri this does nothing.
@@ -841,7 +842,7 @@ mod tests {
         let now = Instant::now();
         type_text(&mut lock, "abc", now);
         assert_eq!(press(&mut lock, Key::Backspace, now), Outcome::Redraw);
-        assert_eq!(lock.password, "ab");
+        assert_eq!(lock.password.as_str(), "ab");
         assert_eq!(press(&mut lock, Key::Escape, now), Outcome::Redraw);
         assert!(lock.password.is_empty());
         assert_eq!(press(&mut lock, Key::Backspace, now), Outcome::Ignored);
@@ -857,7 +858,7 @@ mod tests {
             repeat: false,
         };
         assert_eq!(lock.key(ctrl(Key::Char('a')), now), Outcome::Ignored);
-        assert_eq!(lock.password, "abc");
+        assert_eq!(lock.password.as_str(), "abc");
         assert_eq!(lock.key(ctrl(Key::Char('u')), now), Outcome::Redraw);
         assert!(lock.password.is_empty());
 

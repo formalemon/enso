@@ -18,6 +18,7 @@ lexopt.workspace = true
 # Powering the screens off while nobody is looking.
 niri-ipc.workspace = true
 jiff.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["picture", "png"] }

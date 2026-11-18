@@ -36,6 +36,7 @@ use enso_ui::{
     PointerEvent, Presence, Proxy, Rect, SurfaceSpec, watch::watch_dir,
 };
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 use crate::{
     cli::{Edge, PanelMode},
@@ -89,6 +90,13 @@ pub const NAME: &str = "enso-ctl";
 /// How long a dropdown outlives the pointer leaving it, so that crossing the
 /// gap between the bar and the card does not close it.
 const GRACE: Duration = Duration::from_millis(300);
+/// Characters a passphrase may have: more than WPA's 63, for WPA3.
+const MAX_PASSPHRASE: usize = 256;
+
+/// An empty passphrase with room for the longest (four bytes a character).
+fn empty_passphrase() -> Zeroizing<String> {
+    Zeroizing::new(String::with_capacity(MAX_PASSPHRASE * 4))
+}
 
 #[derive(Debug)]
 pub enum Message {
@@ -180,7 +188,9 @@ enum Hit {
 struct Prompt {
     /// The network's id.
     network: String,
-    text: String,
+    /// What's typed, with room for the longest so growing never leaves a
+    /// copy behind; overwritten when dropped.
+    text: Zeroizing<String>,
     /// The last passphrase tried was not accepted.
     rejected: bool,
 }
@@ -791,12 +801,12 @@ impl Panel {
         self.selected = index;
         self.prompt = Some(Prompt {
             network,
-            text: String::new(),
+            text: empty_passphrase(),
             rejected,
         });
     }
 
-    fn connect(&mut self, network: String, passphrase: Option<String>) {
+    fn connect(&mut self, network: String, passphrase: Option<Zeroizing<String>>) {
         self.busy = Some(network.clone());
         self.request(Request::WifiConnect {
             network,
@@ -1056,16 +1066,17 @@ impl Panel {
         match key.key {
             Key::Escape => self.prompt = None,
             Key::Enter if !prompt.text.is_empty() => {
-                let Prompt { network, text, .. } = prompt.clone();
-                self.prompt = None;
-                self.connect(network, Some(text));
+                if let Some(Prompt { network, text, .. }) = self.prompt.take() {
+                    self.connect(network, Some(text));
+                }
             }
             Key::Backspace => {
                 prompt.text.pop();
             }
             Key::Char('u') if key.mods.ctrl => prompt.text.clear(),
             _ => match key.text() {
-                Some(c) => prompt.text.push(c),
+                Some(c) if prompt.text.chars().count() < MAX_PASSPHRASE => prompt.text.push(c),
+                Some(_) => {}
                 None => return Outcome::Ignored,
             },
         }

@@ -130,7 +130,7 @@ pub enum Request {
     WifiScan,
     WifiConnect {
         network: String,
-        passphrase: Option<String>,
+        passphrase: Option<zeroize::Zeroizing<String>>,
     },
     WifiDisconnect,
     BluetoothPower(bool),
@@ -386,7 +386,8 @@ fn wifi_worker(
                 network,
                 passphrase,
             } => {
-                let result = iwd.connect_to(&network, passphrase.as_deref());
+                let result =
+                    iwd.connect_to(&network, passphrase.as_ref().map(|text| text.as_str()));
                 if !(publish() && report(Update::WifiConnect { network, result })) {
                     return;
                 }
