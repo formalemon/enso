@@ -780,38 +780,33 @@ Every context-menu entry shows its key, so the mouse teaches the keyboard.
 
 ## 9. System integration
 
-What `sumi/install` (or `enso-ctl`) sets up; all user-level, no root:
+enso-files sets itself up; no dotfiles repository is involved, and every
+enso tool stays swappable. `enso-files portal enable` writes, all in the
+user's own directories:
 
-1. **D-Bus activation**: `~/.local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.enso.service`
-   and `…/org.freedesktop.FileManager1.service`, both `Exec=enso-files --service`.
-2. **Portal registration**: xdg-desktop-portal 1.22 reads `.portal` files from
-   one directory — `/usr/share/xdg-desktop-portal/portals`, or
-   `$XDG_DESKTOP_PORTAL_DIR` if set. User-level option (no root): a
-   directory in `~/.local/share/enso/portals/` holding `enso.portal` and
-   symlinks to every system `.portal` file, plus a systemd user drop-in
-   `xdg-desktop-portal.service.d/enso.conf` setting the variable. The
-   alternative is one file in `/usr/share/xdg-desktop-portal/portals/`
-   installed by hand. Settled: the drop-in ([§13](#13-decisions)).
-3. **Routing** in `~/.config/xdg-desktop-portal/niri-portals.conf`:
-   ```ini
-   [preferred]
-   default=gnome;gtk;
-   org.freedesktop.impl.portal.FileChooser=enso
-   org.freedesktop.impl.portal.Access=gtk;
-   org.freedesktop.impl.portal.Notification=gtk;
-   org.freedesktop.impl.portal.Secret=gnome-keyring;
-   ```
-   Everything else keeps going to the GTK portal (settings, etc.).
+1. **D-Bus activation**: `~/.local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.enso.service`,
+   `Exec=<this binary> --service`.
+2. **A portals directory**, `~/.local/share/enso/portals`: links to every
+   system `.portal` file, enso's own `enso.portal`, and the routing —
+   the desktop's `<desktop>-portals.conf` (the user's own if they have one,
+   else the system's) with `org.freedesktop.impl.portal.FileChooser=enso`.
+   With `XDG_DESKTOP_PORTAL_DIR` set, the portal reads both from there.
+3. **A drop-in**, `~/.config/systemd/user/xdg-desktop-portal.service.d/enso.conf`,
+   setting `XDG_DESKTOP_PORTAL_DIR`.
+
+Then it reloads the session bus and systemd and restarts the portal.
+`enso-files portal disable` removes all three; `portal status` says which
+it is. Running `enable` again refreshes the links after packages change.
+
+Also:
+
 4. **Default folder handler**: `inode/directory=enso-files.desktop` in
-   `mimeapps.list`, and a desktop entry.
-5. **Niri window rules**: `match app-id="enso-files"` — the picker opens
-   floating, centred, at a remembered size; the manager tiles.
-6. **Firefox** already routes through the portal (the GTK dialog seen today
-   was `xdg-desktop-portal-gtk`'s); nothing to change. If needed:
-   `widget.use-xdg-desktop-portal.file-picker = 1`, which enso-ctl's Firefox
-   target can set.
-7. **Falling back**: removing the one routing line returns every app to the
-   GTK chooser instantly — the safety valve while enso-files is young.
+   `mimeapps.list`, and a desktop entry — offered by enso-files itself
+   (P2), never assumed.
+5. **Floating**: a picker started by an application has a parent window,
+   and niri floats it; pickers carry their own app id, `enso-files-picker`,
+   for anyone who wants a window rule for the rest.
+6. **Firefox** already routes through the portal; nothing to change.
 
 ## 10. Phases
 
@@ -940,10 +935,9 @@ jumps = { w = "~/Pictures/Wallpapers", e = "~/dev/enso" }
 
 Settled on 2026-11-18:
 
-1. **Portal registration** — user-level: a `~/.local/share/enso/portals/`
-   directory holding `enso.portal` and symlinks to every system `.portal`
-   file, and a systemd user drop-in setting `XDG_DESKTOP_PORTAL_DIR` to it,
-   both kept by `sumi/install`. No root.
+1. **Portal registration** — user-level, no root, done by enso-files
+   itself (`enso-files portal enable`/`disable`), never by a dotfiles
+   repository: enso tools stay swappable ([§9](#9-system-integration)).
 2. **udisks2** — installed on the system, so removable drives are mounted,
    unmounted, and ejected through it (P5). Its absence elsewhere is still a
    drawn state, not an error.

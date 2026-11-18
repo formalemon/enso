@@ -245,6 +245,7 @@ version = "0.1.0"
 dependencies = [
  "enso-core",
  "enso-fs",
+ "enso-sys",
  "enso-ui",
  "jiff",
  "lexopt",

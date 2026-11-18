@@ -14,6 +14,7 @@ mod jobs;
 mod pane;
 mod pick;
 mod picker;
+mod portal;
 mod selection;
 mod service;
 mod window;
@@ -32,14 +33,20 @@ enso-files — files, the enso way
 
 Usage: enso-files [FOLDER]
        enso-files pick [OPTIONS]
+       enso-files portal enable | disable | status
        enso-files --service
        enso-files --bench list FOLDER
 
 Opens FOLDER (the current folder, or home when started from elsewhere).
 
+`enso-files portal enable` makes the picker every application's file
+chooser, through the desktop portal, with nothing outside your home
+directory; `portal disable` gives the choosing back; `portal status` says
+which it is.
+
 Options:
-      --service             Be the desktop portal's file chooser (started by
-                            D-Bus; see contrib/portal)
+      --service             Be the desktop portal's file chooser (D-Bus starts
+                            it, once `enso-files portal enable` has set it up)
       --bench list FOLDER   Time listing FOLDER, both passes, and sorting it
   -h, --help                Print this help
   -V, --version             Print the version
@@ -100,6 +107,7 @@ Keys: as in the file manager, and
 enum Command {
     Open(Option<PathBuf>),
     Service,
+    Portal(String),
     Pick(Pick),
     Bench(PathBuf),
 }
@@ -125,6 +133,7 @@ fn main() -> ExitCode {
         Command::Open(folder) => open(folder),
         Command::Pick(pick) => run_pick(pick),
         Command::Service => service::run(),
+        Command::Portal(command) => portal::run(&command),
     }
 }
 
@@ -217,6 +226,14 @@ fn parse_args(mut parser: lexopt::Parser) -> Result<Option<Command>, String> {
                 }
                 let folder = parser.value().map_err(|err| err.to_string())?;
                 return Ok(Some(Command::Bench(folder.into())));
+            }
+            Some(Value(word)) if folder.is_none() && word == "portal" => {
+                let command = parser
+                    .value()
+                    .map_err(|_| "portal what? enable, disable, or status".to_owned())?;
+                return Ok(Some(Command::Portal(
+                    command.to_string_lossy().into_owned(),
+                )));
             }
             Some(Value(word)) if folder.is_none() && word == "pick" => {
                 return parse_pick(parser).map(|pick| pick.map(Command::Pick));

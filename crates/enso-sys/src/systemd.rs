@@ -1,4 +1,5 @@
-//! The user's own service manager: restarting a service of the session.
+//! The user's own service manager: restarting a service of the session,
+//! and reloading the manager after its unit files change.
 //!
 //! Some programs read their settings once, when they start, and live for
 //! the whole session — the GTK portal, which draws every file chooser, is
@@ -21,4 +22,11 @@ pub fn try_restart(unit: &str) -> Result<()> {
         &(unit, "replace"),
     )?;
     Ok(())
+}
+
+/// Have the user's service manager read its unit files again, as
+/// `systemctl --user daemon-reload` does: after adding or removing a
+/// drop-in.
+pub fn reload() -> Result<()> {
+    Service::session("org.freedesktop.systemd1")?.run(MANAGER_PATH, MANAGER, "Reload", &())
 }
