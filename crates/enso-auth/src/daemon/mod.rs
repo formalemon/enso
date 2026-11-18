@@ -16,8 +16,7 @@ pub use prompts::Prompts;
 const LOOK_EVERY: Duration = Duration::from_secs(3);
 
 pub fn run() -> Result<(), String> {
-    let program = std::env::current_exe().map_err(|err| format!("can't find myself: {err}"))?;
-    let prompts = Prompts::start(program);
+    let prompts = Prompts::start();
     let me = rustix::process::getuid().as_raw();
     let connection = zbus::block_on(
         zbus::connection::Builder::system()

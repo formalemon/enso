@@ -60,6 +60,8 @@ The wallpaper is the one enso-wall shows: see `enso-wall --help`.
 ";
 
 fn main() -> ExitCode {
+    // Started again by itself, the kernel calls it `exe`.
+    enso_core::exe::restore_name();
     let watch = match parse_args(lexopt::Parser::from_env()) {
         Ok(watch) => watch,
         Err(code) => return code,

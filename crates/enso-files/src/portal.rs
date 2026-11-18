@@ -76,13 +76,7 @@ pub fn run(command: &str) -> ExitCode {
     let places = Places::from_env();
     let done = match command {
         "enable" => {
-            let exe = match env::current_exe() {
-                Ok(exe) => exe,
-                Err(err) => {
-                    eprintln!("enso-files: cannot find where I am: {err}");
-                    return ExitCode::FAILURE;
-                }
-            };
+            let exe = enso_core::exe::installed();
             enable(&places, &exe, &desktops()).map(|()| {
                 println!("enso-files is the file chooser now.");
                 println!("  portal files  {}", places.portals.display());

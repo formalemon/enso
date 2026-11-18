@@ -8,9 +8,8 @@ use std::{
     collections::VecDeque,
     future::Future,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
     pin::Pin,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::{Arc, Condvar, Mutex, PoisonError},
     task::{Context, Poll, Waker},
     thread,
@@ -75,15 +74,15 @@ pub struct Prompts {
 }
 
 impl Prompts {
-    /// Start asking, with `program` as the prompt.
-    pub fn start(program: PathBuf) -> Self {
+    /// Start asking.
+    pub fn start() -> Self {
         let prompts = Self {
             shared: Arc::default(),
         };
         let worker = prompts.clone();
         let _ = thread::Builder::new()
             .name("enso-prompts".to_owned())
-            .spawn(move || worker.run(&program));
+            .spawn(move || worker.run());
         prompts
     }
 
@@ -122,7 +121,7 @@ impl Prompts {
         }
     }
 
-    fn run(&self, program: &PathBuf) {
+    fn run(&self) {
         loop {
             let job = {
                 let mut state = self.lock();
@@ -137,7 +136,7 @@ impl Prompts {
                         .unwrap_or_else(PoisonError::into_inner);
                 }
             };
-            let answer = self.show(program, &job).unwrap_or_else(|err| {
+            let answer = self.show(&job).unwrap_or_else(|err| {
                 eprintln!("enso-auth: can't show the prompt: {err}");
                 Answer::Deny
             });
@@ -146,8 +145,9 @@ impl Prompts {
     }
 
     /// Show one question and wait for its answer.
-    fn show(&self, program: &PathBuf, job: &Job) -> std::io::Result<Answer> {
-        let mut child = Command::new(program)
+    fn show(&self, job: &Job) -> std::io::Result<Answer> {
+        // This very program, even after a rebuild has replaced its file.
+        let mut child = enso_core::exe::again()
             .arg("prompt")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -135,6 +135,8 @@ struct Pick {
 }
 
 fn main() -> ExitCode {
+    // Started again by itself, the kernel calls it `exe`.
+    enso_core::exe::restore_name();
     let command = match parse_args(lexopt::Parser::from_env()) {
         Ok(Some(command)) => command,
         Ok(None) => return ExitCode::SUCCESS,

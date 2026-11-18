@@ -12,7 +12,6 @@
 //! control center away, and resting there opens nothing while either is up.
 
 use std::{
-    env,
     io::{self, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
@@ -34,7 +33,7 @@ impl Dropdown {
     /// tree or a private prefix uses its own), otherwise whichever is on
     /// `PATH`.
     pub fn new() -> Self {
-        Self::with_program(companion("enso-ctl"))
+        Self::with_program(enso_core::exe::companion("enso-ctl"))
     }
 
     pub fn with_program(program: impl Into<PathBuf>) -> Self {
@@ -111,17 +110,6 @@ impl Dropdown {
     }
 }
 
-/// Another tool of the suite: the one installed next to this bar if there
-/// is one (so a build tree or a private prefix uses its own), otherwise
-/// whichever is on `PATH`.
-fn companion(name: &str) -> PathBuf {
-    env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join(name)))
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 /// The notification history, which `enso-notify` shows when asked. Like
 /// the control center it belongs to another tool; without `enso-notify`
 /// the bell is simply a bell.
@@ -134,7 +122,7 @@ pub struct History {
 
 impl History {
     pub fn new() -> Self {
-        Self::with_program(companion("enso-notify"))
+        Self::with_program(enso_core::exe::companion("enso-notify"))
     }
 
     pub fn with_program(program: impl Into<PathBuf>) -> Self {

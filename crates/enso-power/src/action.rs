@@ -7,8 +7,7 @@
 //! the whole of the action.
 
 use std::{
-    env, fmt, io,
-    path::PathBuf,
+    fmt, io,
     process::{Command, Stdio},
 };
 
@@ -210,7 +209,7 @@ fn lock(command: &[String]) -> Result<(), Error> {
     let (program, args) = command
         .split_first()
         .ok_or_else(|| Error("no lock command is configured".to_owned()))?;
-    Command::new(companion(program))
+    Command::new(enso_core::exe::companion(program))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -221,21 +220,6 @@ fn lock(command: &[String]) -> Result<(), Error> {
             io::ErrorKind::NotFound => Error(format!("{program} is not installed")),
             _ => Error(format!("cannot start {program}: {err}")),
         })
-}
-
-/// A bare program name resolves to the one installed next to this binary if
-/// there is one (so a build tree or a private prefix uses its own),
-/// otherwise to whichever is on `PATH`. Anything with a slash is taken as
-/// written.
-fn companion(program: &str) -> PathBuf {
-    if program.contains('/') {
-        return PathBuf::from(program);
-    }
-    env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join(program)))
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from(program))
 }
 
 #[cfg(test)]
@@ -300,6 +284,5 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("not installed"), "{err}");
         assert!(Action::Lock.run(&[]).is_err());
-        assert_eq!(companion("/bin/true"), PathBuf::from("/bin/true"));
     }
 }

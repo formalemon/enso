@@ -10,7 +10,7 @@
 //! to announce, and it waits for the lock to be up before going.
 
 use std::{
-    process::{Child, Command},
+    process::Child,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -38,8 +38,7 @@ fn lock(running: &Running) {
     {
         return;
     }
-    let program = std::env::current_exe().unwrap_or_else(|_| "enso-lock".into());
-    match Command::new(program).spawn() {
+    match enso_core::exe::again().spawn() {
         Ok(child) => *running = Some(child),
         Err(err) => eprintln!("enso-lock: cannot start the lock screen: {err}"),
     }

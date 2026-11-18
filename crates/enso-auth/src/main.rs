@@ -46,6 +46,8 @@ enum Mode {
 }
 
 fn main() -> ExitCode {
+    // Started again by itself, the kernel calls it `exe`.
+    enso_core::exe::restore_name();
     let mode = match parse_args(lexopt::Parser::from_env()) {
         Ok(Some(mode)) => mode,
         Ok(None) => return ExitCode::SUCCESS,

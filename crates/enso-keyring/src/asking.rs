@@ -10,7 +10,7 @@
 
 use std::{
     io::{BufRead, BufReader, Write},
-    process::{Command, Stdio},
+    process::Stdio,
 };
 
 use zeroize::Zeroizing;
@@ -61,7 +61,7 @@ pub fn ask(
     asker: &str,
     mut answer: impl FnMut(Asked) -> Result<(), (String, Mode)>,
 ) -> bool {
-    let Ok(mut child) = Command::new(crate::myself())
+    let Ok(mut child) = enso_core::exe::again()
         .arg("prompt")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

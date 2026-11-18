@@ -46,22 +46,9 @@ Options:
   -V, --version    Print the version
 ";
 
-/// This program, as a path to run again: the installed link where there
-/// is one, so a rebuilt binary is picked up.
-pub fn myself() -> PathBuf {
-    let installed =
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin/enso-keyring"));
-    if let Some(installed) = installed.filter(|path| path.exists()) {
-        return installed;
-    }
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("enso-keyring"));
-    match exe.to_string_lossy().strip_suffix(" (deleted)") {
-        Some(original) => PathBuf::from(original),
-        None => exe,
-    }
-}
-
 fn main() -> ExitCode {
+    // Started again by itself, the kernel calls it `exe`.
+    enso_core::exe::restore_name();
     let mut args = std::env::args().skip(1);
     let first = args.next();
     let result = match first.as_deref() {
@@ -177,7 +164,7 @@ fn enable(on: bool) -> Result<(), String> {
         let text = format!(
             "# Written by `enso-keyring enable`; `enso-keyring disable` takes it away.\n[D-BUS Service]\nName={}\nExec={}\n",
             service::NAME,
-            myself().display()
+            enso_core::exe::installed().display()
         );
         fs::write(&file, text).map_err(|err| err.to_string())?;
     } else if let Err(err) = fs::remove_file(&file)

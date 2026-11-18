@@ -19,7 +19,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     pin::Pin,
-    process::{Command, ExitCode, Stdio},
+    process::{ExitCode, Stdio},
     sync::{Arc, Mutex},
     task::{Context, Poll, Waker},
     thread,
@@ -199,8 +199,8 @@ fn show_items(uris: &[String]) {
 }
 
 fn open_window(args: &[String]) {
-    let Ok(exe) = picker_exe() else { return };
-    let mut argv = vec![exe.to_string_lossy().into_owned()];
+    // A window of its own, so the newest build, wherever it's installed.
+    let mut argv = vec![enso_core::exe::installed().to_string_lossy().into_owned()];
     argv.extend_from_slice(args);
     if let Err(err) = enso_fs::apps::spawn_detached(&argv, None) {
         eprintln!("enso-files: cannot open a window: {err}");
@@ -362,10 +362,10 @@ async fn answer(server: &ObjectServer, handle: OwnedObjectPath, request: Request
 /// Run `enso-files pick --request` and read its answer: `None` if it was
 /// cancelled (or closed).
 fn pick(request: &Request, child_pid: &Mutex<Option<u32>>) -> Result<Option<Answer>, String> {
-    let exe = picker_exe()?;
     let text =
         toml::to_string(request).map_err(|err| format!("cannot write the request: {err}"))?;
-    let mut child = Command::new(exe)
+    // This very program, so the picker reads the request as it's written.
+    let mut child = enso_core::exe::again()
         .args(["pick", "--request"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -395,24 +395,6 @@ fn pick(request: &Request, child_pid: &Mutex<Option<u32>>) -> Result<Option<Answ
     toml::from_str(&output)
         .map(Some)
         .map_err(|err| format!("the picker's answer doesn't read: {err}"))
-}
-
-/// The program to run pickers with: this one — or, when it has been
-/// rebuilt or upgraded while the service ran, the new one at the same
-/// path, which the kernel reports as the old path plus " (deleted)". If
-/// nothing is there any more, the old copy still runs from memory.
-fn picker_exe() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|err| format!("cannot find myself: {err}"))?;
-    if exe.exists() {
-        return Ok(exe);
-    }
-    let text = exe.to_string_lossy();
-    if let Some(original) = text.strip_suffix(" (deleted)").map(PathBuf::from)
-        && original.exists()
-    {
-        return Ok(original);
-    }
-    Ok(PathBuf::from("/proc/self/exe"))
 }
 
 /// The portal's results for `answer`.

@@ -251,16 +251,9 @@ pub fn use_for_git(on: bool) -> Result<(), String> {
             .output()
             .map_err(|err| format!("git can't be run: {err}"))
     };
-    let me = std::env::current_exe().map_err(|err| err.to_string())?;
-    let me = me.to_string_lossy();
-    let me = me.strip_suffix(" (deleted)").unwrap_or(&me);
-    // Prefer the installed name, so a rebuild needn't change git's setting.
-    let installed = std::env::var_os("HOME")
-        .map(|home| std::path::PathBuf::from(home).join(".local/bin/enso-files"))
-        .filter(|path| path.exists());
-    let program =
-        installed.map_or_else(|| me.to_owned(), |path| path.to_string_lossy().into_owned());
-    let ours = format!("!{program} git-credential");
+    // The installed name, so a rebuild needn't change git's setting.
+    let program = enso_core::exe::installed();
+    let ours = format!("!{} git-credential", program.display());
     if on {
         // An empty helper first: git forgets the ones set before.
         let _ = git(&["config", "--global", "--unset-all", HELPER]);
