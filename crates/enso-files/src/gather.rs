@@ -12,7 +12,6 @@
 
 use std::{
     fs,
-    io::Read,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -22,22 +21,16 @@ use std::{
 };
 
 use enso_fs::{
+    grep,
     list::{self, Kind, Listing, Meta},
     places, recent,
     search::{self, FileIndex, Scope},
 };
-use regex::{Regex, RegexBuilder};
 
 use crate::query::Query;
 
 /// Results kept at most.
 pub const MOST: usize = 1000;
-/// Files read for content at most this big.
-const BIGGEST: u64 = 8 * 1024 * 1024;
-/// A NUL in this much of the start makes a file binary.
-const SNIFF: usize = 8192;
-/// A matching line shown at most this long.
-const LINE: usize = 200;
 /// How long a walk of a folder answers for it.
 const FRESH: Duration = Duration::from_secs(20);
 
@@ -155,7 +148,7 @@ pub fn search(
         if query.text.is_empty() {
             return Ok(Gathered::default());
         }
-        Some(matcher(&query.text)?)
+        Some(grep::matcher(&query.text)?)
     } else {
         None
     };
@@ -189,7 +182,7 @@ pub fn search(
             break;
         }
         let note = match &matcher {
-            Some(matcher) => match first_match(&root.join(&name), matcher) {
+            Some(matcher) => match grep::first_match(&root.join(&name), matcher) {
                 Some(line) => line,
                 None => continue,
             },
@@ -267,46 +260,6 @@ fn narrow(
         .filter(|((name, is_dir), meta)| query.admits(&base(name), *is_dir, meta.as_ref(), now))
         .map(|(candidate, _)| candidate)
         .collect()
-}
-
-/// What a content search looks for: `/like this/` is a regular
-/// expression; anything else is the words as typed, ignoring case unless
-/// they have capitals.
-fn matcher(text: &str) -> Result<Regex, String> {
-    let (pattern, regex) = match text
-        .strip_prefix('/')
-        .and_then(|rest| rest.strip_suffix('/'))
-    {
-        Some(inner) if !inner.is_empty() => (inner.to_owned(), true),
-        _ => (regex::escape(text), false),
-    };
-    let caseless = !regex && !text.chars().any(char::is_uppercase);
-    RegexBuilder::new(&pattern)
-        .case_insensitive(caseless)
-        .size_limit(1 << 20)
-        .build()
-        .map_err(|err| format!("That pattern doesn't read: {err}"))
-}
-
-/// The first line of the file at `path` that `matcher` finds, trimmed; or
-/// nothing, if none does or it isn't text.
-fn first_match(path: &Path, matcher: &Regex) -> Option<String> {
-    let file = fs::File::open(path).ok()?;
-    if file.metadata().ok()?.len() > BIGGEST {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    file.take(BIGGEST).read_to_end(&mut bytes).ok()?;
-    if bytes[..bytes.len().min(SNIFF)].contains(&0) {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    let line = text.lines().find(|line| matcher.is_match(line))?;
-    let line = line.trim();
-    Some(match line.char_indices().nth(LINE) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_owned(),
-    })
 }
 
 #[cfg(test)]

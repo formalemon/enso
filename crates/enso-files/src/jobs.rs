@@ -122,7 +122,7 @@ pub fn preview(path: &Path, max_side: u32) -> Preview {
         return std::fs::read_dir(path)
             .map_or(Preview::Nothing, |entries| Preview::Folder(entries.count()));
     }
-    if let Some(picture) = enso_fs::thumbs::decode(path, max_side) {
+    if let Ok(picture) = enso_fs::picture::open(path, max_side) {
         return Preview::Picture(picture);
     }
     let mut head = vec![0; TEXT_BYTES];

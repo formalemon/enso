@@ -59,17 +59,6 @@ impl Image {
         Some(Self::from_premultiplied(width, height, rgba))
     }
 
-    /// Decode a PNG file.
-    #[cfg(feature = "png")]
-    pub fn from_png(path: impl AsRef<std::path::Path>) -> Option<Self> {
-        let pixmap = tiny_skia::Pixmap::load_png(path).ok()?;
-        Some(Self::from_premultiplied(
-            pixmap.width(),
-            pixmap.height(),
-            pixmap.take(),
-        ))
-    }
-
     /// Image size in its own pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)

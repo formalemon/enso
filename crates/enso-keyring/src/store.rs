@@ -12,14 +12,13 @@
 //! secret while the keyring is locked, and so know to ask for it to be
 //! unlocked; a hash says nothing of what's in it.
 
-use enso_core::disk;
-use enso_core::hex;
 use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
 
+use enso_core::{disk, hex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};

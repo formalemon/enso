@@ -46,7 +46,7 @@ Options:
   -h, --help       Print this help
   -V, --version    Print the version
 
-Pictures are PNG or JPEG. A running enso-wall follows `set`, `unset`, and
+Pictures are PNG, JPEG, WebP, or GIF. A running enso-wall follows `set`, `unset`, and
 `enso-ctl theme set` at once, fading between pictures.
 
 Pictures can also be declared in ~/.config/enso/config.toml; a picture

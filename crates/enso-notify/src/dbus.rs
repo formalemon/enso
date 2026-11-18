@@ -51,6 +51,9 @@ fn image_from_raw(raw: RawImage) -> Option<Image> {
     )
 }
 
+/// Longest side a picture is decoded at: it's drawn far smaller.
+const PICTURE_SIDE: u32 = 512;
+
 /// A picture named by path or `file://` URL. Icon-theme names are not
 /// looked up: the suite carries no icon theme.
 fn image_from_path(name: &str) -> Option<Image> {
@@ -59,12 +62,18 @@ fn image_from_path(name: &str) -> Option<Image> {
         return None;
     }
     let path = Path::new(path);
-    let is_png = path
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
     // Nothing a sender names is worth reading megabytes for.
-    let small = path.metadata().is_ok_and(|meta| meta.len() <= 8 << 20);
-    (is_png && small).then(|| Image::from_png(path)).flatten()
+    if !path.metadata().is_ok_and(|meta| meta.len() <= 8 << 20) {
+        return None;
+    }
+    let pixels = enso_fs::picture::open(path, PICTURE_SIDE).ok()?;
+    Image::from_raw(
+        pixels.width,
+        pixels.height,
+        pixels.width as usize * 4,
+        true,
+        &pixels.rgba,
+    )
 }
 
 /// Pair up the flat `[key, label, key, label, …]` list.

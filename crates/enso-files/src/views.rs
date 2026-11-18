@@ -4,9 +4,9 @@
 //!
 //! Kept in the state directory (`views.toml`), one table per folder.
 
-use enso_core::disk;
 use std::{collections::BTreeMap, fs, io, path::Path};
 
+use enso_core::disk;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{FilesConfig, SortBy, View};

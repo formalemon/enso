@@ -5,11 +5,12 @@
 //! Bookmarks that aren't local folders (`sftp://…`) are kept as they are
 //! but not offered here.
 
-use enso_core::disk;
 use std::{
     fs, io,
     path::{Path, PathBuf},
 };
+
+use enso_core::disk;
 
 use crate::uri;
 

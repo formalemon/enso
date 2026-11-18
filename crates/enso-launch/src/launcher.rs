@@ -256,7 +256,7 @@ impl Launcher {
 
     fn placeholder(&self) -> &'static str {
         if self.config.files {
-            "Search apps and files"
+            "Search apps and files · \" looks inside them"
         } else {
             "Search apps"
         }
@@ -289,6 +289,11 @@ impl Launcher {
     /// Rank the applications against the current query. An empty query
     /// lists nothing.
     fn rank_apps(&mut self) {
+        // Looking inside files is for files alone.
+        if self.inside().is_some() {
+            self.app_results.clear();
+            return;
+        }
         let now = history::now();
         let pattern = fuzzy::Pattern::new(&self.query);
         let mut ranked: Vec<(i32, usize)> = self
@@ -306,19 +311,39 @@ impl Launcher {
         self.app_results = ranked.into_iter().map(|(_, index)| index).collect();
     }
 
+    /// What to look for inside files, if the query asks that: it starts
+    /// with a quote (`"green tea`, or `"/te+a/"` for a pattern).
+    fn inside(&self) -> Option<&str> {
+        let text = self.query.trim().strip_prefix('"')?;
+        Some(text.strip_suffix('"').unwrap_or(text))
+    }
+
     /// Search again for the current query and reset the selection.
     fn search(&mut self) {
         self.rank_apps();
         self.generation += 1;
-        let query = self.query.trim();
-        let asked = query.chars().count() >= files::MIN_QUERY
-            && self.jobs.as_ref().is_some_and(|jobs| {
-                jobs.send(Job::Query {
-                    generation: self.generation,
-                    query: query.to_owned(),
-                })
-                .is_ok()
-            });
+        let generation = self.generation;
+        let job = match self.inside() {
+            Some(text) => Job::Inside {
+                generation,
+                text: text.to_owned(),
+            },
+            None => Job::Query {
+                generation,
+                query: self.query.trim().to_owned(),
+            },
+        };
+        let wanted = match &job {
+            Job::Inside { text, .. } => text,
+            Job::Query { query, .. } => query,
+            Job::Index(_) => "",
+        };
+        let asked = self.config.files
+            && wanted.chars().count() >= files::MIN_QUERY
+            && self
+                .jobs
+                .as_ref()
+                .is_some_and(|jobs| jobs.send(job).is_ok());
         // While the answer is on its way — a few milliseconds — the files
         // for the previous query stay rather than blink out and back.
         if !asked {
@@ -710,7 +735,12 @@ impl UiApp for Launcher {
                         canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT));
                         let size = if glyphs { base_size + 5.0 } else { base_size };
                         canvas.icon(glyph, size, tint, chip, Align::Center);
-                        location = hit.location(&self.home);
+                        // Found inside: the line that has it says more
+                        // than where the file is.
+                        location = match &hit.line {
+                            Some(line) => line.clone(),
+                            None => hit.location(&self.home),
+                        };
                         (hit.name(), Some(location.as_str()))
                     }
                 };
@@ -830,6 +860,7 @@ mod tests {
             path: path.strip_suffix('/').unwrap_or(path).to_owned(),
             is_dir: path.ends_with('/'),
             score,
+            line: None,
         }
     }
 
@@ -1070,6 +1101,22 @@ mod tests {
         // Too short a query asks for no files and drops the old ones.
         launcher.edit(&key(Key::Backspace, false));
         assert_eq!(names(&launcher), ["Files"]);
+    }
+
+    #[test]
+    fn a_quote_looks_inside_files_alone() {
+        let mut launcher = launcher();
+        launcher.home = "/home/mira".to_owned();
+        type_text(&mut launcher, "\"fi");
+        assert_eq!(launcher.inside(), Some("fi"));
+        // Applications aren't what's looked inside.
+        assert!(names(&launcher).is_empty());
+        let mut found = hit("/home/mira/notes/tea.md", 0);
+        found.line = Some("Find the first flush of the year".to_owned());
+        assert!(launcher.set_files(launcher.generation, vec![found]));
+        assert_eq!(names(&launcher), ["tea.md"]);
+        let frame = settled(&mut launcher);
+        snapshot(&frame, "launch-inside");
     }
 
     #[test]

@@ -7,8 +7,9 @@
 //! cache — anything unexpected makes [`read`] return `None` and the launcher
 //! falls back to scanning.
 
-use enso_core::disk;
 use std::{fs, io, path::Path};
+
+use enso_core::disk;
 
 use crate::apps::App;
 

@@ -9,9 +9,9 @@
 //! The answer to "use version control?" lives here too: `None` until the
 //! question has been asked.
 
-use enso_core::disk;
 use std::{fs, io, path::Path};
 
+use enso_core::disk;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Density, FilesConfig, SortBy, View};

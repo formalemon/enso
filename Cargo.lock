@@ -507,6 +507,7 @@ dependencies = [
  "jiff",
  "lzma-rs",
  "png",
+ "regex",
  "rustix",
  "ruzstd",
  "tar",
@@ -560,6 +561,7 @@ name = "enso-notify"
 version = "0.1.0"
 dependencies = [
  "enso-core",
+ "enso-fs",
  "enso-ui",
  "lexopt",
  "serde",
@@ -596,12 +598,12 @@ dependencies = [
  "calloop",
  "cosmic-text",
  "enso-core",
+ "enso-fs",
  "kbvm",
  "rustix",
  "smithay-client-toolkit",
  "tiny-skia",
  "zeroize",
- "zune-jpeg",
 ]
 
 [[package]]

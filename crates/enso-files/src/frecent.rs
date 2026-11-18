@@ -5,12 +5,13 @@
 //! Kept in the state directory, one folder a line: visits, the last
 //! visit (seconds since 1970), the path.
 
-use enso_core::disk;
 use std::{
     collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
 };
+
+use enso_core::disk;
 
 pub const FILE: &str = "folders";
 /// Folders remembered at most; the least used go first.

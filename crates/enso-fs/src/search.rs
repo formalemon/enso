@@ -10,7 +10,6 @@
 //! Like the application index, the saved copy (`~/.cache/enso/files`) only
 //! answers until a fresh walk finishes, so it needs no invalidation.
 
-use enso_core::disk;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -21,6 +20,8 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
+
+use enso_core::disk;
 
 use crate::ignores::{self, Rules, glob};
 
@@ -210,6 +211,8 @@ pub struct Hit {
     pub path: String,
     pub is_dir: bool,
     pub score: i32,
+    /// Searching inside files: the first line that has what was asked.
+    pub line: Option<String>,
 }
 
 impl Hit {
@@ -318,6 +321,7 @@ impl FileIndex {
                     path: path.to_owned(),
                     is_dir: path.len() != line.len(),
                     score,
+                    line: None,
                 }
             })
             .collect()
@@ -654,8 +658,11 @@ impl Walk<'_> {
 /// What the search thread is told.
 #[derive(Debug)]
 pub enum Job {
-    /// Search for this; `generation` comes back with the answer.
+    /// Search names for this; `generation` comes back with the answer.
     Query { generation: u64, query: String },
+    /// Look inside the files for this (see [`crate::grep`]), answering as
+    /// they're found; `generation` comes back with each answer.
+    Inside { generation: u64, text: String },
     /// A newer index to search from now on.
     Index(FileIndex),
 }
@@ -696,20 +703,119 @@ pub fn serve(
     Ok((jobs, scan))
 }
 
+/// The question the search thread is answering.
+enum Asked {
+    Names(u64, String),
+    Inside(u64, String),
+}
+
 fn search_loop(inbox: &Receiver<Job>, limit: usize, answer: &impl Fn(u64, Vec<Hit>)) {
     let mut index: Option<FileIndex> = None;
-    let mut asked: Option<(u64, String)> = None;
-    while let Ok(job) = inbox.recv() {
-        // Only the newest query matters; skip the ones typed past.
+    let mut asked: Option<Asked> = None;
+    // A job that cut a look inside the files short, to take next.
+    let mut waiting: Option<Job> = None;
+    loop {
+        let Some(job) = waiting.take().or_else(|| inbox.recv().ok()) else {
+            return;
+        };
+        // Only the newest question matters; skip the ones typed past.
         for job in std::iter::once(job).chain(inbox.try_iter()) {
             match job {
-                Job::Query { generation, query } => asked = Some((generation, query)),
+                Job::Query { generation, query } => asked = Some(Asked::Names(generation, query)),
+                Job::Inside { generation, text } => asked = Some(Asked::Inside(generation, text)),
                 Job::Index(newer) => index = Some(newer),
             }
         }
-        if let (Some(index), Some((generation, query))) = (&index, &asked) {
-            answer(*generation, index.search(query, limit));
+        match (&index, &asked) {
+            (Some(index), Some(Asked::Names(generation, query))) => {
+                answer(*generation, index.search(query, limit));
+            }
+            (Some(index), Some(Asked::Inside(generation, text))) => {
+                waiting = look_inside(index, text, limit, inbox, |hits| answer(*generation, hits));
+            }
+            _ => {}
         }
+    }
+}
+
+/// How often what's been found so far is shown, while looking inside.
+const SHOW_EVERY: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// Look inside the indexed files for `text`, answering with what's found
+/// as it's found. Stops at `limit` hits, or as soon as another job comes
+/// in — which it hands back, to be taken next.
+fn look_inside(
+    index: &FileIndex,
+    text: &str,
+    limit: usize,
+    inbox: &Receiver<Job>,
+    answer: impl Fn(Vec<Hit>),
+) -> Option<Job> {
+    let Ok(matcher) = crate::grep::matcher(text) else {
+        answer(Vec::new());
+        return None;
+    };
+    let mut newer = None;
+    let mut shown = std::time::Instant::now();
+    let found = index.scan(
+        &matcher,
+        limit,
+        || {
+            newer = inbox.try_recv().ok();
+            newer.is_some()
+        },
+        |so_far| {
+            if shown.elapsed() >= SHOW_EVERY {
+                answer(so_far.to_vec());
+                shown = std::time::Instant::now();
+            }
+        },
+    );
+    if newer.is_none() {
+        answer(found);
+    }
+    newer
+}
+
+impl FileIndex {
+    /// The first `limit` files that have `text` inside (see
+    /// [`crate::grep`]), each with the line that has it.
+    pub fn inside(&self, text: &str, limit: usize) -> Result<Vec<Hit>, String> {
+        let matcher = crate::grep::matcher(text)?;
+        Ok(self.scan(&matcher, limit, || false, |_| {}))
+    }
+
+    /// Read the files in turn for `matcher`, telling `found` each time one
+    /// has it, until `limit` have or `stop` says to.
+    fn scan(
+        &self,
+        matcher: &regex::Regex,
+        limit: usize,
+        mut stop: impl FnMut() -> bool,
+        mut found: impl FnMut(&[Hit]),
+    ) -> Vec<Hit> {
+        let mut hits = Vec::new();
+        for (path, is_dir) in self.paths() {
+            if stop() {
+                break;
+            }
+            if is_dir {
+                continue;
+            }
+            if let Some(line) = crate::grep::first_match(Path::new(path), matcher) {
+                hits.push(Hit {
+                    path: path.to_owned(),
+                    is_dir: false,
+                    score: 0,
+                    line: Some(line),
+                });
+                found(&hits);
+                if hits.len() >= limit {
+                    break;
+                }
+            }
+        }
+        hits
     }
 }
 
@@ -1106,11 +1212,46 @@ mod tests {
     }
 
     #[test]
+    fn looks_inside_files_and_gives_way_to_a_newer_job() {
+        let dir = std::env::temp_dir().join(format!("enso-fs-inside-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("tea.md"), "green tea\nmatcha\n").unwrap();
+        fs::write(dir.join("coffee.md"), "espresso\n").unwrap();
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        let (tea, coffee) = (path("tea.md"), path("coffee.md"));
+        let index = FileIndex::from_paths([coffee.as_str(), tea.as_str()]);
+        let (jobs, inbox) = mpsc::channel();
+        let found = Mutex::new(Vec::new());
+        let next = look_inside(&index, "MATCHA", 10, &inbox, |hits| {
+            *found.lock().unwrap() = hits;
+        });
+        assert!(next.is_none());
+        assert!(found.lock().unwrap().is_empty(), "capitals mean it");
+        look_inside(&index, "matcha", 10, &inbox, |hits| {
+            *found.lock().unwrap() = hits;
+        });
+        let hits = found.lock().unwrap().clone();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, tea);
+        assert_eq!(hits[0].line.as_deref(), Some("matcha"));
+        // Something newer was asked: it stops and hands that back.
+        jobs.send(Job::Query {
+            generation: 2,
+            query: "tea".into(),
+        })
+        .unwrap();
+        let next = look_inside(&index, "e", 10, &inbox, |_| {});
+        assert!(matches!(next, Some(Job::Query { generation: 2, .. })));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn hits_describe_themselves() {
         let hit = |path: &str| Hit {
             path: path.to_owned(),
             is_dir: false,
             score: 0,
+            line: None,
         };
         assert_eq!(hit("/home/mira/notes/tea.md").name(), "tea.md");
         assert_eq!(

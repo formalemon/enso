@@ -52,12 +52,17 @@ impl Picture {
         }
     }
 
-    /// Decode a PNG or JPEG file, told apart by content rather than by name.
+    /// Open a PNG, JPEG, WebP, or GIF file, told apart by content rather
+    /// than by name.
     #[cfg(feature = "picture")]
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path).map_err(|err| format!("{}: {err}", path.display()))?;
-        decode(&bytes).map_err(|err| format!("{}: {err}", path.display()))
+        let said = |err: &dyn std::fmt::Display| format!("{}: {err}", path.display());
+        let pixels = enso_fs::picture::open(path, MAX_SIDE)
+            .map_err(|err| said(&err))?
+            .premultiplied();
+        Self::from_rgba(pixels.width, pixels.height, pixels.rgba)
+            .ok_or_else(|| said(&format!("larger than {MAX_SIDE} pixels on a side")))
     }
 
     /// Size in pixels.
@@ -155,35 +160,6 @@ impl Picture {
             pixel[3] = 255;
         }
     }
-}
-
-#[cfg(feature = "picture")]
-fn decode(bytes: &[u8]) -> Result<Picture, String> {
-    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
-    const JPEG: &[u8] = &[0xff, 0xd8, 0xff];
-    let too_large = || format!("larger than {MAX_SIDE} pixels on a side");
-
-    if bytes.starts_with(PNG) {
-        let pixmap = tiny_skia::Pixmap::decode_png(bytes).map_err(|err| err.to_string())?;
-        let (width, height) = (pixmap.width(), pixmap.height());
-        return Picture::from_rgba(width, height, pixmap.take()).ok_or_else(too_large);
-    }
-    if bytes.starts_with(JPEG) {
-        use zune_jpeg::{
-            JpegDecoder,
-            zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions},
-        };
-        let options = DecoderOptions::default()
-            .set_max_width(MAX_SIDE as usize)
-            .set_max_height(MAX_SIDE as usize)
-            .jpeg_set_out_colorspace(ColorSpace::RGBA);
-        let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-        let rgba = decoder.decode().map_err(|err| err.to_string())?;
-        let info = decoder.info().ok_or("no image header")?;
-        return Picture::from_rgba(u32::from(info.width), u32::from(info.height), rgba)
-            .ok_or_else(too_large);
-    }
-    Err("not a PNG or JPEG image".to_owned())
 }
 
 /// For each output position along one axis: the first source index it reads
@@ -445,7 +421,7 @@ mod tests {
         assert_eq!(pixel(&all, 1, 1), [255, 255, 255, 255]);
     }
 
-    #[cfg(feature = "picture")]
+    #[cfg(all(feature = "picture", feature = "png"))]
     #[test]
     fn reads_png_and_refuses_other_files() {
         let dir = std::env::temp_dir().join(format!("enso-ui-picture-{}", std::process::id()));

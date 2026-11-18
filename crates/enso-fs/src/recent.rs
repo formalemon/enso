@@ -7,12 +7,12 @@
 //! and written by changing only what's needed: an entry already there gets
 //! new times; a new one is added in the shape GTK writes.
 
-use enso_core::disk;
 use std::{
     fs, io,
     path::{Path, PathBuf},
 };
 
+use enso_core::disk;
 use jiff::Timestamp;
 
 use crate::uri;

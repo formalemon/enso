@@ -64,7 +64,10 @@ Configuration is optional: the [launch] table of ~/.config/enso/config.toml.
                                beside a Cargo.toml, a dist beside a
                                package.json, *.o, *.pyc, and the like
 
-Version-control internals (.git) are always left out. Terminal
+A query that starts with a quote looks inside the files instead: \"green
+tea finds the words (ignoring case unless they have capitals); \"/te+a/
+is a regular expression. Version-control internals (.git) are always
+left out. Terminal
 applications open in [appearance] terminal ($TERMINAL, or alacritty).
 ";
 
@@ -170,11 +173,24 @@ fn find(ctx: &Context, config: &launcher::LaunchConfig, query: &str) {
     }
 
     let searching = Instant::now();
-    let hits = index.search(query, 20);
+    // A quote looks inside the files, as in the launcher.
+    let hits = match query.strip_prefix('"') {
+        Some(text) => match index.inside(text.strip_suffix('"').unwrap_or(text), 20) {
+            Ok(hits) => hits,
+            Err(err) => {
+                eprintln!("enso-launch: {err}");
+                return;
+            }
+        },
+        None => index.search(query, 20),
+    };
     eprintln!("searched in {:.1?}", searching.elapsed());
     for hit in hits {
         let slash = if hit.is_dir { "/" } else { "" };
-        println!("{:>4}  {}{slash}", hit.score, hit.path);
+        match &hit.line {
+            Some(line) => println!("{}: {line}", hit.path),
+            None => println!("{:>4}  {}{slash}", hit.score, hit.path),
+        }
     }
 }
 

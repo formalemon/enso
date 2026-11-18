@@ -11,7 +11,6 @@
 //! anything else is only shown if another program has already made its
 //! thumbnail.
 
-use enso_core::disk;
 use std::{
     fs,
     io::{self},
@@ -19,7 +18,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::uri;
+use enso_core::disk;
+
+use crate::{picture, uri};
 
 /// The sizes the spec names, by their longest side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -59,17 +60,10 @@ impl Size {
 }
 
 /// Pixels: straight (not premultiplied) RGBA, row after row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Thumb {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
-}
+pub use crate::picture::Pixels as Thumb;
 
 /// Files larger than this aren't decoded for a thumbnail.
 const MAX_BYTES: u64 = 64 << 20;
-/// Nor pictures larger than this on a side.
-const MAX_SIDE: u32 = 16_384;
 
 /// Whether a file of this name is one this module can thumbnail itself.
 pub fn can_make(name: &str) -> bool {
@@ -122,7 +116,7 @@ fn thumbnail_in(cache: &Path, path: &Path, size: Size) -> Option<Thumb> {
     {
         return None;
     }
-    match decode(&path, size.pixels()) {
+    match picture::open(&path, size.pixels()).ok() {
         Some(thumb) => {
             let _ = write(&cached, &thumb, &uri, mtime, meta.len());
             Some(thumb)
@@ -141,181 +135,6 @@ fn thumbnail_in(cache: &Path, path: &Path, size: Size) -> Option<Thumb> {
             );
             None
         }
-    }
-}
-
-/// Decode `path` and fit it within `max_side`, for a thumbnail or a
-/// preview. PNG and JPEG only.
-pub fn decode(path: &Path, max_side: u32) -> Option<Thumb> {
-    let bytes = fs::read(path).ok()?;
-    let full = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        decode_png(&bytes)?
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        decode_jpeg(&bytes)?
-    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        decode_webp(&bytes)?
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        decode_gif(&bytes)?
-    } else {
-        return None;
-    };
-    Some(fit(&full, max_side))
-}
-
-fn decode_png(bytes: &[u8]) -> Option<Thumb> {
-    let mut decoder = png::Decoder::new(io::Cursor::new(bytes));
-    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder.read_info().ok()?;
-    let mut buffer = vec![0; reader.output_buffer_size()?];
-    let frame = reader.next_frame(&mut buffer).ok()?;
-    let (width, height) = (frame.width, frame.height);
-    if width > MAX_SIDE || height > MAX_SIDE {
-        return None;
-    }
-    let data = &buffer[..frame.buffer_size()];
-    let rgba: Vec<u8> = match frame.color_type {
-        png::ColorType::Rgba => data.to_vec(),
-        png::ColorType::Rgb => data
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], p[1], p[2], 255])
-            .collect(),
-        png::ColorType::GrayscaleAlpha => data
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], p[0], p[0], p[1]])
-            .collect(),
-        png::ColorType::Grayscale => data.iter().flat_map(|&g| [g, g, g, 255]).collect(),
-        png::ColorType::Indexed => return None,
-    };
-    Some(Thumb {
-        width,
-        height,
-        rgba,
-    })
-}
-
-fn decode_webp(bytes: &[u8]) -> Option<Thumb> {
-    let mut decoder = image_webp::WebPDecoder::new(io::Cursor::new(bytes)).ok()?;
-    let (width, height) = decoder.dimensions();
-    if width > MAX_SIDE || height > MAX_SIDE {
-        return None;
-    }
-    let mut buffer = vec![0; decoder.output_buffer_size()?];
-    decoder.read_image(&mut buffer).ok()?;
-    let rgba = if decoder.has_alpha() {
-        buffer
-    } else {
-        buffer
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .flat_map(|p| [p[0], p[1], p[2], 255])
-            .collect()
-    };
-    Some(Thumb {
-        width,
-        height,
-        rgba,
-    })
-}
-
-/// A GIF's first frame, placed on its canvas.
-fn decode_gif(bytes: &[u8]) -> Option<Thumb> {
-    let mut options = gif::DecodeOptions::new();
-    options.set_color_output(gif::ColorOutput::RGBA);
-    let mut decoder = options.read_info(io::Cursor::new(bytes)).ok()?;
-    let (width, height) = (u32::from(decoder.width()), u32::from(decoder.height()));
-    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
-        return None;
-    }
-    let frame = decoder.read_next_frame().ok()??;
-    let mut rgba = vec![0; (width * height * 4) as usize];
-    let (left, top) = (u32::from(frame.left), u32::from(frame.top));
-    for y in 0..u32::from(frame.height) {
-        for x in 0..u32::from(frame.width) {
-            let (cx, cy) = (left + x, top + y);
-            if cx >= width || cy >= height {
-                continue;
-            }
-            let from = ((y * u32::from(frame.width) + x) * 4) as usize;
-            let to = ((cy * width + cx) * 4) as usize;
-            rgba[to..to + 4].copy_from_slice(frame.buffer.get(from..from + 4)?);
-        }
-    }
-    Some(Thumb {
-        width,
-        height,
-        rgba,
-    })
-}
-
-fn decode_jpeg(bytes: &[u8]) -> Option<Thumb> {
-    use zune_jpeg::{
-        JpegDecoder,
-        zune_core::{bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions},
-    };
-    let options = DecoderOptions::default()
-        .set_max_width(MAX_SIDE as usize)
-        .set_max_height(MAX_SIDE as usize)
-        .jpeg_set_out_colorspace(ColorSpace::RGBA);
-    let mut decoder = JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-    let rgba = decoder.decode().ok()?;
-    let info = decoder.info()?;
-    Some(Thumb {
-        width: u32::from(info.width),
-        height: u32::from(info.height),
-        rgba,
-    })
-}
-
-/// `image` scaled to fit within `max_side`, each new pixel the average of
-/// the ones it covers (weighted by alpha, so edges don't darken). Smaller
-/// images are left as they are.
-pub fn fit(image: &Thumb, max_side: u32) -> Thumb {
-    let (w, h) = (image.width, image.height);
-    if w <= max_side && h <= max_side {
-        return image.clone();
-    }
-    let scale = max_side as f64 / w.max(h) as f64;
-    let (nw, nh) = (
-        ((w as f64 * scale).round() as u32).max(1),
-        ((h as f64 * scale).round() as u32).max(1),
-    );
-    let mut out = Vec::with_capacity((nw * nh * 4) as usize);
-    for y in 0..nh {
-        let (y0, y1) = (y * h / nh, ((y + 1) * h / nh).max(y * h / nh + 1).min(h));
-        for x in 0..nw {
-            let (x0, x1) = (x * w / nw, ((x + 1) * w / nw).max(x * w / nw + 1).min(w));
-            let mut sum = [0u64; 4];
-            for sy in y0..y1 {
-                let row = (sy * w) as usize * 4;
-                for sx in x0..x1 {
-                    let p = &image.rgba[row + sx as usize * 4..][..4];
-                    let a = u64::from(p[3]);
-                    sum[0] += u64::from(p[0]) * a;
-                    sum[1] += u64::from(p[1]) * a;
-                    sum[2] += u64::from(p[2]) * a;
-                    sum[3] += a;
-                }
-            }
-            let count = u64::from((y1 - y0) * (x1 - x0));
-            // Fully transparent: nothing to average.
-            let channel = |c: u64| c.checked_div(sum[3]).unwrap_or(0) as u8;
-            out.extend([
-                channel(sum[0]),
-                channel(sum[1]),
-                channel(sum[2]),
-                (sum[3] / count) as u8,
-            ]);
-        }
-    }
-    Thumb {
-        width: nw,
-        height: nh,
-        rgba: out,
     }
 }
 
@@ -371,7 +190,7 @@ fn read_cached(path: &Path, uri: &str, mtime: i64) -> Option<Thumb> {
     if !(good_uri && good_mtime) {
         return None;
     }
-    decode_png(&bytes)
+    picture::decode(&bytes).ok()
 }
 
 fn write(path: &Path, thumb: &Thumb, uri: &str, mtime: i64, size: u64) -> io::Result<()> {
@@ -497,7 +316,7 @@ mod tests {
             .encode(&pixels, 4, 2, image_webp::ColorType::Rgb8)
             .unwrap();
         fs::write(root.join("a.webp"), webp).unwrap();
-        let decoded = decode(&root.join("a.webp"), 100).unwrap();
+        let decoded = picture::open(&root.join("a.webp"), 100).unwrap();
         assert_eq!((decoded.width, decoded.height), (4, 2));
         assert_eq!(&decoded.rgba[..4], &[255, 0, 0, 255]);
         assert_eq!(&decoded.rgba[12..16], &[0, 0, 255, 255]);
@@ -518,7 +337,7 @@ mod tests {
             }
         }
         fs::write(root.join("b.gif"), gif_bytes).unwrap();
-        let decoded = decode(&root.join("b.gif"), 100).unwrap();
+        let decoded = picture::open(&root.join("b.gif"), 100).unwrap();
         assert_eq!((decoded.width, decoded.height), (3, 3));
         assert_eq!(&decoded.rgba[..4], &[0, 255, 0, 255]);
         assert!(can_make("Clip.GIF") && can_make("x.webp"));
@@ -532,11 +351,11 @@ mod tests {
             height: 2,
             rgba: [[255, 0, 0, 255], [0, 0, 255, 255]].repeat(4).concat(),
         };
-        let small = fit(&image, 2);
+        let small = picture::fit(&image, 2);
         assert_eq!((small.width, small.height), (2, 1));
         // Red and blue, averaged.
         assert_eq!(&small.rgba[..4], &[127, 0, 127, 255]);
-        assert_eq!(fit(&small, 10), small, "already small enough");
+        assert_eq!(picture::fit(&small, 10), small, "already small enough");
     }
 
     fn png_file(path: &Path, width: u32, height: u32) {

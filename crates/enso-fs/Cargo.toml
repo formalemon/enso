@@ -9,6 +9,8 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
+# Looking inside files: words as typed, or a pattern.
+regex.workspace = true
 rustix.workspace = true
 jiff.workspace = true
 png.workspace = true

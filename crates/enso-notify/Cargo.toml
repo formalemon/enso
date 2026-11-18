@@ -9,13 +9,17 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-# PNG: pictures that notifications name by file.
-enso-ui = { workspace = true, features = ["png"] }
+enso-ui.workspace = true
+# Pictures that notifications name by file: PNG, JPEG, WebP, GIF.
+enso-fs.workspace = true
 serde.workspace = true
 # The history, kept across restarts.
 toml.workspace = true
 lexopt.workspace = true
 zbus.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
 
 [lints]
 workspace = true

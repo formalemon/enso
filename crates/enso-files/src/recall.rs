@@ -4,12 +4,13 @@
 //! One small text file in the state directory, a line per application:
 //! its id, a tab, the folder. Losing it loses nothing but the convenience.
 
-use enso_core::disk;
 use std::{
     collections::BTreeMap,
     fs, io,
     path::{Path, PathBuf},
 };
+
+use enso_core::disk;
 
 /// File name inside the state directory.
 pub const FILE: &str = "files-picker-folders";

@@ -16,13 +16,14 @@ tiny-skia.workspace = true
 cosmic-text.workspace = true
 rustix.workspace = true
 zeroize.workspace = true
-zune-jpeg = { workspace = true, optional = true }
+enso-fs = { workspace = true, optional = true }
 
 [features]
 # PNG export of offscreen renders, for snapshot tests.
 png = ["tiny-skia/png-format"]
-# Reading wallpapers: PNG and JPEG files, decoded in pure Rust.
-picture = ["tiny-skia/png-format", "dep:zune-jpeg"]
+# Opening wallpapers: PNG, JPEG, WebP, and GIF files, decoded in pure Rust
+# by enso-fs, as the file manager's thumbnails are.
+picture = ["dep:enso-fs"]
 
 [lints]
 workspace = true

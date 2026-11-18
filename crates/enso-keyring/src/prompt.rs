@@ -2,13 +2,13 @@
 //! same shape as enso-auth's. It sends what's typed to the keyring and
 //! waits; the keyring closes it, or says why not and lets it try again.
 
-use enso_core::hex;
 use std::{
     io::{self, BufRead, Write},
     thread,
     time::Instant,
 };
 
+use enso_core::hex;
 use enso_core::{
     Context,
     style::{icon, type_scale},
