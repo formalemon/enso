@@ -14,6 +14,7 @@ mod draw;
 mod grid;
 mod input;
 mod ops;
+mod palette;
 mod preview;
 mod seek;
 mod settings;
@@ -108,6 +109,9 @@ enum Hit {
     ViewPill(crate::config::View),
     /// The tab strip.
     Tabs(tabs::TabHit),
+    /// The palette: a line of it, and the rest of its card.
+    PaletteLine(usize),
+    PaletteField,
     /// Something on the split's other side: it comes in front first.
     Other(Box<Hit>),
     /// The name being saved as, whose text starts at this `x`.
@@ -281,6 +285,8 @@ pub struct Files {
     /// The tab on the split's other side, and where it was drawn.
     split: Option<usize>,
     split_rect: Rect,
+    /// The command palette, while it's open.
+    palette: Option<palette::Palette>,
     /// The field searching instead of filtering, and when the search
     /// typed is due to run.
     seek: Option<seek::Seek>,
@@ -289,6 +295,9 @@ pub struct Files {
     bookmarks: Vec<enso_fs::bookmarks::Bookmark>,
     /// Drawing the split's other side.
     behind: bool,
+    /// The folder whose listing is on screen, which the pane has left
+    /// once it's asked for another.
+    shown_at: PathBuf,
 }
 
 impl Files {
@@ -363,10 +372,12 @@ impl Files {
             active: 0,
             split: None,
             split_rect: Rect::default(),
+            palette: None,
             seek: None,
             seek_due: None,
             bookmarks: enso_fs::bookmarks::Bookmarks::load(&enso_fs::bookmarks::file()).folders(),
             behind: false,
+            shown_at: PathBuf::new(),
         }
     }
 
@@ -436,8 +447,9 @@ impl Files {
         // The pane starts the new folder unfiltered; so does the field.
         self.filter = None;
         // Into a folder below: from the right; out to one above: from the
-        // left; elsewhere, or reloading, or a gathered list: no slide.
-        let from = self.pane.location();
+        // left; elsewhere, or reloading, or a gathered list: no slide. (The
+        // pane has moved on already: what's on screen is `shown_at`.)
+        let from = self.shown_at.as_path();
         self.sliding = if request.path == from || !request.source.is_folder() {
             0.0
         } else if request.path.starts_with(from) {
@@ -693,6 +705,14 @@ impl Files {
         }
         self.follow(generation);
         self.listed();
+        // Arriving somewhere new (not a reload): a visit, for the palette.
+        if self.pane.source().is_folder() && self.shown_at != self.pane.location() {
+            self.shown_at = self.pane.location().to_owned();
+            self.visited(self.shown_at.clone());
+        }
+        if !self.pane.source().is_folder() {
+            self.shown_at = PathBuf::new();
+        }
         // The side columns read again, in case they changed too.
         self.side_parent = columns::Side::default();
         self.side_child = columns::Side::default();
@@ -728,6 +748,22 @@ impl Files {
             if let Some(proxy) = &self.proxy {
                 self.loader.load(request, proxy);
             }
+        }
+    }
+
+    /// Note a visit to `folder`, off the drawing thread.
+    fn visited(&self, folder: PathBuf) {
+        let file = self.ctx.paths.state_dir.join(crate::frecent::FILE);
+        // Tests leave no trace.
+        if !file.starts_with("/nonexistent") {
+            let _ = std::thread::Builder::new()
+                .name("enso-files-visit".to_owned())
+                .spawn(move || {
+                    let now = jiff::Timestamp::now().as_second();
+                    let mut visits = crate::frecent::Visits::load(&file);
+                    visits.visit(&folder, now);
+                    let _ = visits.save(&file);
+                });
         }
     }
 
@@ -953,7 +989,7 @@ impl App for Files {
                         .picker
                         .as_ref()
                         .is_some_and(|picker| picker.typing_name);
-                if self.vcs_paste(&text) {
+                if self.palette_paste(&text) || self.vcs_paste(&text) {
                     cx.redraw();
                 } else if let Some(renaming) = &mut self.renaming {
                     renaming.field.insert(&text);

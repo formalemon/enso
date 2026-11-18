@@ -28,7 +28,7 @@ impl Files {
             cx.redraw();
             return;
         }
-        if self.peek_key(&key, cx, now) {
+        if self.peek_key(&key, cx, now) || self.palette_key(&key, cx) {
             return;
         }
         if self.settings_key(&key, cx)
@@ -754,6 +754,14 @@ impl Files {
                 }
                 false
             }
+            Key::Char('p' | 'P') if mods.ctrl => {
+                self.open_palette();
+                false
+            }
+            Key::Char(':') if mods.is_plain() => {
+                self.open_palette();
+                false
+            }
             Key::Char('t') if mods.ctrl => {
                 let here = self.pane.location().to_owned();
                 self.open_tab(here, true, cx);
@@ -1126,6 +1134,7 @@ impl Files {
                         | Hit::TrashPlace
                         | Hit::Recent
                         | Hit::Tabs(_)
+                        | Hit::PaletteLine(_)
                         | Hit::EmptyTrash
                         | Hit::GitYes
                         | Hit::GitNo
@@ -1218,7 +1227,8 @@ impl Files {
             }
             hit => hit,
         };
-        if self.settings_press(hit.as_ref(), cx)
+        if self.palette_press(hit.as_ref(), cx)
+            || self.settings_press(hit.as_ref(), cx)
             || self.vcs_press(hit.as_ref(), cx)
             || self.ops_press(hit.as_ref(), cx)
         {
@@ -1299,6 +1309,8 @@ impl Files {
         match hit {
             // Unwrapped above; a nested one is nothing.
             Some(Hit::Other(_)) => {}
+            // The palette took its own presses above.
+            Some(Hit::PaletteLine(_) | Hit::PaletteField) => {}
             Some(Hit::Tabs(tabs::TabHit::Tab(index))) => self.switch_tab(index),
             Some(Hit::Tabs(tabs::TabHit::Close(index))) => {
                 self.close_tab(index);

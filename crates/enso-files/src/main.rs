@@ -10,6 +10,7 @@
 
 mod bench;
 mod config;
+mod frecent;
 mod gather;
 mod jobs;
 mod kind;

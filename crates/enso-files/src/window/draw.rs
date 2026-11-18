@@ -75,6 +75,7 @@ impl Files {
         self.draw_questions(canvas, bounds);
         self.draw_vcs(canvas, bounds);
         self.draw_settings(canvas, bounds, now);
+        self.draw_palette(canvas, bounds);
         if self.peek {
             self.draw_peek(canvas, bounds);
         }
@@ -279,6 +280,7 @@ impl Files {
             ("Ctrl+F  ·  //", "search below here"),
             ("Ctrl+Shift+F", "search inside files"),
             ("Ctrl+D", "bookmark this folder"),
+            ("Ctrl+P  ·  :", "everything else, by name"),
             ("Ctrl+L", "type a location"),
             ("i  ·  Shift+Space", "preview · quick look"),
             ("Ctrl+1 · 2 · 3", "list · grid · columns"),
@@ -1810,6 +1812,66 @@ mod tests {
         let request = files.pane.parent().unwrap();
         assert_eq!(request.source, Source::Folder);
         assert_eq!(request.path, root);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn the_palette_finds_commands_and_chooses_by_kind() {
+        let mut files = files();
+        files.open_palette();
+        {
+            let palette = files.palette.as_mut().unwrap();
+            palette.field.insert("grid");
+            palette.refilter();
+        }
+        let palette = files.palette.as_ref().unwrap();
+        let first = &palette.lines[palette.shown[0]];
+        assert_eq!(first.label, "Show as a grid");
+        assert_eq!(first.aside, "Ctrl+2");
+        {
+            let palette = files.palette.as_mut().unwrap();
+            palette.field.set_text("");
+            palette.refilter();
+        }
+        snapshot(&render(&mut files, (900, 560)), "enso-files-palette");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::PaletteLine(_)))
+        );
+        files.palette = None;
+        assert_eq!(files.choose_where("type:image"), 1);
+        assert!(
+            files
+                .selection
+                .paths()
+                .iter()
+                .any(|path| path.ends_with("photo.png"))
+        );
+    }
+
+    #[test]
+    fn folders_slide_in_the_way_you_went() {
+        let root = std::env::temp_dir().join(format!("enso-files-slide-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("inner")).unwrap();
+        let now = Instant::now();
+        let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+        files.asked_git = true;
+        let first = files.pending.take().unwrap();
+        files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
+        files.navigate(root.join("inner"));
+        assert_eq!(files.sliding, 1.0, "in: from the right");
+        let generation = files.pane.generation();
+        files.listed_now(
+            generation,
+            Ok(Listing::read(root.join("inner")).unwrap()),
+            now,
+        );
+        let request = files.pane.parent();
+        files.load(request);
+        assert_eq!(files.sliding, -1.0, "out: from the left");
         std::fs::remove_dir_all(root).unwrap();
     }
 

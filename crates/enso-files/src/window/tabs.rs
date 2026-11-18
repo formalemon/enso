@@ -55,6 +55,7 @@ pub(super) struct Tab {
     side_parent: columns::Side,
     side_child: columns::Side,
     shown: preview::Shown,
+    shown_at: PathBuf,
 }
 
 impl Tab {
@@ -77,6 +78,7 @@ impl Tab {
             side_parent: columns::Side::default(),
             side_child: columns::Side::default(),
             shown: preview::Shown::default(),
+            shown_at: PathBuf::new(),
         }
     }
 
@@ -117,6 +119,7 @@ impl Files {
         swap(&mut self.side_parent, &mut tab.side_parent);
         swap(&mut self.side_child, &mut tab.side_child);
         swap(&mut self.shown, &mut tab.shown);
+        swap(&mut self.shown_at, &mut tab.shown_at);
     }
 
     /// Do `f` with tab `index` in front, then put things back.
