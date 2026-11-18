@@ -353,6 +353,20 @@ impl Files {
         self.load(request);
     }
 
+    /// Show these selected, the cursor on the first: "show in folder".
+    pub fn preselect(&mut self, paths: &[PathBuf]) {
+        let Some(first) = paths.first() else { return };
+        for path in paths.iter().filter(|path| path.parent() == first.parent()) {
+            self.selection.insert(path.clone());
+        }
+        if let (Some(folder), Some(name)) = (first.parent(), first.file_name()) {
+            self.pending = self
+                .pane
+                .navigate_to(folder.to_owned(), name.as_encoded_bytes())
+                .or(self.pending.take());
+        }
+    }
+
     /// What is under the cursor, for a picker deciding what Enter means.
     fn under(&self) -> Under {
         match self.pane.open() {

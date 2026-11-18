@@ -35,6 +35,9 @@ use crate::pick::{Answer, Choice, Filter, Mode, Pattern, Request};
 /// The name xdg-desktop-portal looks for, from `enso.portal`.
 pub const NAME: &str = "org.freedesktop.impl.portal.desktop.enso";
 const PATH: &str = "/org/freedesktop/portal/desktop";
+/// The name browsers' "Show in folder" asks for.
+pub const FILE_MANAGER: &str = "org.freedesktop.FileManager1";
+const FILE_MANAGER_PATH: &str = "/org/freedesktop/FileManager1";
 
 /// The portal's response codes.
 const SUCCESS: u32 = 0;
@@ -53,8 +56,14 @@ pub fn run() -> ExitCode {
             .allow_name_replacements(false)
             .replace_existing_names(false)
             .serve_at(PATH, FileChooser)
+            .serve_at(FILE_MANAGER_PATH, FileManager)
             .build()
             .await?;
+        // "Show in folder" too — unless another file manager answers it
+        // already, which costs the file chooser nothing.
+        let _ = connection
+            .request_name_with_flags(FILE_MANAGER, zbus::fdo::RequestNameFlags::DO_NOT_QUEUE)
+            .await;
         // Serve for the life of the process.
         let _connection = connection;
         std::future::pending::<()>().await;
@@ -145,6 +154,56 @@ impl FileChooser {
     #[zbus(property)]
     fn version(&self) -> u32 {
         4
+    }
+}
+
+/// `org.freedesktop.FileManager1`: what a browser's "Show in folder" and
+/// "Open containing folder" call. Each opens a file manager window.
+struct FileManager;
+
+#[interface(name = "org.freedesktop.FileManager1")]
+impl FileManager {
+    fn show_folders(&self, uris: Vec<String>, _startup_id: String) {
+        for folder in uris.iter().filter_map(|uri| uri::to_path(uri)) {
+            open_window(&[folder.to_string_lossy().into_owned()]);
+        }
+    }
+
+    fn show_items(&self, uris: Vec<String>, _startup_id: String) {
+        show_items(&uris);
+    }
+
+    /// No properties panel yet: the item, shown.
+    fn show_item_properties(&self, uris: Vec<String>, _startup_id: String) {
+        show_items(&uris);
+    }
+}
+
+/// A window per folder, the items in it selected.
+fn show_items(uris: &[String]) {
+    let mut folders: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for path in uris.iter().filter_map(|uri| uri::to_path(uri)) {
+        let parent = path.parent().map(PathBuf::from).unwrap_or_default();
+        match folders.iter_mut().find(|(folder, _)| *folder == parent) {
+            Some((_, items)) => items.push(path),
+            None => folders.push((parent, vec![path])),
+        }
+    }
+    for (_, items) in folders {
+        let args: Vec<String> = items
+            .iter()
+            .flat_map(|item| ["--select".to_owned(), item.to_string_lossy().into_owned()])
+            .collect();
+        open_window(&args);
+    }
+}
+
+fn open_window(args: &[String]) {
+    let Ok(exe) = picker_exe() else { return };
+    let mut argv = vec![exe.to_string_lossy().into_owned()];
+    argv.extend_from_slice(args);
+    if let Err(err) = enso_fs::apps::spawn_detached(&argv, None) {
+        eprintln!("enso-files: cannot open a window: {err}");
     }
 }
 

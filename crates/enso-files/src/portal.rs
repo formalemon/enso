@@ -25,7 +25,7 @@ use std::{
     process::ExitCode,
 };
 
-use crate::service::NAME;
+use crate::service::{FILE_MANAGER, NAME};
 
 /// What tells the portal enso-files is a file chooser.
 const PORTAL_FILE: &str = "[portal]
@@ -41,6 +41,8 @@ const SYSTEM_PORTALS: &str = "/usr/share/xdg-desktop-portal";
 struct Places {
     portals: PathBuf,
     service: PathBuf,
+    /// The same service under the name "Show in folder" asks for.
+    file_manager: PathBuf,
     dropin: PathBuf,
     /// The system's portal directory and routing files.
     system: PathBuf,
@@ -62,6 +64,7 @@ impl Places {
         Self {
             portals: data.join("enso/portals"),
             service: data.join(format!("dbus-1/services/{NAME}.service")),
+            file_manager: data.join(format!("dbus-1/services/{FILE_MANAGER}.service")),
             dropin: config.join("systemd/user/xdg-desktop-portal.service.d/enso.conf"),
             system: PathBuf::from(SYSTEM_PORTALS),
             user_config: config.join("xdg-desktop-portal"),
@@ -163,12 +166,25 @@ fn enable(places: &Places, exe: &Path, desktops: &[String]) -> io::Result<()> {
         exe.display()
     );
     write_new(&places.service, &service)?;
+    // "Show in folder" — unless something else already answers it.
+    if !places.file_manager.exists() || is_ours(&places.file_manager) {
+        let file_manager = format!(
+            "[D-BUS Service]\nName={FILE_MANAGER}\nExec={} --service\n",
+            exe.display()
+        );
+        write_new(&places.file_manager, &file_manager)?;
+    }
     let dropin = format!(
         "# Written by `enso-files portal enable`; `enso-files portal disable` removes it.\n\
          [Service]\nEnvironment=XDG_DESKTOP_PORTAL_DIR={}\n",
         places.portals.display()
     );
     write_new(&places.dropin, &dropin)
+}
+
+/// Whether a service file is one `enable` wrote.
+fn is_ours(path: &Path) -> bool {
+    fs::read_to_string(path).is_ok_and(|text| text.contains("enso-files"))
 }
 
 fn write_new(path: &Path, text: &str) -> io::Result<()> {
@@ -219,7 +235,11 @@ fn route(base: &str) -> String {
 }
 
 fn disable(places: &Places) -> io::Result<()> {
-    for file in [&places.dropin, &places.service] {
+    let file_manager = Some(&places.file_manager).filter(|path| is_ours(path));
+    for file in [Some(&places.dropin), Some(&places.service), file_manager]
+        .into_iter()
+        .flatten()
+    {
         match fs::remove_file(file) {
             Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
             _ => {}
@@ -314,6 +334,7 @@ mod tests {
         Places {
             portals: root.join("data/enso/portals"),
             service: root.join(format!("data/dbus-1/services/{NAME}.service")),
+            file_manager: root.join(format!("data/dbus-1/services/{FILE_MANAGER}.service")),
             dropin: root.join("config/systemd/user/xdg-desktop-portal.service.d/enso.conf"),
             system,
             user_config: root.join("config/xdg-desktop-portal"),
@@ -353,6 +374,11 @@ mod tests {
         assert!(niri.contains("FileChooser=enso"));
         assert!(places.portals.join("portals.conf").exists());
         let service = fs::read_to_string(&places.service).unwrap();
+        assert!(
+            fs::read_to_string(&places.file_manager)
+                .unwrap()
+                .contains("Name=org.freedesktop.FileManager1")
+        );
         assert!(service.contains("Exec=/opt/enso/enso-files --service"));
         let dropin = fs::read_to_string(&places.dropin).unwrap();
         assert!(dropin.contains(&format!(
@@ -367,6 +393,7 @@ mod tests {
         disable(&places).unwrap();
         assert!(!places.portals.exists());
         assert!(!places.service.exists());
+        assert!(!places.file_manager.exists());
         assert!(!places.dropin.exists());
         // Twice is fine.
         disable(&places).unwrap();

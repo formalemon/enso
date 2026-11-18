@@ -48,6 +48,8 @@ directory; `portal disable` gives the choosing back; `portal status` says
 which it is.
 
 Options:
+      --select PATH         Open PATH's folder with PATH selected (again for
+                            more)
       --service             Be the desktop portal's file chooser (D-Bus starts
                             it, once `enso-files portal enable` has set it up)
       --bench list FOLDER   Time listing FOLDER, both passes, and sorting it
@@ -108,7 +110,8 @@ Keys: as in the file manager, and
 ";
 
 enum Command {
-    Open(Option<PathBuf>),
+    /// A folder to open, and things in it to show selected.
+    Open(Option<PathBuf>, Vec<PathBuf>),
     Service,
     Portal(String),
     Pick(Box<Pick>),
@@ -133,7 +136,7 @@ fn main() -> ExitCode {
     };
     match command {
         Command::Bench(folder) => bench::list(&folder),
-        Command::Open(folder) => open(folder),
+        Command::Open(folder, select) => open(folder, select),
         Command::Pick(pick) => run_pick(*pick),
         Command::Service => service::run(),
         Command::Portal(command) => portal::run(&command),
@@ -147,18 +150,27 @@ fn load() -> (Context, config::FilesConfig) {
     (ctx, config)
 }
 
-fn open(folder: Option<PathBuf>) -> ExitCode {
+fn open(folder: Option<PathBuf>, select: Vec<PathBuf>) -> ExitCode {
     let (ctx, config) = load();
+    let select: Vec<PathBuf> = select
+        .into_iter()
+        .map(|path| std::path::absolute(&path).unwrap_or(path))
+        .collect();
     let location = folder
+        .or_else(|| {
+            select
+                .first()
+                .and_then(|path| path.parent())
+                .map(PathBuf::from)
+        })
         .or_else(|| env::current_dir().ok())
         .map(|path| std::path::absolute(&path).unwrap_or(path))
         .filter(|path| path.is_dir())
         .unwrap_or_else(enso_fs::places::home);
     let appearance = ctx.config.appearance.clone();
-    report(enso_ui::run(
-        window::Files::new(ctx, config, location),
-        &appearance,
-    ))
+    let mut files = window::Files::new(ctx, config, location);
+    files.preselect(&select);
+    report(enso_ui::run(files, &appearance))
 }
 
 fn run_pick(pick: Pick) -> ExitCode {
@@ -207,9 +219,15 @@ fn parse_args(mut parser: lexopt::Parser) -> Result<Option<Command>, String> {
     use lexopt::prelude::*;
 
     let mut folder = None;
+    let mut select = Vec::new();
     loop {
         match parser.next().map_err(|err| err.to_string())? {
-            None => return Ok(Some(Command::Open(folder))),
+            None => return Ok(Some(Command::Open(folder, select))),
+            Some(Long("select")) => {
+                select.push(PathBuf::from(
+                    parser.value().map_err(|err| err.to_string())?,
+                ));
+            }
             Some(Short('h') | Long("help")) => {
                 print!("{HELP}");
                 return Ok(None);
