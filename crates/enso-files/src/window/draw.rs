@@ -13,7 +13,7 @@ use enso_core::{
 use enso_fs::{format, places};
 use enso_ui::{
     Align, Canvas, Paint, Rect, Text,
-    widget::{Button, Form, Interaction, Kind, controls, field},
+    widget::{Button, Form, Interaction, Kind, Part, controls, field},
 };
 
 use super::{Files, Hit, preview, tabs};
@@ -275,66 +275,49 @@ impl Files {
     }
 
     /// The keys, on a card over everything (`?` or F1).
+    /// The keys worth knowing by heart. The command palette (Ctrl+P) has
+    /// every command with its keys; this is the short list.
     fn draw_help(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
         let look = self.look();
-        let colors = self.ctx.theme.colors.clone();
         let small = self.font(type_scale::SMALL);
         let mut keys: Vec<(&str, &str)> = vec![
             ("↑ ↓  j k", "move"),
             ("Enter  →  l", "open"),
             ("←  h  Backspace", "up a folder"),
-            ("Alt+← →  H L", "back, forward"),
-            ("Space", "choose, and move on"),
-            ("Shift+↑ ↓", "choose a run"),
-            ("Ctrl+A  ·  *", "choose all · turn round"),
-            ("Esc", "clear filter, then choice"),
-            ("/", "filter as you type"),
-            ("Ctrl+F  ·  //", "search below here"),
-            ("Ctrl+Shift+F", "search inside files"),
-            ("Ctrl+D", "bookmark this folder"),
-            ("Ctrl+I  ·  Alt+Enter", "properties"),
-            ("Ctrl+P  ·  :", "everything else, by name"),
+            ("Alt+← →", "back, forward"),
+            ("Space  ·  Ctrl+A", "choose · all"),
+            ("/  ·  Ctrl+F", "filter · search"),
             ("Ctrl+L", "type a location"),
             ("i  ·  Shift+Space", "preview · quick look"),
             ("Ctrl+1 · 2 · 3", "list · grid · columns"),
-            ("Ctrl+T  ·  Ctrl+W", "new tab · close it"),
-            ("Ctrl+Tab  ·  Alt+1…9", "next tab · tab by number"),
-            ("F3  ·  Tab", "split view · the other side"),
-            ("F5  ·  F6", "copy · move across"),
-            ("Ctrl+=  ·  Ctrl+−", "bigger · smaller tiles"),
-            ("Ctrl+H  ·  .", "dotfiles"),
-            ("~  ·  g h", "home"),
-            ("g g  ·  G", "first · last"),
-            ("Ctrl+B", "sidebar"),
-            ("Ctrl+Shift+C", "copy the path"),
+            ("Ctrl+T  ·  F3", "new tab · split view"),
+            ("F2  ·  Delete", "rename · to the trash"),
+            ("Ctrl+Z", "undo"),
             ("Menu  ·  right-click", "more"),
-            ("Ctrl+R", "reload"),
-            ("Ctrl+Shift+Enter", "where a link leads"),
         ];
         if let Some(picker) = &self.picker {
             keys.push(("Ctrl+Enter", "finish"));
             if picker.name.is_some() {
                 keys.push(("Tab", "list, or the name"));
             }
-            keys.push(("Esc (nothing left)", "cancel"));
+            keys.push(("Esc", "cancel"));
         } else {
             keys.push(("Ctrl+Q", "close"));
         }
         let rows = keys.len().div_ceil(2);
         let line = (small * 1.9).round();
-        let height = 40.0 + rows as f32 * line + 2.0 * space::XL;
-        let inner = controls::dialog(canvas, bounds, 640.0, height, &look, 1.0);
-        canvas.text(
-            &Text::new("Keys", self.font(type_scale::TITLE), colors.text).medium(),
-            inner.x,
-            inner.y,
-        );
-        let column = (inner.w - space::XL) / 2.0;
+        let placed = Form::new("Keys")
+            .width(640.0)
+            .about("The ones worth knowing by heart. Everything else is in the command palette — Ctrl+P, or : — with its keys.")
+            .part(Part::Space(rows as f32 * line))
+            .draw(canvas, bounds, &look, 1.0);
+        let grid = placed.parts[0];
+        let column = (grid.w - space::XL) / 2.0;
         let key_width = column * 0.48;
         for (index, (key, what)) in keys.iter().enumerate() {
             let (col, row) = (index / rows, index % rows);
-            let x = inner.x + col as f32 * (column + space::XL);
-            let y = inner.y + 40.0 + row as f32 * line;
+            let x = grid.x + col as f32 * (column + space::XL);
+            let y = grid.y + row as f32 * line;
             let rect = Rect::new(x, y, key_width, line);
             canvas.text_in(
                 &Text::new(key, small, look.accent).medium(),
@@ -342,7 +325,7 @@ impl Files {
                 Align::Start,
             );
             let rest = Rect::new(x + key_width, y, column - key_width, line);
-            canvas.text_in(&Text::new(what, small, colors.subtle), rest, Align::Start);
+            canvas.text_in(&Text::new(what, small, look.subtle), rest, Align::Start);
         }
     }
 
