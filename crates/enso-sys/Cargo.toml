@@ -22,6 +22,8 @@ bluez = ["dep:zbus"]
 logind = ["dep:zbus"]
 # Desktop settings (the dark-or-light preference), through dconf.
 dconf = ["dep:zbus"]
+# Restarting a user service that reads its settings only at start, through systemd.
+systemd = ["dep:zbus"]
 # Volume, per output and per application, through PipeWire's PulseAudio socket.
 audio = ["dep:pulseaudio"]
 

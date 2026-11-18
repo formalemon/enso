@@ -20,6 +20,11 @@
 //!   GTK 3's stock theme has its colours built in, so its stylesheet also
 //!   recolours the stock widgets one by one — enough for a file chooser or
 //!   a settings dialog to belong to the desktop.
+//!
+//! GTK 3 reads both only as it starts, and one GTK 3 program lives as long
+//! as the session: the GTK portal, which draws the file chooser Firefox and
+//! every other portal user opens. So it is restarted, if it is running; a
+//! chooser open at that moment closes, as if cancelled.
 
 use std::{fs, path::Path};
 
@@ -38,6 +43,8 @@ const WIDGETS_3: &str = include_str!("gtk3.css");
 const COLOR_SCHEME: &str = "/org/gnome/desktop/interface/color-scheme";
 /// GTK 3's own switch, in `[Settings]` of its `settings.ini`.
 const PREFER_DARK: &str = "gtk-application-prefer-dark-theme";
+/// The GTK 3 program that outlives a theme change: the file chooser's.
+const PORTAL: &str = "xdg-desktop-portal-gtk.service";
 
 pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
     job.generate(CSS_3, &render_3(job))?;
@@ -59,6 +66,11 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
     let gtk_3 = host.config.join("gtk-3.0");
     if gtk_3.is_dir() {
         prefer_dark(&gtk_3.join("settings.ini"), dark)?;
+        // Best effort: without systemd, or without the portal, there is no
+        // long-lived GTK 3 program to bring up to date.
+        if host.session {
+            let _ = enso_sys::systemd::try_restart(PORTAL);
+        }
     }
 
     let gtk_4 = host.config.join("gtk-4.0");

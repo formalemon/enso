@@ -11,6 +11,8 @@
 //!   restarting, or suspending the machine (feature `logind`).
 //! - [`dconf`] — desktop settings, the dark-or-light preference among them,
 //!   through dconf's own service (feature `dconf`).
+//! - [`systemd`] — restarting a user service so it reads new settings
+//!   (feature `systemd`).
 //! - [`auth`] — checking the user's own password. No dependencies, always
 //!   available.
 //! - [`audio`] — volume of the output and of each application, through
@@ -29,12 +31,16 @@ pub mod auth;
     feature = "iwd",
     feature = "bluez",
     feature = "logind",
-    feature = "dconf"
+    feature = "dconf",
+    feature = "systemd"
 ))]
-// logind and dconf only make calls, and only dconf is on the session bus:
-// short of every feature, some of this is unused.
+// logind, dconf, and systemd only make calls, and only the last two are on
+// the session bus: short of every feature, some of this is unused.
 #[cfg_attr(
-    not(all(any(feature = "iwd", feature = "bluez"), feature = "dconf")),
+    not(all(
+        any(feature = "iwd", feature = "bluez"),
+        any(feature = "dconf", feature = "systemd")
+    )),
     allow(dead_code)
 )]
 mod bus;
@@ -50,6 +56,8 @@ pub mod bluetooth;
 pub mod dconf;
 #[cfg(feature = "logind")]
 pub mod logind;
+#[cfg(feature = "systemd")]
+pub mod systemd;
 #[cfg(feature = "iwd")]
 pub mod wifi;
 
@@ -57,6 +65,7 @@ pub mod wifi;
     feature = "iwd",
     feature = "bluez",
     feature = "logind",
-    feature = "dconf"
+    feature = "dconf",
+    feature = "systemd"
 ))]
 pub use bus::Error;
