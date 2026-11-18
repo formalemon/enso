@@ -15,6 +15,7 @@ use std::{
 
 use enso_ui::{Clip, Cx, widget::TextField};
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, vcs::Vcs};
 use crate::{
     github::{self, Waiting},
@@ -32,9 +33,9 @@ impl Files {
     /// Settings → GitHub was chosen.
     pub(super) fn github_row(&mut self, cx: &mut Cx<'_>) {
         if self.github_account().is_some() {
-            self.vcs = Some(Vcs::Disconnect);
+            self.overlay = Some(Overlay::Vcs(Vcs::Disconnect));
         } else if self.config.github_client_id.trim().is_empty() {
-            self.vcs = Some(Vcs::ClientId(TextField::default(), None));
+            self.overlay = Some(Overlay::Vcs(Vcs::ClientId(TextField::default(), None)));
         } else {
             self.start_sign_in(cx);
         }
@@ -55,11 +56,11 @@ impl Files {
         let client_id = self.config.github_client_id.trim().to_owned();
         let stop = Arc::new(AtomicBool::new(false));
         self.signing_in = Some(stop.clone());
-        self.vcs = Some(Vcs::Device {
+        self.overlay = Some(Overlay::Vcs(Vcs::Device {
             code: String::new(),
             page: String::new(),
             error: None,
-        });
+        }));
         cx.redraw();
         let _ = thread::Builder::new()
             .name("enso-files-github".to_owned())
@@ -105,7 +106,7 @@ impl Files {
             code: shown,
             page: at,
             ..
-        }) = &mut self.vcs
+        }) = self.overlay.vcs_mut()
         {
             *shown = code;
             *at = page;
@@ -117,7 +118,8 @@ impl Files {
         self.signing_in = None;
         match result {
             Ok(login) => {
-                self.vcs = None;
+                // The sign-in form, if it's still up; nothing else.
+                self.overlay.take_vcs();
                 self.overrides.github_account = Some(login.clone());
                 self.save_overrides(cx);
                 self.toast(
@@ -125,7 +127,7 @@ impl Files {
                     cx,
                 );
             }
-            Err(why) => match &mut self.vcs {
+            Err(why) => match self.overlay.vcs_mut() {
                 Some(Vcs::Device { error, .. }) => *error = Some(why),
                 _ => self.toast(why, cx),
             },
@@ -136,7 +138,7 @@ impl Files {
     /// "Open GitHub": the page, in the browser, with the code copied to
     /// paste there.
     pub(super) fn open_device_page(&mut self, cx: &mut Cx<'_>) {
-        let Some(Vcs::Device { code, page, .. }) = &self.vcs else {
+        let Some(Vcs::Device { code, page, .. }) = self.overlay.vcs() else {
             return;
         };
         if code.is_empty() {
@@ -153,11 +155,11 @@ impl Files {
         if let Some(stop) = self.signing_in.take() {
             stop.store(true, Ordering::Relaxed);
         }
-        self.vcs = None;
+        self.overlay.take_vcs();
     }
 
     pub(super) fn disconnect(&mut self, cx: &mut Cx<'_>) {
-        self.vcs = None;
+        self.overlay.take_vcs();
         let Some(login) = self.overrides.github_account.take() else {
             return;
         };

@@ -111,8 +111,6 @@ impl Files {
         self.draw_seen(canvas, view, true);
         let details = Rect::new(view.right() + space::XL, inner.y, details_width, inner.h);
         self.draw_details(canvas, details);
-        // Everything under the card is out of reach while it's up.
-        self.hits.clear();
     }
 
     /// The preview itself, in `view`.

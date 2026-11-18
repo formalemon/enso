@@ -22,6 +22,7 @@ use enso_core::{
 };
 use enso_ui::{Align, Canvas, Rect, Text, widget::Scroll};
 
+use super::overlay::Reach;
 use super::{Files, Hit, band, columns, grid, preview};
 use crate::{
     jobs::{Loader, Op},
@@ -230,7 +231,7 @@ impl Files {
         let here = self.pane.location().to_owned();
         self.apply_folder_view(&here);
         self.hover = None;
-        self.menu = None;
+        self.overlay.take_menu();
         self.renaming = None;
         if let Some(thumbnailer) = &self.thumbnailer {
             thumbnailer.clear();

@@ -24,6 +24,7 @@ use enso_ui::{
     widget::{Form, Interaction, Kind, Part, TextField, field},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
 use crate::jobs::{self, Op};
 
@@ -130,7 +131,8 @@ impl Files {
 
     pub(super) fn op_finished(&mut self, op: Op, report: ops::Report, cx: &mut Cx<'_>) {
         self.running = None;
-        self.asked = None;
+        // A question about this operation has no more to ask.
+        self.overlay.take_asked();
         let done: Vec<(PathBuf, PathBuf)> = report.done.clone();
         let record = match &op {
             Op::Copy { .. } | Op::Duplicate(_) | Op::Extract { .. } | Op::Compress { .. } => Some(
@@ -205,17 +207,17 @@ impl Files {
         reply: mpsc::Sender<(Resolve, bool)>,
         cx: &mut Cx<'_>,
     ) {
-        self.asked = Some(super::ops::Asked {
+        self.overlay = Some(Overlay::Asked(super::ops::Asked {
             source,
             target,
             reply,
             all: false,
-        });
+        }));
         cx.redraw();
     }
 
     fn answer(&mut self, resolve: Resolve, cx: &mut Cx<'_>) {
-        if let Some(asked) = self.asked.take() {
+        if let Some(asked) = self.overlay.take_asked() {
             let _ = asked.reply.send((resolve, asked.all));
         }
         cx.redraw();
@@ -399,7 +401,7 @@ impl Files {
         }
         let targets = self.targets();
         if !targets.is_empty() {
-            self.confirm_delete = Some(targets);
+            self.overlay = Some(Overlay::ConfirmDelete(targets));
             cx.redraw();
         }
     }
@@ -506,7 +508,7 @@ impl Files {
     /// Keys for the questions and the name being edited, which come first
     /// when they're open. Returns whether the key was theirs.
     pub(super) fn ops_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        if let Some(asked) = &mut self.asked {
+        if let Some(asked) = self.overlay.asked_mut() {
             match key.key {
                 Key::Char('r') => self.answer(Resolve::Replace, cx),
                 Key::Char('k') | Key::Enter => self.answer(Resolve::KeepBoth, cx),
@@ -520,14 +522,14 @@ impl Files {
             }
             return true;
         }
-        if let Some(paths) = &self.confirm_delete {
+        if let Some(paths) = self.overlay.confirm_delete() {
             match key.key {
                 Key::Enter | Key::Delete => {
                     let paths = paths.clone();
-                    self.confirm_delete = None;
+                    self.overlay = None;
                     self.delete_for_good(paths, cx);
                 }
-                Key::Escape => self.confirm_delete = None,
+                Key::Escape => self.overlay = None,
                 _ => {}
             }
             cx.redraw();
@@ -552,11 +554,11 @@ impl Files {
     /// A press while a question is open: only its answers count. Returns
     /// whether a question was open.
     pub(super) fn ops_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        if self.asked.is_some() {
+        if self.overlay.asked().is_some() {
             match hit {
                 Some(Hit::Resolve(resolve)) => self.answer(*resolve, cx),
                 Some(Hit::ForAll) => {
-                    if let Some(asked) = &mut self.asked {
+                    if let Some(asked) = self.overlay.asked_mut() {
                         asked.all = !asked.all;
                     }
                 }
@@ -564,13 +566,13 @@ impl Files {
             }
             return true;
         }
-        if let Some(paths) = self.confirm_delete.clone() {
+        if let Some(paths) = self.overlay.confirm_delete().cloned() {
             match hit {
                 Some(Hit::DeleteForGood) => {
-                    self.confirm_delete = None;
+                    self.overlay = None;
                     self.delete_for_good(paths, cx);
                 }
-                Some(Hit::KeepFiles) | None => self.confirm_delete = None,
+                Some(Hit::KeepFiles) | None => self.overlay = None,
                 _ => {}
             }
             return true;
@@ -698,7 +700,7 @@ impl Files {
             hovered: self.hover == Some(hit),
             ..Interaction::default()
         };
-        if let Some(asked) = &self.asked {
+        if let Some(asked) = self.overlay.asked() {
             let folder = asked.target.parent().map(&name_of).unwrap_or_default();
             let title = format!("“{}” is already in {folder}", name_of(&asked.target));
             let describe = |path: &Path| {
@@ -750,7 +752,6 @@ impl Files {
                     hovered(Hit::Resolve(Resolve::Replace)),
                 )
                 .draw(canvas, bounds, &look, 1.0);
-            self.hits.clear();
             self.hits.push((placed.parts[0], Hit::ForAll));
             for (rect, resolve) in
                 placed
@@ -762,7 +763,7 @@ impl Files {
             }
             return;
         }
-        if let Some(paths) = &self.confirm_delete {
+        if let Some(paths) = self.overlay.confirm_delete() {
             let count = paths.len();
             let title = if count == 1 {
                 format!("Delete “{}” for good?", name_of(&paths[0]))
@@ -786,7 +787,6 @@ impl Files {
                     },
                 )
                 .draw(canvas, bounds, &look, 1.0);
-            self.hits.clear();
             self.hits.push((placed.buttons[1], Hit::DeleteForGood));
             self.hits.push((placed.buttons[0], Hit::KeepFiles));
         }

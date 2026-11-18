@@ -23,6 +23,7 @@ use enso_ui::{
     widget::{Button, Interaction, Kind as ButtonKind, controls, form},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
 use crate::{jobs::Message, kind::Kind};
 
@@ -101,16 +102,16 @@ impl Files {
                     });
                 });
         }
-        self.properties = Some(Properties {
+        self.overlay = Some(Overlay::Properties(Properties {
             paths,
             tally: None,
             cancel,
             token,
-        });
+        }));
     }
 
     pub(super) fn tallied(&mut self, token: u64, tally: Tally, done: bool) {
-        if let Some(properties) = &mut self.properties
+        if let Some(properties) = self.overlay.properties_mut()
             && properties.token == token
         {
             properties.tally = Some((tally, done));
@@ -134,7 +135,7 @@ impl Files {
 
     /// The change itself. Returns how many refused it.
     pub(super) fn flip_bit(&mut self, bit: u32) -> usize {
-        let Some(properties) = &self.properties else {
+        let Some(properties) = self.overlay.properties() else {
             return 0;
         };
         let paths = properties.paths.clone();
@@ -193,11 +194,11 @@ impl Files {
     /// Keys while the properties are up: Esc or Enter puts them away.
     /// Returns whether they were up.
     pub(super) fn properties_key(&mut self, key: &enso_ui::KeyEvent, cx: &mut Cx<'_>) -> bool {
-        if self.properties.is_none() {
+        if self.overlay.properties().is_none() {
             return false;
         }
         if matches!(key.key, enso_ui::Key::Escape | enso_ui::Key::Enter) {
-            self.properties = None;
+            self.overlay = None;
             cx.redraw();
         }
         true
@@ -205,20 +206,20 @@ impl Files {
 
     /// A press while the properties are up. Returns whether they were.
     pub(super) fn properties_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        if self.properties.is_none() {
+        if self.overlay.properties().is_none() {
             return false;
         }
         match hit {
             Some(Hit::Permission(bit)) => self.toggle_bit(*bit, cx),
             Some(Hit::PropertiesCard) => {}
-            _ => self.properties = None,
+            _ => self.overlay = None,
         }
         cx.redraw();
         true
     }
 
     pub(super) fn draw_properties(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        let Some(properties) = &self.properties else {
+        let Some(properties) = self.overlay.properties() else {
             return;
         };
         let paths = properties.paths.clone();
@@ -229,7 +230,6 @@ impl Files {
         let body = self.font(type_scale::BODY);
         let small = self.font(type_scale::SMALL);
         let zone = jiff::tz::TimeZone::system();
-        self.hits.clear();
 
         let single = paths.len() == 1;
         let first = &paths[0];

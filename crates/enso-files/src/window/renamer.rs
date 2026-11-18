@@ -17,6 +17,7 @@ use enso_ui::{
     },
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
 use crate::{
     bulk::{self, Case, Item, Planned, Rule},
@@ -137,20 +138,20 @@ impl Files {
             editing: false,
         };
         renamer.replan();
-        self.renamer = Some(renamer);
+        self.overlay = Some(Overlay::Renamer(renamer));
         true
     }
 
     /// Keys while renaming many. Returns whether it was open.
     pub(super) fn renamer_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(renamer) = &mut self.renamer else {
+        let Some(renamer) = self.overlay.renamer_mut() else {
             return false;
         };
         if renamer.editing {
             return true;
         }
         match key.key {
-            Key::Escape => self.renamer = None,
+            Key::Escape => self.overlay = None,
             Key::Enter => self.apply_rename(cx),
             Key::Tab => renamer.focus = 1 - renamer.focus,
             Key::Char('e') if key.mods.ctrl => self.rename_in_editor(cx),
@@ -173,7 +174,7 @@ impl Files {
     }
 
     pub(super) fn renamer_paste(&mut self, text: &str) -> bool {
-        let Some(renamer) = &mut self.renamer else {
+        let Some(renamer) = self.overlay.renamer_mut() else {
             return false;
         };
         let focus = renamer.focus;
@@ -184,7 +185,7 @@ impl Files {
 
     /// A press while renaming many. Returns whether it was open.
     pub(super) fn renamer_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        let Some(renamer) = &mut self.renamer else {
+        let Some(renamer) = self.overlay.renamer_mut() else {
             return false;
         };
         if renamer.editing {
@@ -202,7 +203,7 @@ impl Files {
             }
             Some(Hit::Rename(RenameHit::Editor)) => self.rename_in_editor(cx),
             Some(Hit::Rename(RenameHit::Apply)) => self.apply_rename(cx),
-            Some(Hit::Rename(RenameHit::Cancel)) => self.renamer = None,
+            Some(Hit::Rename(RenameHit::Cancel)) => self.overlay = None,
             _ => {}
         }
         cx.redraw();
@@ -222,7 +223,7 @@ impl Files {
 
     /// Rename, if every name will do. Returns how many, or why not.
     pub(super) fn commit_renames(&mut self) -> Option<Result<usize, String>> {
-        let pairs = self.renamer.as_ref().and_then(Renamer::ready)?;
+        let pairs = self.overlay.renamer().and_then(Renamer::ready)?;
         Some(match ops::rename_all(&pairs) {
             Ok(done) => {
                 // What was chosen stays chosen, under its new name.
@@ -233,7 +234,7 @@ impl Files {
                     }
                 }
                 self.remember(done);
-                self.renamer = None;
+                self.overlay.take_renamer();
                 Ok(pairs.len())
             }
             Err(err) => Err(err.to_string()),
@@ -243,7 +244,7 @@ impl Files {
     /// The names in `$EDITOR`, one a line, in a terminal; what's saved
     /// comes back as the new names to look over.
     fn rename_in_editor(&mut self, cx: &mut Cx<'_>) {
-        let (Some(renamer), Some(proxy)) = (&mut self.renamer, self.proxy.clone()) else {
+        let (Some(renamer), Some(proxy)) = (self.overlay.renamer_mut(), self.proxy.clone()) else {
             return;
         };
         let names: String = renamer
@@ -298,7 +299,7 @@ impl Files {
 
     /// The editor closed: its names, to look over before renaming.
     pub(super) fn edited(&mut self, result: Result<String, String>, cx: &mut Cx<'_>) {
-        let Some(renamer) = &mut self.renamer else {
+        let Some(renamer) = self.overlay.renamer_mut() else {
             return;
         };
         renamer.editing = false;
@@ -310,7 +311,7 @@ impl Files {
     }
 
     pub(super) fn draw_renamer(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        let Some(renamer) = &self.renamer else {
+        let Some(renamer) = self.overlay.renamer() else {
             return;
         };
         let look = self.look();
@@ -395,7 +396,7 @@ impl Files {
                 ..Frame::default()
             };
             let text = frame.draw(canvas, rect, &look, look.base);
-            if let Some(renamer) = &mut self.renamer {
+            if let Some(renamer) = self.overlay.renamer_mut() {
                 renamer.fields[index].draw(
                     canvas,
                     text,
@@ -405,7 +406,7 @@ impl Files {
             }
             hits.push((rect, Hit::Rename(RenameHit::Field(index))));
         }
-        let Some(renamer) = &self.renamer else {
+        let Some(renamer) = self.overlay.renamer() else {
             return;
         };
 
@@ -482,7 +483,6 @@ impl Files {
         }
         hits.push((placed.buttons[0], Hit::Rename(RenameHit::Cancel)));
         hits.push((placed.buttons[1], Hit::Rename(RenameHit::Apply)));
-        self.hits.clear();
         self.hits.extend(hits);
     }
 }

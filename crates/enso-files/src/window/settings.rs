@@ -10,6 +10,7 @@ use enso_ui::{
     widget::{Button, Interaction, Kind, Toggle, controls, form},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
 use crate::{
     config::{Density, SortBy, View},
@@ -194,12 +195,12 @@ impl Files {
                 }
             }
             Row::Global => {
-                self.settings = None;
+                self.overlay = None;
                 self.edit_identity(Scope::Global);
                 return;
             }
             Row::GitHub => {
-                self.settings = None;
+                self.overlay = None;
                 self.github_row(cx);
                 return;
             }
@@ -210,7 +211,7 @@ impl Files {
             }
             Row::Repository => {
                 if let Some(root) = git::root(self.pane.location()) {
-                    self.settings = None;
+                    self.overlay = None;
                     self.edit_identity(Scope::Repository(root));
                 }
                 return;
@@ -222,7 +223,7 @@ impl Files {
 
     /// Keys while the panel is open. Returns whether it was.
     pub(super) fn settings_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(focus) = self.settings else {
+        let Some(&focus) = self.overlay.settings() else {
             return false;
         };
         let rows = self.setting_rows();
@@ -232,11 +233,11 @@ impl Files {
                 Nav::Up => focus.checked_sub(1).unwrap_or(rows.len() - 1),
                 Nav::Down => (focus + 1) % rows.len(),
             };
-            self.settings = Some(next);
+            self.overlay = Some(Overlay::Settings(next));
         } else {
             match key.key {
-                Key::Escape => self.settings = None,
-                Key::Char(',') if key.mods.ctrl => self.settings = None,
+                Key::Escape => self.overlay = None,
+                Key::Char(',') if key.mods.ctrl => self.overlay = None,
                 Key::Enter | Key::Char(' ') => self.change(rows[focus], 0, cx),
                 Key::Left | Key::Char('h') if matches!(rows[focus], Row::Sort | Row::View) => {
                     self.change(rows[focus], -1, cx);
@@ -244,7 +245,7 @@ impl Files {
                 Key::Right | Key::Char('l') if matches!(rows[focus], Row::Sort | Row::View) => {
                     self.change(rows[focus], 1, cx);
                 }
-                Key::Tab => self.settings = Some((focus + 1) % rows.len()),
+                Key::Tab => self.overlay = Some(Overlay::Settings((focus + 1) % rows.len())),
                 _ => {}
             }
         }
@@ -254,13 +255,13 @@ impl Files {
 
     /// A press while the panel is open. Returns whether it was.
     pub(super) fn settings_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        if self.settings.is_none() {
+        if self.overlay.settings().is_none() {
             return false;
         }
         let rows = self.setting_rows();
         match hit {
             Some(Hit::Setting(index)) => {
-                self.settings = Some(*index);
+                self.overlay = Some(Overlay::Settings(*index));
                 if let Some(row) = rows.get(*index) {
                     self.change(*row, 0, cx);
                 }
@@ -273,9 +274,9 @@ impl Files {
                 self.overrides.view = Some(*view);
                 self.save_overrides(cx);
             }
-            Some(Hit::FormCancel) => self.settings = None,
+            Some(Hit::FormCancel) => self.overlay = None,
             Some(_) => {}
-            None => self.settings = None,
+            None => self.overlay = None,
         }
         cx.redraw();
         true
@@ -287,14 +288,15 @@ impl Files {
         bounds: Rect,
         now: std::time::Instant,
     ) {
-        let Some(focus) = self.settings else { return };
+        let Some(&focus) = self.overlay.settings() else {
+            return;
+        };
         let rows = self.setting_rows();
         let look = self.look();
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let body = self.font(type_scale::BODY);
         let small = self.font(type_scale::SMALL);
-        self.hits.clear();
         let line = 44.0;
         let sections = 3.0;
         let height = 64.0 + rows.len() as f32 * line + sections * 34.0 + controls::HEIGHT + 40.0;

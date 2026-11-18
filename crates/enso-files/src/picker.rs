@@ -34,8 +34,6 @@ pub struct Picker {
     pub name: Option<TextField>,
     /// Whether the keyboard is in the name field rather than the list.
     pub typing_name: bool,
-    /// Saving over this, once asked whether that's all right.
-    pub confirm: Option<PathBuf>,
     pub outcome: Outcome,
     db: Rc<MimeDb>,
 }
@@ -87,7 +85,6 @@ impl Picker {
             choices,
             name,
             typing_name,
-            confirm: None,
             outcome,
             db: Rc::new(db),
         }

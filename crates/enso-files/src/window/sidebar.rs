@@ -24,6 +24,7 @@ use enso_fs::{
 use enso_sys::udisks::{self, Volume};
 use enso_ui::{Align, Canvas, Cx, Rect, Text, widget::controls};
 
+use super::overlay::Overlay;
 use super::{Files, Hit};
 use crate::{jobs::Message, pane::Source};
 
@@ -200,7 +201,7 @@ impl Files {
         if paths.is_empty() {
             return self.toast("The trash is empty", cx);
         }
-        self.confirm_delete = Some(paths);
+        self.overlay = Some(Overlay::ConfirmDelete(paths));
         cx.redraw();
     }
 
@@ -429,7 +430,10 @@ impl Files {
             .map(|(item, action)| (item, Some(action)))
             .unzip();
         self.menu_at = (x, y);
-        self.menu = Some((Menu::new(items, x, y), MenuFor::Context(actions)));
+        self.overlay = Some(Overlay::Menu((
+            Menu::new(items, x, y),
+            MenuFor::Context(actions),
+        )));
     }
 
     /// One row of the sidebar at `y`, which moves on past it: highlighted

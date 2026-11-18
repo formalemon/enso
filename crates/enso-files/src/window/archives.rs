@@ -16,6 +16,7 @@ use enso_ui::{
     widget::{Form, Interaction, Kind, Note, Part, TextField, field, field::Frame},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
 use crate::{
     jobs::{Message, Op},
@@ -143,31 +144,31 @@ impl Files {
         .unwrap_or_else(|| "Archive".to_owned());
         let mut name = TextField::new(&suggested);
         name.select_all();
-        self.packing = Some(Packing {
+        self.overlay = Some(Overlay::Packing(Packing {
             sources,
             name,
             format: 0,
-        });
+        }));
     }
 
     #[cfg(test)]
     pub(super) fn ask_compress_for_tests(&mut self) {
         let sources = self.targets();
-        self.packing = Some(Packing {
+        self.overlay = Some(Overlay::Packing(Packing {
             sources,
             name: TextField::new("trip"),
             format: 2,
-        });
+        }));
     }
 
     fn make_archive(&mut self, cx: &mut Cx<'_>) {
-        let Some(packing) = self.packing.take() else {
+        let Some(packing) = self.overlay.take_packing() else {
             return;
         };
         let name = packing.name.text().trim().to_owned();
         if let Err(why) = enso_fs::ops::check_name(&name) {
             self.toast(why, cx);
-            self.packing = Some(packing);
+            self.overlay = Some(Overlay::Packing(packing));
             return;
         }
         let (format, _) = MADE[packing.format];
@@ -186,11 +187,11 @@ impl Files {
 
     /// Keys while asking what to call an archive. Returns whether it was.
     pub(super) fn packing_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(packing) = &mut self.packing else {
+        let Some(packing) = self.overlay.packing_mut() else {
             return false;
         };
         match key.key {
-            Key::Escape => self.packing = None,
+            Key::Escape => self.overlay = None,
             Key::Enter => self.make_archive(cx),
             Key::Tab => packing.format = (packing.format + 1) % MADE.len(),
             _ => match packing.name.key(key) {
@@ -206,7 +207,7 @@ impl Files {
     }
 
     pub(super) fn packing_paste(&mut self, text: &str) -> bool {
-        let Some(packing) = &mut self.packing else {
+        let Some(packing) = self.overlay.packing_mut() else {
             return false;
         };
         packing.name.insert(text);
@@ -214,13 +215,13 @@ impl Files {
     }
 
     pub(super) fn packing_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        let Some(packing) = &mut self.packing else {
+        let Some(packing) = self.overlay.packing_mut() else {
             return false;
         };
         match hit {
             Some(Hit::Pack(PackHit::Format(index))) => packing.format = *index,
             Some(Hit::Pack(PackHit::Make)) => self.make_archive(cx),
-            Some(Hit::Pack(PackHit::Cancel)) | None => self.packing = None,
+            Some(Hit::Pack(PackHit::Cancel)) | None => self.overlay = None,
             _ => {}
         }
         cx.redraw();
@@ -228,7 +229,7 @@ impl Files {
     }
 
     pub(super) fn draw_packing(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        let Some(packing) = &self.packing else {
+        let Some(packing) = self.overlay.packing() else {
             return;
         };
         let look = self.look();
@@ -283,7 +284,7 @@ impl Files {
         let suffix = Text::new(format.suffix(), look.size, look.subtle);
         let suffix_w = canvas.measure(&suffix).w;
         let name = Rect::new(text.x, text.y, text.w - suffix_w - space::SM, text.h);
-        if let Some(packing) = &mut self.packing {
+        if let Some(packing) = self.overlay.packing_mut() {
             packing
                 .name
                 .draw(canvas, name, &field::Style::new(&look, "Archive"), true);
@@ -294,7 +295,6 @@ impl Files {
             Align::End,
         );
 
-        self.hits.clear();
         // The whole card answers, so a press on it doesn't put it away.
         self.hits
             .push((placed.inner.inset(-space::XL), Hit::Pack(PackHit::Field)));

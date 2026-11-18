@@ -14,6 +14,7 @@ use enso_ui::{
     widget::{Item, Menu, TextField, field, menu},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Action, Files, Hit, MenuFor, tabs};
 use crate::{location, pane::Open, pick::Choice, picker::Under};
 
@@ -22,26 +23,27 @@ const WHEEL_ROWS: f32 = 3.0;
 
 impl Files {
     pub(super) fn key(&mut self, key: KeyEvent, cx: &mut Cx<'_>, now: Instant) {
-        if self.help {
-            // Any key puts the keys away.
-            self.help = false;
-            cx.redraw();
-            return;
-        }
-        if self.peek_key(&key, cx, now)
-            || self.palette_key(&key, cx)
-            || self.renamer_key(&key, cx)
-            || self.packing_key(&key, cx)
-            || self.properties_key(&key, cx)
-        {
-            return;
-        }
-        if self.settings_key(&key, cx)
-            || self.vcs_key(&key, cx)
-            || self.ops_key(&key, cx)
-            || self.confirm_key(&key, cx)
-            || self.menu_key(&key, cx)
-        {
+        // What's over the window has the keys.
+        let taken = match &self.overlay {
+            None => false,
+            Some(Overlay::Help) => {
+                // Any key puts the keys away.
+                self.overlay = None;
+                cx.redraw();
+                true
+            }
+            Some(Overlay::Peek) => self.peek_key(&key, cx, now),
+            Some(Overlay::Palette(_)) => self.palette_key(&key, cx),
+            Some(Overlay::Renamer(_)) => self.renamer_key(&key, cx),
+            Some(Overlay::Packing(_)) => self.packing_key(&key, cx),
+            Some(Overlay::Properties(_)) => self.properties_key(&key, cx),
+            Some(Overlay::Settings(_)) => self.settings_key(&key, cx),
+            Some(Overlay::Vcs(_)) => self.vcs_key(&key, cx),
+            Some(Overlay::Asked(_) | Overlay::ConfirmDelete(_)) => self.ops_key(&key, cx),
+            Some(Overlay::Replace(_)) => self.replace_key(&key, cx),
+            Some(Overlay::Menu(_)) => self.menu_key(&key, cx),
+        };
+        if taken {
             return;
         }
         if self.location_key(key, cx)
@@ -56,16 +58,13 @@ impl Files {
     /// Keys while the quick look is up: moving shows the next file in it;
     /// Space or Esc puts it away.
     fn peek_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>, now: Instant) -> bool {
-        if !self.peek {
-            return false;
-        }
         let across = match self.config.view {
             crate::config::View::Grid => self.columns() as isize,
             crate::config::View::List | crate::config::View::Columns => 1,
         };
         let delta = match key.key {
             Key::Escape | Key::Char(' ') | Key::Enter => {
-                self.peek = false;
+                self.overlay = None;
                 None
             }
             Key::Left | Key::Char('h') => Some(-1),
@@ -81,20 +80,36 @@ impl Files {
         true
     }
 
-    /// Keys for the question about replacing a file.
-    fn confirm_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(picker) = &mut self.picker else {
-            return false;
-        };
-        let Some(path) = picker.confirm.clone() else {
+    /// Keys for the question about saving over a file.
+    fn replace_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
+        let Some(path) = self.overlay.replace().cloned() else {
             return false;
         };
         match key.key {
             Key::Enter => {
+                self.overlay = None;
                 self.finish(vec![path], cx);
                 return true;
             }
-            Key::Escape => picker.confirm = None,
+            Key::Escape => self.overlay = None,
+            _ => {}
+        }
+        cx.redraw();
+        true
+    }
+
+    /// A press while the question about saving over a file is asked: only
+    /// its answers count.
+    fn replace_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
+        let Some(path) = self.overlay.replace().cloned() else {
+            return false;
+        };
+        match hit {
+            Some(Hit::Replace) => {
+                self.overlay = None;
+                self.finish(vec![path], cx);
+            }
+            Some(Hit::KeepFile) | None => self.overlay = None,
             _ => {}
         }
         cx.redraw();
@@ -102,7 +117,7 @@ impl Files {
     }
 
     fn menu_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some((menu, _)) = &mut self.menu else {
+        let Some((menu, _)) = self.overlay.menu_mut() else {
             return false;
         };
         let response = menu.key(key);
@@ -114,9 +129,9 @@ impl Files {
         match response {
             menu::Response::Ignored => return,
             menu::Response::Changed => {}
-            menu::Response::Closed => self.menu = None,
+            menu::Response::Closed => self.overlay = None,
             menu::Response::Chosen(index) => {
-                if let Some((menu, purpose)) = self.menu.take() {
+                if let Some((menu, purpose)) = self.overlay.take_menu() {
                     self.menu_at = (menu.rect().x, menu.rect().y);
                     self.chosen(purpose, index, cx);
                 }
@@ -157,7 +172,10 @@ impl Files {
                         .map(|choice| Item::new(&choice.name).checked(choice.default))
                         .collect();
                     let (x, y) = self.menu_at;
-                    self.menu = Some((Menu::new(items, x, y), MenuFor::SetDefault(path, choices)));
+                    self.overlay = Some(Overlay::Menu((
+                        Menu::new(items, x, y),
+                        MenuFor::SetDefault(path, choices),
+                    )));
                 }
                 None => {}
             },
@@ -274,7 +292,10 @@ impl Files {
                     items.push(Item::Separator);
                     items.push(Item::new("Always use…"));
                     let (x, y) = self.menu_at;
-                    self.menu = Some((Menu::new(items, x, y), MenuFor::OpenWith(path, choices)));
+                    self.overlay = Some(Overlay::Menu((
+                        Menu::new(items, x, y),
+                        MenuFor::OpenWith(path, choices),
+                    )));
                 }
             }
             Action::EmptyTrash => self.ask_empty(cx),
@@ -287,7 +308,7 @@ impl Files {
             Action::ShiftBookmark(path, step) => self.shift_bookmark(&path, step, cx),
             Action::Settings => {
                 self.learn_git();
-                self.settings = Some(0);
+                self.overlay = Some(Overlay::Settings(0));
             }
         }
         self.follow_cursor(now);
@@ -517,7 +538,10 @@ impl Files {
                 Some(Action::Settings),
             );
         }
-        self.menu = Some((Menu::new(items, x, y), MenuFor::Context(actions)));
+        self.overlay = Some(Overlay::Menu((
+            Menu::new(items, x, y),
+            MenuFor::Context(actions),
+        )));
     }
 
     /// Keys for the filter field, while it is open. Returns whether the
@@ -892,7 +916,7 @@ impl Files {
                 false
             }
             Key::Char(' ') if mods.shift && !mods.ctrl => {
-                self.peek = true;
+                self.overlay = Some(Overlay::Peek);
                 cx.redraw();
                 return;
             }
@@ -964,7 +988,7 @@ impl Files {
                 true
             }
             Key::Char('?') | Key::F(1) => {
-                self.help = true;
+                self.overlay = Some(Overlay::Help);
                 cx.redraw();
                 return;
             }
@@ -1083,7 +1107,7 @@ impl Files {
             }
             Key::Char(',') if mods.ctrl => {
                 self.learn_git();
-                self.settings = Some(0);
+                self.overlay = Some(Overlay::Settings(0));
                 cx.redraw();
                 return;
             }
@@ -1143,7 +1167,7 @@ impl Files {
     }
 
     pub(super) fn pointer(&mut self, event: PointerEvent, cx: &mut Cx<'_>, now: Instant) {
-        if let Some((menu, _)) = &mut self.menu {
+        if let Some((menu, _)) = self.overlay.menu_mut() {
             let response = menu.pointer(&event);
             // A press outside closes the menu and goes no further.
             if response != menu::Response::Ignored || matches!(event, PointerEvent::Press { .. }) {
@@ -1284,30 +1308,38 @@ impl Files {
     }
 
     fn press(&mut self, x: f32, y: f32, button: Button, clicks: u8, cx: &mut Cx<'_>, now: Instant) {
-        if self.help || self.peek {
-            self.help = false;
-            self.peek = false;
+        // The keys and the quick look go at a press anywhere.
+        if matches!(self.overlay, Some(Overlay::Help | Overlay::Peek)) {
+            self.overlay = None;
+            cx.redraw();
             return;
         }
         let hit = self.hit(x, y);
         // The split's other side comes in front; the press is then its.
         let hit = match hit {
-            Some(Hit::Other(inner)) if self.settings.is_none() && self.vcs.is_none() => {
+            Some(Hit::Other(inner)) if self.overlay.is_none() => {
                 self.other_side();
                 Some(*inner)
             }
             hit => hit,
         };
-        if self.palette_press(hit.as_ref(), cx)
-            || self.renamer_press(hit.as_ref(), cx)
-            || self.packing_press(hit.as_ref(), cx)
-            || self.properties_press(hit.as_ref(), cx)
-            || self.settings_press(hit.as_ref(), cx)
-            || self.vcs_press(hit.as_ref(), cx)
-            || self.ops_press(hit.as_ref(), cx)
-        {
+        // What's over the window has the press.
+        let hit = hit.as_ref();
+        let taken = match &self.overlay {
+            None | Some(Overlay::Help | Overlay::Peek | Overlay::Menu(_)) => false,
+            Some(Overlay::Palette(_)) => self.palette_press(hit, cx),
+            Some(Overlay::Renamer(_)) => self.renamer_press(hit, cx),
+            Some(Overlay::Packing(_)) => self.packing_press(hit, cx),
+            Some(Overlay::Properties(_)) => self.properties_press(hit, cx),
+            Some(Overlay::Settings(_)) => self.settings_press(hit, cx),
+            Some(Overlay::Vcs(_)) => self.vcs_press(hit, cx),
+            Some(Overlay::Asked(_) | Overlay::ConfirmDelete(_)) => self.ops_press(hit, cx),
+            Some(Overlay::Replace(_)) => self.replace_press(hit, cx),
+        };
+        if taken {
             return;
         }
+        let hit = hit.cloned();
         // A click away from the name being edited leaves it as it was.
         if self.renaming.is_some() {
             self.renaming = None;
@@ -1315,31 +1347,6 @@ impl Files {
         // Clicking anywhere but the location puts it away.
         if self.location.is_some() && !matches!(hit, Some(Hit::Location(_))) {
             self.location = None;
-        }
-        // A question is open: only its answers count.
-        if self
-            .picker
-            .as_ref()
-            .is_some_and(|picker| picker.confirm.is_some())
-        {
-            match hit {
-                Some(Hit::Replace) => {
-                    if let Some(path) = self
-                        .picker
-                        .as_ref()
-                        .and_then(|picker| picker.confirm.clone())
-                    {
-                        self.finish(vec![path], cx);
-                    }
-                }
-                Some(Hit::KeepFile) | None => {
-                    if let Some(picker) = &mut self.picker {
-                        picker.confirm = None;
-                    }
-                }
-                _ => {}
-            }
-            return;
         }
         if button == BUTTON_BACK {
             let request = self.pane.back();
@@ -1558,7 +1565,7 @@ impl Files {
             .collect();
         let menu =
             Menu::new(items, rect.x, rect.bottom()).with_selected(picker.filter.unwrap_or(0));
-        self.menu = Some((menu, MenuFor::Filters));
+        self.overlay = Some(Overlay::Menu((menu, MenuFor::Filters)));
     }
 
     fn choice_pressed(&mut self, index: usize) {
@@ -1586,10 +1593,10 @@ impl Files {
                     .iter()
                     .map(|(id, label)| Item::new(label).checked(id == selected))
                     .collect();
-                self.menu = Some((
+                self.overlay = Some(Overlay::Menu((
                     Menu::new(items, rect.x, rect.bottom()).with_selected(current),
                     MenuFor::Choice(index),
-                ));
+                )));
             }
             None => {}
         }

@@ -17,6 +17,7 @@ mod draw;
 mod grid;
 mod input;
 mod ops;
+mod overlay;
 mod palette;
 mod preview;
 mod properties;
@@ -25,6 +26,8 @@ mod seek;
 mod settings;
 mod sidebar;
 mod tabs;
+#[cfg(test)]
+mod tests;
 mod vcs;
 
 use std::{
@@ -44,7 +47,7 @@ use enso_fs::{
 use enso_ui::{
     App, Canvas, Clicks, Cx, Event, Paint, Proxy, Rect, SurfaceSpec, WindowSpec,
     watch::watch_dir,
-    widget::{Look, Menu, Scroll, Splitter, TextField},
+    widget::{Look, Scroll, Splitter, TextField},
 };
 
 use crate::{
@@ -56,6 +59,7 @@ use crate::{
     recall::{self, Recall},
     selection::Selection,
 };
+use overlay::Overlay;
 
 /// Something on screen that answers the pointer.
 #[derive(Clone, Debug, PartialEq)]
@@ -215,11 +219,8 @@ pub struct Files {
     /// `config.toml`'s `[files]`.
     base_config: FilesConfig,
     overrides: crate::settings::Overrides,
-    /// The settings panel, and which line has the keyboard.
-    settings: Option<usize>,
     /// The repository the folder is in, and how it stands.
     repo: Option<(PathBuf, enso_fs::git::Status)>,
-    vcs: Option<vcs::Vcs>,
     /// Whether "use version control?" was considered this session.
     asked_git: bool,
     git_facts: vcs::GitFacts,
@@ -250,19 +251,15 @@ pub struct Files {
     sidebar_open: bool,
     places: Vec<Place>,
     picker: Option<Picker>,
-    menu: Option<(Menu, MenuFor)>,
+    /// What's over the window, if anything: one thing at a time.
+    overlay: Option<Overlay>,
     /// The location as text (`Ctrl+L`), while it's being typed, and
     /// whether Enter found nothing there.
     location: Option<TextField>,
     location_missing: bool,
-    /// The keys, shown over everything (`?`, `F1`).
-    help: bool,
     /// Following the folder shown, so it updates as it changes.
     watch: Option<enso_fs::watch::Watch>,
     running: Option<ops::Running>,
-    asked: Option<ops::Asked>,
-    /// Deleting for good, once it's confirmed.
-    confirm_delete: Option<Vec<PathBuf>>,
     renaming: Option<ops::Renaming>,
     /// A new folder to name as soon as it's listed.
     rename_after: Option<PathBuf>,
@@ -290,9 +287,8 @@ pub struct Files {
     /// The columns view's side columns.
     side_parent: columns::Side,
     side_child: columns::Side,
-    /// The preview pane, and the quick look.
+    /// The preview pane.
     previewing: bool,
-    peek: bool,
     shown: preview::Shown,
     previewer: Option<crate::jobs::Previewer>,
     /// The tabs, in order: `None` is the one in front, whose folder is the
@@ -304,8 +300,6 @@ pub struct Files {
     split_rect: Rect,
     /// How each folder is shown, where that was changed.
     folder_views: crate::views::FolderViews,
-    /// The properties, while they're up, and how many counts were begun.
-    properties: Option<properties::Properties>,
     tallies: u64,
     /// Where a press on a row was, while it may become a drag.
     drag_from: Option<(f32, f32)>,
@@ -317,14 +311,8 @@ pub struct Files {
     repo_pick: usize,
     /// Signing in to GitHub: set to stop waiting.
     signing_in: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Asking what to call a new archive.
-    packing: Option<archives::Packing>,
     /// Files opened out of archives, for a fresh folder each.
     opened: u64,
-    /// Renaming many, while it's open.
-    renamer: Option<renamer::Renamer>,
-    /// The command palette, while it's open.
-    palette: Option<palette::Palette>,
     /// The field searching instead of filtering, and when the search
     /// typed is due to run.
     seek: Option<seek::Seek>,
@@ -354,9 +342,7 @@ impl Files {
             config,
             base_config,
             overrides,
-            settings: None,
             repo: None,
-            vcs: None,
             asked_git: false,
             git_facts: vcs::GitFacts::default(),
             pane,
@@ -380,14 +366,11 @@ impl Files {
             sidebar: Splitter::new(SIDEBAR, 150.0, 320.0),
             sidebar_open: true,
             picker: None,
-            menu: None,
+            overlay: None,
             location: None,
             location_missing: false,
-            help: false,
             watch: None,
             running: None,
-            asked: None,
-            confirm_delete: None,
             renaming: None,
             rename_after: None,
             undo: Vec::new(),
@@ -406,23 +389,18 @@ impl Files {
             side_parent: columns::Side::default(),
             side_child: columns::Side::default(),
             previewing: false,
-            peek: false,
             shown: preview::Shown::default(),
             previewer: None,
             tabs: vec![None],
             active: 0,
             split: None,
             split_rect: Rect::default(),
-            palette: None,
-            renamer: None,
             drag_from: None,
             drop_at: None,
-            packing: None,
             signing_in: None,
             repos: Vec::new(),
             repo_pick: 0,
             opened: 0,
-            properties: None,
             tallies: 0,
             folder_views,
             seek: None,
@@ -648,11 +626,7 @@ impl Files {
                 }
                 self.navigate(path);
             }
-            Accept::Confirm(path) => {
-                if let Some(picker) = &mut self.picker {
-                    picker.confirm = Some(path);
-                }
-            }
+            Accept::Confirm(path) => self.overlay = Some(Overlay::Replace(path)),
             Accept::Nothing => {}
         }
         cx.redraw();

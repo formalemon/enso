@@ -13,6 +13,7 @@ use enso_ui::{
     widget::{Form, Interaction, Item, Kind, Menu, Note, Part, TextField, field, field::Frame},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit, MenuFor};
 use crate::jobs::Message;
 
@@ -138,12 +139,12 @@ impl Files {
     pub(super) fn maybe_ask_git(&mut self) {
         if self.overrides.git.is_none()
             && self.picker.is_none()
-            && self.vcs.is_none()
+            && self.overlay.vcs().is_none()
             && !self.asked_git
         {
             self.asked_git = true;
             if git::available() {
-                self.vcs = Some(Vcs::Ask);
+                self.overlay = Some(Overlay::Vcs(Vcs::Ask));
             }
         }
     }
@@ -206,17 +207,17 @@ impl Files {
         self.learn_git();
         let mut name = TextField::new(identity.name.as_deref().unwrap_or_default());
         name.select_all();
-        self.vcs = Some(Vcs::Identity(IdentityEdit {
+        self.overlay = Some(Overlay::Vcs(Vcs::Identity(IdentityEdit {
             scope,
             name,
             email: TextField::new(identity.email.as_deref().unwrap_or_default()),
             focus: 0,
             error: None,
-        }));
+        })));
     }
 
     fn save_identity(&mut self, cx: &mut Cx<'_>) {
-        let Some(Vcs::Identity(edit)) = &mut self.vcs else {
+        let Some(Vcs::Identity(edit)) = self.overlay.vcs_mut() else {
             return;
         };
         match git::set_identity(&edit.scope, edit.name.text(), edit.email.text()) {
@@ -230,7 +231,7 @@ impl Files {
                             .map_or_else(|| root.to_string_lossy(), |name| name.to_string_lossy())
                     ),
                 };
-                self.vcs = None;
+                self.overlay = None;
                 self.learn_git();
                 self.toast(format!("Commits as {whom}, {where_}"), cx);
             }
@@ -317,7 +318,7 @@ impl Files {
         let (items, actions): (Vec<Item>, Vec<Option<BranchLine>>) = lines.into_iter().unzip();
         // Opens upward from the status line.
         let menu = Menu::new(items, rect.x, rect.y).with_selected(current);
-        self.menu = Some((menu, MenuFor::Branches(actions)));
+        self.overlay = Some(Overlay::Menu((menu, MenuFor::Branches(actions))));
         // The remotes' branches as they are now, if it's been a while.
         if !remotes.is_empty() && git::since_fetch(&root).is_none_or(|age| age > STALE) {
             self.remote(Remote::Fetch { quiet: true });
@@ -377,7 +378,9 @@ impl Files {
                     self.toast(format!("Can't open it: {err}"), cx);
                 }
             }
-            BranchLine::NewBranch => self.vcs = Some(Vcs::NewBranch(TextField::default(), None)),
+            BranchLine::NewBranch => {
+                self.overlay = Some(Overlay::Vcs(Vcs::NewBranch(TextField::default(), None)))
+            }
             BranchLine::Publish => {
                 let name = root
                     .file_name()
@@ -385,7 +388,7 @@ impl Files {
                     .unwrap_or_default();
                 let mut field = TextField::new(&name);
                 field.select_all();
-                self.vcs = Some(Vcs::Publish(field, true, None));
+                self.overlay = Some(Overlay::Vcs(Vcs::Publish(field, true, None)));
             }
             BranchLine::CommitAs => self.edit_identity(Scope::Repository(root)),
         }
@@ -394,7 +397,7 @@ impl Files {
 
     /// Ask for a repository's address to clone here.
     pub(super) fn ask_clone(&mut self) {
-        self.vcs = Some(Vcs::Clone(TextField::default(), None));
+        self.overlay = Some(Overlay::Vcs(Vcs::Clone(TextField::default(), None)));
         self.repo_pick = 0;
         // Signed in: your repositories, to pick from.
         if let (Some(login), Some(proxy)) =
@@ -414,7 +417,7 @@ impl Files {
     /// The repositories matching what's typed in the clone form, best
     /// first, at most `MOST_REPOS`.
     pub(super) fn repos_shown(&self) -> Vec<&crate::github::Repo> {
-        let Some(Vcs::Clone(field, _)) = &self.vcs else {
+        let Some(Vcs::Clone(field, _)) = self.overlay.vcs() else {
             return Vec::new();
         };
         let text = field.text().trim();
@@ -542,7 +545,7 @@ impl Files {
     /// Keys for version control's question and forms. Returns whether one
     /// was open.
     pub(super) fn vcs_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(vcs) = &mut self.vcs else {
+        let Some(vcs) = self.overlay.vcs_mut() else {
             return false;
         };
         match vcs {
@@ -565,7 +568,7 @@ impl Files {
                 match field.key(key) {
                     field::Response::Submit if edit.focus == 0 => edit.focus = 1,
                     field::Response::Submit => self.save_identity(cx),
-                    field::Response::Cancel => self.vcs = None,
+                    field::Response::Cancel => self.overlay = None,
                     field::Response::Copy(text) | field::Response::Cut(text) => {
                         cx.copy(Clip::text(&text))
                     }
@@ -577,19 +580,19 @@ impl Files {
                 field::Response::Submit => {
                     let name = field.text().trim().to_owned();
                     let Some((root, _)) = self.repo.clone() else {
-                        self.vcs = None;
+                        self.overlay = None;
                         return true;
                     };
                     match git::create_branch(&root, &name) {
                         Ok(()) => {
-                            self.vcs = None;
+                            self.overlay = None;
                             self.toast(format!("On {name} now"), cx);
                             self.refresh_git(self.pane.generation());
                         }
                         Err(err) => *error = Some(err.to_string()),
                     }
                 }
-                field::Response::Cancel => self.vcs = None,
+                field::Response::Cancel => self.overlay = None,
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
                 _ => *error = None,
             },
@@ -603,7 +606,7 @@ impl Files {
                         self.set_client_id(id, cx);
                     }
                 }
-                field::Response::Cancel => self.vcs = None,
+                field::Response::Cancel => self.overlay = None,
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
                 _ => *error = None,
             },
@@ -614,7 +617,7 @@ impl Files {
             },
             Vcs::Disconnect => match key.key {
                 Key::Enter => self.disconnect(cx),
-                Key::Escape => self.vcs = None,
+                Key::Escape => self.overlay = None,
                 _ => {}
             },
             Vcs::Publish(field, private, error) => match key.key {
@@ -626,7 +629,7 @@ impl Files {
                         if name.is_empty() || name.contains(char::is_whitespace) {
                             *error = Some("A name, without spaces".to_owned());
                         } else if let Some(login) = self.github_account().map(str::to_owned) {
-                            self.vcs = None;
+                            self.overlay = None;
                             self.toast("Publishing on GitHub…", cx);
                             self.remote(Remote::Publish {
                                 login,
@@ -635,7 +638,7 @@ impl Files {
                             });
                         }
                     }
-                    field::Response::Cancel => self.vcs = None,
+                    field::Response::Cancel => self.overlay = None,
                     field::Response::Paste => cx.paste(&TEXT_TYPES),
                     _ => *error = None,
                 },
@@ -657,14 +660,14 @@ impl Files {
                     .repos_shown()
                     .get(self.repo_pick)
                     .map(|repo| repo.clone_url.clone());
-                let Some(Vcs::Clone(field, error)) = &mut self.vcs else {
+                let Some(Vcs::Clone(field, error)) = self.overlay.vcs_mut() else {
                     return true;
                 };
                 let url = picked.unwrap_or_else(|| field.text().trim().to_owned());
                 if url.is_empty() {
                     *error = Some("The repository's address goes here".to_owned());
                 } else {
-                    self.vcs = None;
+                    self.overlay = None;
                     self.toast("Cloning…", cx);
                     let into = self.pane.location().to_owned();
                     self.remote(Remote::Clone { url, into });
@@ -675,7 +678,7 @@ impl Files {
                     *error = None;
                     self.repo_pick = 0;
                 }
-                field::Response::Cancel => self.vcs = None,
+                field::Response::Cancel => self.overlay = None,
                 field::Response::Paste => cx.paste(&TEXT_TYPES),
                 _ => *error = None,
             },
@@ -686,7 +689,7 @@ impl Files {
 
     /// Text pasted while a form is open.
     pub(super) fn vcs_paste(&mut self, text: &str) -> bool {
-        match &mut self.vcs {
+        match self.overlay.vcs_mut() {
             Some(Vcs::Identity(edit)) => {
                 if edit.focus == 0 {
                     &mut edit.name
@@ -710,7 +713,7 @@ impl Files {
     }
 
     fn answer_git(&mut self, on: bool, cx: &mut Cx<'_>) {
-        self.vcs = None;
+        self.overlay = None;
         self.set_git(on, cx);
         if on {
             // Who commits: the global identity, shown to confirm or change,
@@ -727,18 +730,18 @@ impl Files {
     /// A press while a form is open: only it answers. Returns whether one
     /// was open.
     pub(super) fn vcs_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        if self.vcs.is_none() {
+        if self.overlay.vcs().is_none() {
             return false;
         }
         match hit {
             Some(Hit::GitYes) => self.answer_git(true, cx),
             Some(Hit::GitNo) => self.answer_git(false, cx),
             Some(Hit::FormField(index)) => {
-                if let Some(Vcs::Identity(edit)) = &mut self.vcs {
+                if let Some(Vcs::Identity(edit)) = self.overlay.vcs_mut() {
                     edit.focus = *index;
                 }
             }
-            Some(Hit::FormSave) => match &self.vcs {
+            Some(Hit::FormSave) => match self.overlay.vcs() {
                 Some(Vcs::Identity(_)) => self.save_identity(cx),
                 Some(Vcs::Device { .. }) => self.open_device_page(cx),
                 Some(Vcs::Disconnect) => self.disconnect(cx),
@@ -755,10 +758,10 @@ impl Files {
                 _ => {}
             },
             Some(Hit::FormCancel) | None => {
-                if matches!(self.vcs, Some(Vcs::Device { .. })) {
+                if matches!(self.overlay.vcs(), Some(Vcs::Device { .. })) {
                     self.cancel_sign_in();
                 } else {
-                    self.vcs = None;
+                    self.overlay = None;
                 }
             }
             _ => {}
@@ -809,7 +812,9 @@ impl Files {
 
     /// Version control's question or form, over everything.
     pub(super) fn draw_vcs(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        let Some(vcs) = &self.vcs else { return };
+        let Some(vcs) = self.overlay.vcs() else {
+            return;
+        };
         let look = self.look();
         let small = self.font(type_scale::SMALL);
         let (title, detail, fields, buttons): (String, String, usize, [(&str, Kind, Hit); 2]) = match vcs {
@@ -966,7 +971,7 @@ impl Files {
             let text = frame.draw(canvas, place, &look, look.base);
             field.draw(canvas, text, &field::Style::new(&look, hint), focused);
         };
-        match &mut self.vcs {
+        match self.overlay.vcs_mut() {
             Some(Vcs::Identity(edit)) => {
                 let focus = edit.focus;
                 field(
@@ -1011,7 +1016,6 @@ impl Files {
                 }
             }
         }
-        self.hits.clear();
         self.hits.extend(hits);
         for (rect, (_, _, hit)) in placed.buttons.iter().zip(buttons) {
             self.hits.push((*rect, hit));

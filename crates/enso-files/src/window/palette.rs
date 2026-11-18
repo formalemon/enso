@@ -15,6 +15,7 @@ use enso_ui::{
     widget::{TextField, field},
 };
 
+use super::overlay::{Overlay, Reach};
 use super::{Files, Hit};
 use crate::query::Query;
 
@@ -255,13 +256,13 @@ impl Files {
             first: 0,
         };
         palette.refilter();
-        self.palette = Some(palette);
-        self.menu = None;
+        // In place of whatever was up: a menu, say.
+        self.overlay = Some(Overlay::Palette(palette));
     }
 
     /// Keys while the palette is open. Returns whether it was.
     pub(super) fn palette_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(palette) = &mut self.palette else {
+        let Some(palette) = self.overlay.palette_mut() else {
             return false;
         };
         if let Some(nav) = key.nav(false) {
@@ -277,7 +278,7 @@ impl Files {
             return true;
         }
         match palette.field.key(key) {
-            field::Response::Cancel => self.palette = None,
+            field::Response::Cancel => self.overlay = None,
             field::Response::Submit => {
                 let chosen = palette.shown.get(palette.cursor).copied();
                 self.run_line(chosen, cx);
@@ -292,21 +293,21 @@ impl Files {
 
     /// A press while the palette is open. Returns whether it was.
     pub(super) fn palette_press(&mut self, hit: Option<&Hit>, cx: &mut Cx<'_>) -> bool {
-        if self.palette.is_none() {
+        if self.overlay.palette().is_none() {
             return false;
         }
         match hit {
             Some(Hit::PaletteLine(index)) => self.run_line(Some(*index), cx),
             Some(Hit::PaletteField) => {}
             // Anywhere else puts it away.
-            _ => self.palette = None,
+            _ => self.overlay = None,
         }
         cx.redraw();
         true
     }
 
     fn run_line(&mut self, index: Option<usize>, cx: &mut Cx<'_>) {
-        let Some(palette) = self.palette.take() else {
+        let Some(palette) = self.overlay.take_palette() else {
             return;
         };
         let Some(line) = index.and_then(|index| palette.lines.get(index)) else {
@@ -360,7 +361,7 @@ impl Files {
 
     /// Paste into the palette's field. Returns whether it was open.
     pub(super) fn palette_paste(&mut self, text: &str) -> bool {
-        let Some(palette) = &mut self.palette else {
+        let Some(palette) = self.overlay.palette_mut() else {
             return false;
         };
         palette.field.insert(text);
@@ -369,14 +370,13 @@ impl Files {
     }
 
     pub(super) fn draw_palette(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        let Some(palette) = &mut self.palette else {
+        let Some(palette) = self.overlay.palette_mut() else {
             return;
         };
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let body = self.ctx.config.appearance.font_size * type_scale::BODY;
         let small = self.ctx.config.appearance.font_size * type_scale::SMALL;
-        self.hits.clear();
         canvas.fill(bounds, 0.0, colors.base.alpha(opacity::SCRIM * 0.6));
         let width = (bounds.w - 2.0 * space::LG).min(620.0);
         let rows = palette.shown.len().min(ROWS);
