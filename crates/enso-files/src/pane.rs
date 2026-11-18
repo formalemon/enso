@@ -69,11 +69,20 @@ pub enum Source {
     /// What a search below the location found, best first: by name, or
     /// (`content`) by what's inside.
     Search { query: String, content: bool },
+    /// Inside the archive at the location: the folder `inner` in it (`""`
+    /// for the top). Read-only.
+    Archive { inner: String },
 }
 
 impl Source {
     pub fn is_folder(&self) -> bool {
         *self == Self::Folder
+    }
+
+    /// Ordered as asked, like a folder (an archive's insides are), or
+    /// kept in the order found.
+    pub fn is_sorted(&self) -> bool {
+        matches!(self, Self::Folder | Self::Archive { .. })
     }
 }
 
@@ -300,6 +309,23 @@ impl Pane {
         if let Source::Search { .. } = self.source {
             return self.navigate(self.location.clone());
         }
+        // Inside an archive: up a folder in it, then out beside it.
+        if let Source::Archive { inner } = &self.source {
+            if inner.is_empty() {
+                let archive = self.location.clone();
+                let name = archive.file_name()?.as_encoded_bytes().to_vec();
+                let request = self.navigate(archive.parent()?.to_owned())?;
+                self.want = Some(name);
+                return Some(request);
+            }
+            let (up, child) = match inner.rsplit_once('/') {
+                Some((up, child)) => (up.to_owned(), child.to_owned()),
+                None => (String::new(), inner.clone()),
+            };
+            let request = self.show(self.location.clone(), Source::Archive { inner: up })?;
+            self.want = Some(child.into_bytes());
+            return Some(request);
+        }
         if self.source == Source::Recent {
             return None;
         }
@@ -484,7 +510,7 @@ impl Pane {
     fn refresh(&mut self, keep: Option<Vec<u8>>) {
         let previous = self.cursor;
         // A folder in the order asked for; a gathered list as it came.
-        let mut shown = if self.source.is_folder() {
+        let mut shown = if self.source.is_sorted() {
             sort::order(&self.listing, &self.keys, self.sort)
         } else {
             (0..self.listing.len() as u32).collect()

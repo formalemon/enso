@@ -91,6 +91,16 @@ impl Files {
             // A search refined replaces itself; Back goes to the folder.
             Source::Search { .. } => Some(self.pane.replace(source)),
             Source::Recent => self.pane.show(self.home.clone(), source),
+            // From inside an archive: the folder it's in.
+            Source::Archive { .. } => {
+                let folder = self
+                    .pane
+                    .location()
+                    .parent()
+                    .unwrap_or(&self.home)
+                    .to_owned();
+                self.pane.show(folder, source)
+            }
             Source::Folder => {
                 let here = self.pane.location().to_owned();
                 self.pane.show(here, source)

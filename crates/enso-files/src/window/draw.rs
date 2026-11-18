@@ -76,6 +76,7 @@ impl Files {
         self.draw_vcs(canvas, bounds);
         self.draw_settings(canvas, bounds, now);
         self.draw_renamer(canvas, bounds);
+        self.draw_packing(canvas, bounds);
         self.draw_properties(canvas, bounds);
         self.draw_palette(canvas, bounds);
         if self.peek {
@@ -166,6 +167,14 @@ impl Files {
             Source::Recent => vec![("Recent".to_owned(), PathBuf::from("/"))],
             _ => crumbs(self.pane.location(), &self.home),
         };
+        // Inside an archive: on through its folders.
+        if let Source::Archive { inner } = self.pane.source() {
+            let mut at = self.pane.location().to_owned();
+            for part in inner.split('/').filter(|part| !part.is_empty()) {
+                at = at.join(part);
+                crumbs.push((part.to_owned(), at.clone()));
+            }
+        }
         if let Source::Search { query, content } = self.pane.source() {
             let label = if *content {
                 format!("“{query}” in files")
@@ -939,7 +948,7 @@ impl Files {
             }
         }
         // In a gathered list: where the one under the cursor is.
-        if !self.pane.source().is_folder()
+        if !self.pane.source().is_sorted()
             && let Some(row) = self.pane.cursor()
             && let Some(folder) = self.pane.path(row).parent()
         {
@@ -2000,6 +2009,98 @@ mod tests {
         files.shown_at = root.join("papers");
         files.navigate(root.clone());
         assert!(!files.pane.sort().descending);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn archives_are_walked_like_folders() {
+        use crate::pane::Source;
+        let root = std::env::temp_dir().join(format!("enso-files-zip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("trip/day 1")).unwrap();
+        std::fs::write(root.join("trip/day 1/beach.jpg"), [0; 2048]).unwrap();
+        std::fs::write(root.join("trip/notes.md"), "sun").unwrap();
+        struct Quiet;
+        impl enso_fs::ops::Watcher for Quiet {
+            fn progress(&mut self, _: &enso_fs::ops::Progress) {}
+            fn conflict(
+                &mut self,
+                _: &std::path::Path,
+                _: &std::path::Path,
+            ) -> (enso_fs::ops::Resolve, bool) {
+                (enso_fs::ops::Resolve::Skip, true)
+            }
+            fn stop(&self) -> bool {
+                false
+            }
+        }
+        let zip = root.join("trip.zip");
+        enso_fs::archive::compress(&[root.join("trip")], &zip, &mut Quiet);
+        let now = Instant::now();
+        let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+        files.asked_git = true;
+        let first = files.pending.take().unwrap();
+        files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
+
+        // In, and into a folder in it.
+        let arrive = |files: &mut Files| {
+            let Source::Archive { inner } = files.pane.source().clone() else {
+                panic!("not in the archive");
+            };
+            let found = crate::gather::archive(files.pane.location(), &inner).unwrap();
+            let generation = files.pane.generation();
+            assert!(files.listed_now(generation, Ok(found.listing), now));
+        };
+        files.navigate(zip.clone());
+        arrive(&mut files);
+        files.navigate(zip.join("trip"));
+        arrive(&mut files);
+        assert_eq!(files.pane.len(), 2);
+        assert_eq!(
+            files.pane.entry(0).meta.map(|meta| meta.size),
+            Some(0),
+            "a folder"
+        );
+        snapshot(&render(&mut files, (900, 400)), "enso-files-archive");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| *hit == Hit::Crumb(zip.clone()))
+        );
+
+        // Out a folder, then out beside it, the cursor on it.
+        let request = files.pane.parent().unwrap();
+        assert_eq!(
+            request.source,
+            Source::Archive {
+                inner: String::new()
+            }
+        );
+        let request = {
+            files.load(Some(request));
+            arrive(&mut files);
+            files.pane.parent().unwrap()
+        };
+        assert_eq!(
+            (request.path.as_path(), request.source),
+            (root.as_path(), Source::Folder)
+        );
+
+        // Compress…: its question.
+        let generation = request.generation;
+        files.listed_now(generation, Ok(Listing::read(&root).unwrap()), now);
+        files.selection.insert(root.join("trip"));
+        files.packing = None;
+        files.pane.set_cursor(0);
+        files.ask_compress_for_tests();
+        snapshot(&render(&mut files, (900, 520)), "enso-files-compress");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Pack(_)))
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

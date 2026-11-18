@@ -14,6 +14,17 @@ png.workspace = true
 image-webp.workspace = true
 gif.workspace = true
 zune-jpeg.workspace = true
+zip = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+lzma-rs = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true }
+bzip2-rs = { workspace = true, optional = true }
+
+[features]
+# Reading, extracting, and making archives; the file manager's, not the
+# launcher's.
+archives = ["dep:zip", "dep:tar", "dep:flate2", "dep:lzma-rs", "dep:ruzstd", "dep:bzip2-rs"]
 
 [lints]
 workspace = true

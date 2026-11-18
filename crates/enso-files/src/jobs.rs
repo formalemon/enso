@@ -26,6 +26,8 @@ use crate::pane::{Request, Source, describe};
 
 #[derive(Debug)]
 pub enum Message {
+    /// Something to say, from a worker.
+    Toast(String),
     /// How much is in what the properties show, so far or in all.
     Tallied {
         token: u64,
@@ -261,6 +263,16 @@ pub enum Op {
     },
     Duplicate(PathBuf),
     Delete(Vec<PathBuf>),
+    /// Take everything out of an archive into a folder.
+    Extract {
+        archive: PathBuf,
+        into: PathBuf,
+    },
+    /// Make the archive `into` (its format from its name) of `sources`.
+    Compress {
+        sources: Vec<PathBuf>,
+        into: PathBuf,
+    },
 }
 
 impl Op {
@@ -272,6 +284,11 @@ impl Op {
             Self::Move { sources, .. } => format!("Moving {}", count(sources.len())),
             Self::Duplicate(_) => "Duplicating".to_owned(),
             Self::Delete(paths) => format!("Deleting {}", count(paths.len())),
+            Self::Extract { archive, .. } => format!(
+                "Taking out {}",
+                archive.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            Self::Compress { sources, .. } => format!("Compressing {}", count(sources.len())),
         }
     }
 }
@@ -293,6 +310,12 @@ pub fn start(op: Op, proxy: &Proxy<Message>) -> Arc<AtomicBool> {
                 Op::Move { sources, into } => ops::move_into(sources, into, &mut watcher),
                 Op::Duplicate(path) => ops::duplicate(path, &mut watcher),
                 Op::Delete(paths) => ops::delete(paths, &mut watcher),
+                Op::Extract { archive, into } => {
+                    enso_fs::archive::extract(archive, into, &mut watcher)
+                }
+                Op::Compress { sources, into } => {
+                    enso_fs::archive::compress(sources, into, &mut watcher)
+                }
             };
             finished.send(Message::Finished { op, report });
         });
@@ -383,6 +406,7 @@ fn run(request: Request, cancel: &AtomicBool, proxy: &Proxy<Message>) {
             })
             .map_err(|err| describe(&err)),
         Source::Recent => Ok(crate::gather::recent()),
+        Source::Archive { inner } => crate::gather::archive(&path, inner),
         Source::Search { query, content } => {
             crate::gather::search(&path, request.hidden, query, *content, cancel)
         }
@@ -406,6 +430,8 @@ fn run(request: Request, cancel: &AtomicBool, proxy: &Proxy<Message>) {
         result: Ok(listing),
         notes,
     }) || cancel.load(Ordering::Relaxed)
+        // An archive's sizes came from the archive; there's nothing on disk.
+        || matches!(request.source, Source::Archive { .. })
     {
         return;
     }

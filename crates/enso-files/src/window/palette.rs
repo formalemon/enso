@@ -29,6 +29,7 @@ enum Do {
     Press(Key, Mods),
     Recent,
     Trash,
+    Compress,
     /// Go to this folder.
     Go(PathBuf),
     /// Choose what in this folder these query words admit.
@@ -201,6 +202,11 @@ impl Files {
         });
         if managing {
             lines.push(Line {
+                label: "Compress…".to_owned(),
+                aside: "zip · tar.gz · tar.xz".to_owned(),
+                what: Do::Compress,
+            });
+            lines.push(Line {
                 label: "Trash".to_owned(),
                 aside: String::new(),
                 what: Do::Trash,
@@ -317,6 +323,7 @@ impl Files {
             }
             Do::Recent => self.open_recent(),
             Do::Trash => self.open_trash(),
+            Do::Compress => self.ask_compress(cx),
             Do::Go(folder) => self.navigate(folder),
             Do::Choose(words) => {
                 let chosen = self.choose_where(words);
@@ -462,6 +469,7 @@ impl Files {
                 Do::Go(_) => (Some(icon::FOLDER), accent),
                 Do::Recent => (Some(icon::CLOCK), colors.subtle),
                 Do::Trash => (Some(icon::TRASH), colors.subtle),
+                Do::Compress => (None, colors.subtle),
                 Do::Choose(_) => (Some(icon::CHECK), colors.iris),
                 Do::Press(..) => (None, colors.subtle),
             };

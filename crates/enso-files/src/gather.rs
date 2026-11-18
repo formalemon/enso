@@ -49,6 +49,76 @@ pub struct Gathered {
     pub notes: Vec<String>,
 }
 
+/// What's in the folder `inner` of the archive at `archive`: its own
+/// files and folders, sized as the archive says.
+pub fn archive(archive: &Path, inner: &str) -> Result<Gathered, String> {
+    let members =
+        enso_fs::archive::list(archive).map_err(|err| format!("Can't look inside: {err}"))?;
+    let prefix = if inner.is_empty() {
+        String::new()
+    } else {
+        format!("{inner}/")
+    };
+    // Each child once: a folder may be named only by what's in it.
+    let mut children: std::collections::BTreeMap<String, (bool, u64)> = Default::default();
+    for member in &members {
+        let Some(rest) = member.path.strip_prefix(&prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            continue;
+        }
+        match rest.split_once('/') {
+            Some((folder, _)) => {
+                children.entry(folder.to_owned()).or_insert((true, 0));
+            }
+            None => {
+                let entry = children
+                    .entry(rest.to_owned())
+                    .or_insert((member.is_dir, member.size));
+                *entry = (member.is_dir || entry.0, member.size);
+            }
+        }
+    }
+    let base = if inner.is_empty() {
+        archive.to_owned()
+    } else {
+        archive.join(inner)
+    };
+    let mut listing = Listing::from_entries(
+        &base,
+        children.iter().map(|(name, (is_dir, _))| {
+            (name.as_str(), if *is_dir { Kind::Dir } else { Kind::File })
+        }),
+    );
+    // Sizes from the archive; the time, the archive's own.
+    let modified = fs::metadata(archive)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| jiff::Timestamp::try_from(time).ok())
+        .map_or(0, |time| time.as_nanosecond() as i64);
+    let metas: Vec<Option<Meta>> = children
+        .values()
+        .map(|(is_dir, size)| {
+            Some(Meta {
+                size: if *is_dir { 0 } else { *size },
+                modified,
+                created: None,
+                accessed: modified,
+                mode: if *is_dir { 0o755 } else { 0o644 },
+                uid: 0,
+                gid: 0,
+                link_size: None,
+            })
+        })
+        .collect();
+    listing.apply(0, &metas);
+    Ok(Gathered {
+        listing,
+        notes: Vec::new(),
+    })
+}
+
 /// The files used lately that are still there, newest first.
 pub fn recent() -> Gathered {
     let found = recent::read(&recent::file(), MOST);

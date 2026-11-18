@@ -31,6 +31,7 @@ impl Files {
         if self.peek_key(&key, cx, now)
             || self.palette_key(&key, cx)
             || self.renamer_key(&key, cx)
+            || self.packing_key(&key, cx)
             || self.properties_key(&key, cx)
         {
             return;
@@ -228,6 +229,7 @@ impl Files {
                     self.loader.load(request, proxy);
                 }
             }
+            Action::Rename if self.read_only(cx) => {}
             Action::Rename => {
                 if let Some(row) = self.pane.cursor() {
                     self.begin_rename(self.pane.path(row));
@@ -277,6 +279,8 @@ impl Files {
             }
             Action::EmptyTrash => self.ask_empty(cx),
             Action::Reveal(path) => self.reveal(&path),
+            Action::Extract(archive) => self.extract(archive, cx),
+            Action::Compress => self.ask_compress(cx),
             Action::NewTab(path) => self.open_tab(path, false, cx),
             Action::Bookmark(path) => self.toggle_bookmark(&path, cx),
             Action::ShiftBookmark(path, step) => self.shift_bookmark(&path, step, cx),
@@ -330,8 +334,27 @@ impl Files {
                     Some(Action::Bookmark(path.clone())),
                 );
             }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            let in_archive = matches!(self.pane.source(), crate::pane::Source::Archive { .. });
+            if !is_dir
+                && self.picker.is_none()
+                && !in_archive
+                && enso_fs::archive::Format::of(&name).is_some()
+            {
+                add(
+                    Item::new("Extract here"),
+                    Some(Action::Extract(path.clone())),
+                );
+            }
+            if self.picker.is_none() && !in_archive {
+                add(Item::new("Compress…"), Some(Action::Compress));
+            }
             // In a gathered list, where it really is.
-            if !self.pane.source().is_folder() {
+            if !self.pane.source().is_folder() && !in_archive {
                 add(
                     Item::new("Show in its folder"),
                     Some(Action::Reveal(path.clone())),
@@ -389,6 +412,13 @@ impl Files {
             add(Item::Separator, None);
         }
         let folder = self.pane.source().is_folder();
+        if let (crate::pane::Source::Archive { .. }, None) = (self.pane.source(), &self.picker) {
+            let archive = self.pane.location().to_owned();
+            add(
+                Item::new("Extract everything, beside it"),
+                Some(Action::Extract(archive)),
+            );
+        }
         if self.picker.is_none() && self.in_trash() {
             add(Item::new("Empty the trash…"), Some(Action::EmptyTrash));
         } else if folder {
@@ -995,6 +1025,7 @@ impl Files {
                 self.context_menu(row, self.list.x + 48.0, y);
                 false
             }
+            Key::F(2) if self.read_only(cx) => return,
             Key::F(2) => {
                 if !self.rename_targets() {
                     self.act(super::Action::Rename, cx);
@@ -1261,6 +1292,7 @@ impl Files {
         };
         if self.palette_press(hit.as_ref(), cx)
             || self.renamer_press(hit.as_ref(), cx)
+            || self.packing_press(hit.as_ref(), cx)
             || self.properties_press(hit.as_ref(), cx)
             || self.settings_press(hit.as_ref(), cx)
             || self.vcs_press(hit.as_ref(), cx)
@@ -1348,6 +1380,7 @@ impl Files {
                 Hit::PaletteLine(_)
                 | Hit::PaletteField
                 | Hit::Rename(_)
+                | Hit::Pack(_)
                 | Hit::Permission(_)
                 | Hit::PropertiesCard,
             ) => {}

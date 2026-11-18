@@ -136,9 +136,9 @@ impl Files {
         self.asked = None;
         let done: Vec<(PathBuf, PathBuf)> = report.done.clone();
         let record = match &op {
-            Op::Copy { .. } | Op::Duplicate(_) => Some(Done::Created(
-                done.iter().map(|(_, to)| to.clone()).collect(),
-            )),
+            Op::Copy { .. } | Op::Duplicate(_) | Op::Extract { .. } | Op::Compress { .. } => Some(
+                Done::Created(done.iter().map(|(_, to)| to.clone()).collect()),
+            ),
             Op::Move { .. } => Some(Done::Moved(done.clone())),
             Op::Delete(_) => None,
         };
@@ -162,8 +162,29 @@ impl Files {
             Op::Move { .. } => "Moved",
             Op::Duplicate(_) => "Duplicated",
             Op::Delete(_) => "Deleted",
+            Op::Extract { .. } => "Took out",
+            Op::Compress { .. } => "Made",
         };
-        let mut message = format!("{verb} {}", format::count(done.len(), "item", "items"));
+        // Taking out or making an archive is one thing, named.
+        let what = match (&op, done.first()) {
+            (Op::Extract { .. } | Op::Compress { .. }, Some((_, to))) => {
+                let name = to
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                let mut what = format!("“{name}”");
+                if !report.skipped.is_empty() {
+                    what += &format!(
+                        " · left out {} that could reach outside it",
+                        format::count(report.skipped.len(), "item", "items")
+                    );
+                }
+                what
+            }
+            _ => format::count(done.len(), "item", "items"),
+        };
+        let mut message = format!("{verb} {what}");
         if report.stopped {
             message = format!("Stopped · {}", message.to_lowercase());
         }
@@ -330,6 +351,9 @@ impl Files {
     // The trash and deleting.
 
     pub(super) fn trash_targets(&mut self, cx: &mut Cx<'_>) {
+        if self.read_only(cx) {
+            return;
+        }
         let targets = self.targets();
         if targets.is_empty() {
             return;
@@ -373,6 +397,9 @@ impl Files {
     }
 
     pub(super) fn ask_delete(&mut self, cx: &mut Cx<'_>) {
+        if self.read_only(cx) {
+            return;
+        }
         let targets = self.targets();
         if !targets.is_empty() {
             self.confirm_delete = Some(targets);
@@ -384,6 +411,9 @@ impl Files {
 
     /// Put what's chosen on the clipboard, to copy or (with `cut`) to move.
     pub(super) fn copy_files(&mut self, cut: bool, cx: &mut Cx<'_>) {
+        if self.read_only(cx) {
+            return;
+        }
         let paths = self.targets();
         if paths.is_empty() {
             return;

@@ -36,6 +36,8 @@
 
 mod app_index;
 pub mod apps;
+#[cfg(feature = "archives")]
+pub mod archive;
 pub mod bookmarks;
 pub mod format;
 pub mod fuzzy;

@@ -9,7 +9,7 @@ authors.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-enso-fs.workspace = true
+enso-fs = { workspace = true, features = ["archives"] }
 enso-ui.workspace = true
 serde.workspace = true
 toml.workspace = true

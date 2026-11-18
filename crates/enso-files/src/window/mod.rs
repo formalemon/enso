@@ -8,6 +8,7 @@
 //! ([`input`]) asks "what is under me" of the last frame instead of laying
 //! everything out again.
 
+mod archives;
 mod band;
 mod columns;
 mod draw;
@@ -47,7 +48,7 @@ use enso_ui::{
 use crate::{
     config::FilesConfig,
     jobs::{Loader, Message},
-    pane::{Open, Pane, Request},
+    pane::{Open, Pane, Request, Source},
     pick,
     picker::{Accept, Outcome, Picker, Under},
     recall::{self, Recall},
@@ -116,6 +117,8 @@ enum Hit {
     PaletteField,
     /// Renaming many.
     Rename(renamer::RenameHit),
+    /// The Compress… question.
+    Pack(archives::PackHit),
     /// A permission box (its bit), and the rest of the properties card.
     Permission(u32),
     PropertiesCard,
@@ -164,6 +167,9 @@ enum Action {
     Run(PathBuf),
     /// Go to where a link leads.
     RealPath(PathBuf),
+    /// Take everything out of this archive, beside it.
+    Extract(PathBuf),
+    Compress,
     /// Go to a file's folder, with the cursor on it.
     Reveal(PathBuf),
     NewTab(PathBuf),
@@ -297,6 +303,10 @@ pub struct Files {
     /// The properties, while they're up, and how many counts were begun.
     properties: Option<properties::Properties>,
     tallies: u64,
+    /// Asking what to call a new archive.
+    packing: Option<archives::Packing>,
+    /// Files opened out of archives, for a fresh folder each.
+    opened: u64,
     /// Renaming many, while it's open.
     renamer: Option<renamer::Renamer>,
     /// The command palette, while it's open.
@@ -391,6 +401,8 @@ impl Files {
             split_rect: Rect::default(),
             palette: None,
             renamer: None,
+            packing: None,
+            opened: 0,
             properties: None,
             tallies: 0,
             folder_views,
@@ -501,6 +513,11 @@ impl Files {
     }
 
     fn navigate(&mut self, path: PathBuf) {
+        // Into an archive, or a folder inside one: its insides.
+        if let Some((archive, inner)) = archives::inside_archive(&path) {
+            let request = self.pane.show(archive, Source::Archive { inner });
+            return self.load(request);
+        }
         let request = self.pane.navigate(path);
         self.load(request);
     }
@@ -544,6 +561,21 @@ impl Files {
     fn open(&mut self, cx: &mut Cx<'_>) {
         match (self.pane.open(), self.picker.is_some()) {
             (Some(Open::Dir(path)), _) => self.navigate(path),
+            // A file inside an archive: a copy, taken out.
+            (Some(Open::File(path)), false)
+                if matches!(self.pane.source(), Source::Archive { .. }) =>
+            {
+                self.open_member(&path);
+            }
+            // An archive: inside it.
+            (Some(Open::File(path)), false)
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| enso_fs::archive::Format::of(name).is_some()) =>
+            {
+                self.navigate(path);
+            }
             (Some(Open::File(path)), false) => {
                 let opened = enso_fs::open::open(&path, "alacritty");
                 if opened.is_ok() {
@@ -976,6 +1008,7 @@ impl App for Files {
                 }
             }
             Event::Message(Message::Edited(result)) => self.edited(result, cx),
+            Event::Message(Message::Toast(text)) => self.toast(text, cx),
             Event::Message(Message::Tallied { token, tally, done }) => {
                 self.tallied(token, tally, done);
                 cx.redraw();
@@ -1022,7 +1055,11 @@ impl App for Files {
                         .picker
                         .as_ref()
                         .is_some_and(|picker| picker.typing_name);
-                if self.palette_paste(&text) || self.renamer_paste(&text) || self.vcs_paste(&text) {
+                if self.palette_paste(&text)
+                    || self.packing_paste(&text)
+                    || self.renamer_paste(&text)
+                    || self.vcs_paste(&text)
+                {
                     cx.redraw();
                 } else if let Some(renaming) = &mut self.renaming {
                     renaming.field.insert(&text);
