@@ -34,7 +34,7 @@ use smithay_client_toolkit::{
         DataDeviceManagerState, WritePipe,
         data_device::{DataDevice, DataDeviceHandler},
         data_offer::{DataOfferHandler, DragOffer},
-        data_source::{CopyPasteSource, DataSourceHandler},
+        data_source::{CopyPasteSource, DataSourceHandler, DragSource},
     },
     delegate_dispatch2, delegate_registry,
     dispatch2::Dispatch2,
@@ -211,6 +211,9 @@ pub struct WindowSpec {
     /// handle — what the desktop portal passes as `wayland:<handle>`. The
     /// compositor then keeps this window above that one, as a dialog.
     pub parent: Option<String>,
+    /// What can be dropped on it, by MIME type, best first
+    /// (`text/uri-list` for files). Empty: nothing.
+    pub drops: Vec<String>,
 }
 
 impl SurfaceSpec {
@@ -284,6 +287,22 @@ pub enum Event<M> {
         maximized: bool,
         fullscreen: bool,
         activated: bool,
+    },
+    /// Something the window takes is being dragged over it, here.
+    DragOver {
+        x: f32,
+        y: f32,
+    },
+    /// It left again without being dropped.
+    DragLeave,
+    /// It was dropped here: in this format, these bytes. `moving` if the
+    /// drag means to move rather than copy.
+    Drop {
+        mime: String,
+        data: Vec<u8>,
+        x: f32,
+        y: f32,
+        moving: bool,
     },
 }
 
@@ -386,7 +405,17 @@ pub const TEXT_TYPES: [&str; 5] = [
 
 /// Work the runtime gets back from its own threads.
 enum Internal {
-    Paste { mime: String, data: Vec<u8> },
+    Paste {
+        mime: String,
+        data: Vec<u8>,
+    },
+    Drop {
+        mime: String,
+        data: Vec<u8>,
+        x: f32,
+        y: f32,
+        moving: bool,
+    },
 }
 
 /// What an app asked for while handling an event.
@@ -405,6 +434,7 @@ pub(crate) struct Requests {
     toggle_maximized: bool,
     copy: Option<Clip>,
     paste: Option<Vec<String>>,
+    drag: Option<Clip>,
 }
 
 /// Handed to an app while it handles an event: lets it measure text and ask
@@ -513,6 +543,12 @@ impl<'a> Cx<'a> {
     /// them.
     pub fn paste(&mut self, mimes: &[&str]) {
         self.requests.paste = Some(mimes.iter().map(|mime| (*mime).to_owned()).collect());
+    }
+
+    /// Start dragging `clip` out of the window, to drop here or in any
+    /// other program. Call while the button that began it is still held.
+    pub fn start_drag(&mut self, clip: Clip) {
+        self.requests.drag = Some(clip);
     }
 
     /// Maximise a window, or give it back its own size.
@@ -648,8 +684,31 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
     let (internal, internals) = channel::channel();
     handle
         .insert_source(internals, |event, (), runtime: &mut Runtime<A>| {
-            if let channel::Event::Msg(Internal::Paste { mime, data }) = event {
-                runtime.deliver(Event::Paste { mime, data });
+            match event {
+                channel::Event::Msg(Internal::Paste { mime, data }) => {
+                    runtime.deliver(Event::Paste { mime, data });
+                }
+                channel::Event::Msg(Internal::Drop {
+                    mime,
+                    data,
+                    x,
+                    y,
+                    moving,
+                }) => {
+                    runtime.deliver(Event::Drop {
+                        mime,
+                        data,
+                        x,
+                        y,
+                        moving,
+                    });
+                    // Taken: the drag is over.
+                    if let Some(offer) = runtime.dropping.take() {
+                        offer.finish();
+                        offer.destroy();
+                    }
+                }
+                channel::Event::Closed => {}
             }
         })
         .map_err(|err| Error::new("event loop", err))?;
@@ -698,6 +757,9 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         data_devices,
         data_device: None,
         copied: None,
+        dragging: None,
+        dropping: None,
+        drag_mime: None,
         internal,
         cursor: Cursor::Default,
         maximized: false,
@@ -761,6 +823,12 @@ struct Runtime<A: App> {
     data_device: Option<DataDevice>,
     /// What this program has on the clipboard, while it has it.
     copied: Option<(CopyPasteSource, Clip)>,
+    /// What this program is dragging, while it is.
+    dragging: Option<(DragSource, Clip)>,
+    /// A drop whose data is on its way: finished once it's here.
+    dropping: Option<DragOffer>,
+    /// The format being taken from what's dragged over the window.
+    drag_mime: Option<String>,
     internal: Sender<Internal>,
     cursor: Cursor,
     maximized: bool,
@@ -863,6 +931,9 @@ impl<A: App> Runtime<A> {
         if let Some(clip) = requests.copy {
             self.copy(clip);
         }
+        if let Some(clip) = requests.drag {
+            self.start_drag(clip);
+        }
         if let Some(mimes) = requests.paste {
             self.paste(&mimes);
         }
@@ -900,6 +971,53 @@ impl<A: App> Runtime<A> {
             .create_copy_paste_source(&self.qh, clip.formats.iter().map(|(mime, _)| mime.as_str()));
         source.set_selection(device, serial);
         self.copied = Some((source, clip));
+    }
+
+    fn start_drag(&mut self, clip: Clip) {
+        let (Some(devices), Some(device), Some(serial)) =
+            (&self.data_devices, &self.data_device, self.press_serial)
+        else {
+            return;
+        };
+        let source = devices.create_drag_and_drop_source(
+            &self.qh,
+            clip.formats.iter().map(|(mime, _)| mime.as_str()),
+            DndAction::Copy | DndAction::Move,
+        );
+        source.start_drag(device, self.surface.wl_surface(), None, serial);
+        self.dragging = Some((source, clip));
+    }
+
+    /// The drag over the window now, if it offers something it takes:
+    /// take that format, and say so.
+    fn take_drag(&mut self) -> bool {
+        let Some(offer) = self
+            .data_device
+            .as_ref()
+            .and_then(|device| device.data().drag_offer())
+        else {
+            return false;
+        };
+        let drops: Vec<String> = self
+            .spec
+            .window
+            .as_ref()
+            .map(|window| window.drops.clone())
+            .unwrap_or_default();
+        let mime = offer
+            .with_mime_types(|offered| drops.iter().find(|mime| offered.contains(mime)).cloned());
+        offer.accept_mime_type(offer.serial, mime.clone());
+        // Our own drag moves; one from another program copies, so a
+        // drop never takes something away from the program it came from.
+        let preferred = if self.dragging.is_some() {
+            DndAction::Move
+        } else {
+            DndAction::Copy
+        };
+        offer.set_actions(DndAction::Copy | DndAction::Move, preferred);
+        let taken = mime.is_some();
+        self.drag_mime = mime;
+        taken
     }
 
     fn paste(&mut self, mimes: &[String]) {
@@ -1363,11 +1481,19 @@ impl<A: App> DataSourceHandler for Runtime<A> {
         mime: String,
         mut pipe: WritePipe,
     ) {
-        let Some(data) = self
+        let copied = self
             .copied
             .as_ref()
             .filter(|(copied, _)| copied.inner() == source)
-            .and_then(|(_, clip)| clip.formats.iter().find(|(offered, _)| *offered == mime))
+            .map(|(_, clip)| clip);
+        let dragged = self
+            .dragging
+            .as_ref()
+            .filter(|(dragged, _)| dragged.inner() == source)
+            .map(|(_, clip)| clip);
+        let Some(data) = copied
+            .or(dragged)
+            .and_then(|clip| clip.formats.iter().find(|(offered, _)| *offered == mime))
             .map(|(_, data)| data.clone())
         else {
             return;
@@ -1389,35 +1515,99 @@ impl<A: App> DataSourceHandler for Runtime<A> {
         {
             self.copied = None;
         }
+        // A drag let go over nothing that takes it.
+        if self
+            .dragging
+            .as_ref()
+            .is_some_and(|(dragged, _)| dragged.inner() == source)
+        {
+            self.dragging = None;
+        }
     }
 
     fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
 
-    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        if self
+            .dragging
+            .as_ref()
+            .is_some_and(|(dragged, _)| dragged.inner() == source)
+        {
+            self.dragging = None;
+        }
+    }
 
     fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
 }
 
-// Drag and drop comes later; the clipboard needs these to exist.
 impl<A: App> DataDeviceHandler for Runtime<A> {
     fn enter(
         &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &WlDataDevice,
-        _: f64,
-        _: f64,
+        x: f64,
+        y: f64,
         _: &WlSurface,
     ) {
+        if self.take_drag() {
+            self.deliver(Event::DragOver {
+                x: x as f32,
+                y: y as f32,
+            });
+        }
     }
 
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        // A drop also leaves; its data is still on its way.
+        if self.drag_mime.take().is_some() && self.dropping.is_none() {
+            self.deliver(Event::DragLeave);
+        }
+    }
 
-    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, x: f64, y: f64) {
+        if self.drag_mime.is_some() {
+            self.deliver(Event::DragOver {
+                x: x as f32,
+                y: y as f32,
+            });
+        }
+    }
 
     fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
 
-    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {
+        let (Some(offer), Some(mime)) = (
+            self.data_device
+                .as_ref()
+                .and_then(|device| device.data().drag_offer()),
+            self.drag_mime.clone(),
+        ) else {
+            return;
+        };
+        let Ok(mut pipe) = offer.receive(mime.clone()) else {
+            return;
+        };
+        let (x, y) = (offer.x as f32, offer.y as f32);
+        let moving = offer.selected_action == DndAction::Move;
+        self.dropping = Some(offer);
+        // On a thread: the program writing it may be this one.
+        let internal = self.internal.clone();
+        let _ = std::thread::Builder::new()
+            .name("enso-drop".to_owned())
+            .spawn(move || {
+                let mut data = Vec::new();
+                if std::io::Read::read_to_end(&mut pipe, &mut data).is_ok() {
+                    let _ = internal.send(Internal::Drop {
+                        mime,
+                        data,
+                        x,
+                        y,
+                        moving,
+                    });
+                }
+            });
+    }
 }
 
 impl<A: App> DataOfferHandler for Runtime<A> {

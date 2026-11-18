@@ -11,6 +11,7 @@
 mod archives;
 mod band;
 mod columns;
+mod dnd;
 mod draw;
 mod grid;
 mod input;
@@ -303,6 +304,11 @@ pub struct Files {
     /// The properties, while they're up, and how many counts were begun.
     properties: Option<properties::Properties>,
     tallies: u64,
+    /// Where a press on a row was, while it may become a drag.
+    drag_from: Option<(f32, f32)>,
+    /// Where something dragged over the window would land, and what to
+    /// light up (`None`: the list).
+    drop_at: Option<(PathBuf, Option<Rect>)>,
     /// Asking what to call a new archive.
     packing: Option<archives::Packing>,
     /// Files opened out of archives, for a fresh folder each.
@@ -401,6 +407,8 @@ impl Files {
             split_rect: Rect::default(),
             palette: None,
             renamer: None,
+            drag_from: None,
+            drop_at: None,
             packing: None,
             opened: 0,
             properties: None,
@@ -921,6 +929,8 @@ impl App for Files {
                 title,
                 min_size: (460, 320),
                 parent,
+                // Files, from here or anywhere.
+                drops: vec!["text/uri-list".to_owned()],
             },
             self.size.0 as u32,
             self.size.1 as u32,
@@ -1009,6 +1019,11 @@ impl App for Files {
             }
             Event::Message(Message::Edited(result)) => self.edited(result, cx),
             Event::Message(Message::Toast(text)) => self.toast(text, cx),
+            Event::DragOver { x, y } => self.drag_over(x, y, cx),
+            Event::DragLeave => self.drag_leave(cx),
+            Event::Drop {
+                data, x, y, moving, ..
+            } => self.dropped(&data, x, y, moving, cx),
             Event::Message(Message::Tallied { token, tally, done }) => {
                 self.tallied(token, tally, done);
                 cx.redraw();

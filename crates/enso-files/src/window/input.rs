@@ -1149,6 +1149,9 @@ impl Files {
         }
         match event {
             PointerEvent::Enter { x, y } | PointerEvent::Move { x, y } => {
+                if self.maybe_drag(x, y, cx) {
+                    return;
+                }
                 if self.drag_band(x, y, now) {
                     cx.redraw();
                     return;
@@ -1225,6 +1228,7 @@ impl Files {
                 cx.redraw();
             }
             PointerEvent::Release { .. } => {
+                self.drag_from = None;
                 if self.end_band() {
                     cx.redraw();
                 }
@@ -1402,6 +1406,8 @@ impl Files {
                 if self.pane.set_cursor(row) {
                     self.follow_cursor(now);
                 }
+                // Held and moved, this row (or what's chosen) is dragged.
+                self.may_drag(x, y);
                 if mods.ctrl {
                     self.toggle(row);
                     self.anchor = Some(row);

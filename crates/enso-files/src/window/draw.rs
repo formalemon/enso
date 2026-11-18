@@ -62,6 +62,7 @@ impl Files {
             list
         };
         animating |= self.draw_split(canvas, list, now);
+        self.draw_drop(canvas);
         if let Some(bar) = bar {
             self.draw_bar(canvas, bar);
         }
@@ -2102,6 +2103,32 @@ mod tests {
                 .any(|(_, hit)| matches!(hit, Hit::Pack(_)))
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn drops_land_in_the_folder_under_them() {
+        let mut files = files();
+        render(&mut files, (900, 480));
+        let row_at = |files: &Files, wanted: usize| {
+            files
+                .hits
+                .iter()
+                .find(|(_, hit)| *hit == Hit::Row(wanted))
+                .map(|(rect, _)| rect.center())
+                .unwrap()
+        };
+        // Row 0 is a folder (crates): into it.
+        let (x, y) = row_at(&files, 0);
+        let (into, lit) = files.drop_target_for_tests(x, y).unwrap();
+        assert_eq!(into, files.pane.path(0));
+        assert!(lit.is_some());
+        // A file's row: the folder shown, the whole list lit.
+        let (x, y) = row_at(&files, 6);
+        let (into, lit) = files.drop_target_for_tests(x, y).unwrap();
+        assert_eq!(into, files.pane.location());
+        assert!(lit.is_none());
+        files.drop_at = Some((into, None));
+        snapshot(&render(&mut files, (900, 480)), "enso-files-drop");
     }
 
     #[test]
