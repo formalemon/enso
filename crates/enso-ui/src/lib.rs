@@ -11,6 +11,7 @@
 //! - [`input`] — keyboard and pointer events, including the suite-wide
 //!   navigation keys.
 //! - [`watch`] — inotify-based change notification for live theme switching.
+//! - [`widget`] — controls: the text field, so far.
 //!
 //! Everything is pure Rust: the Wayland protocol (no libwayland), keyboard
 //! layouts (kbvm, no libxkbcommon), rasterisation (tiny-skia), and text
@@ -29,6 +30,7 @@ pub mod screens;
 pub mod shell;
 pub mod text;
 pub mod watch;
+pub mod widget;
 
 pub use canvas::{Canvas, Offscreen, Shape};
 pub use geom::{Align, Rect, Size};

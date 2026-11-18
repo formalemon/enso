@@ -20,6 +20,7 @@ use enso_ui::{
     Align, App, BUTTON_BACK, BUTTON_FORWARD, Button, Canvas, Clicks, Cursor, Cx, Event, Key,
     KeyEvent, Nav, Paint, PointerEvent, Proxy, Rect, SurfaceSpec, Text, WindowSpec,
     watch::watch_dir,
+    widget::{TextField, field},
 };
 
 use crate::{
@@ -49,6 +50,8 @@ enum Hit {
     Forward,
     /// Empty title row: grab it to move the window.
     Title,
+    /// The filter field, whose text starts at this `x`.
+    Filter(f32),
 }
 
 pub struct Files {
@@ -71,6 +74,8 @@ pub struct Files {
     list: Rect,
     /// `g` was pressed: the next key completes a `g` command.
     pending_g: bool,
+    /// The filter-as-you-type field, while it is open.
+    filter: Option<TextField>,
     maximized: bool,
     home: PathBuf,
 }
@@ -93,6 +98,7 @@ impl Files {
             clicks: Clicks::default(),
             list: Rect::default(),
             pending_g: false,
+            filter: None,
             maximized: false,
             home: places::home(),
         }
@@ -119,6 +125,8 @@ impl Files {
         self.scroll.jump(0.0);
         self.highlight.jump(0.0);
         self.hover = None;
+        // The pane starts the new folder unfiltered; so does the field.
+        self.filter = None;
         match &self.proxy {
             Some(proxy) => self.loader.load(request, proxy),
             None => self.pending = Some(request),
@@ -182,7 +190,63 @@ impl Files {
 
     // Input.
 
+    /// Keys for the filter field, while it is open. Returns whether the
+    /// key was used.
+    fn filter_key(&mut self, key: KeyEvent, cx: &mut Cx<'_>, now: Instant) -> bool {
+        let Some(field) = &mut self.filter else {
+            return false;
+        };
+        // The list keeps moving under arrows while typing; j and k are
+        // letters here.
+        if let Some(nav) = key.nav(false) {
+            if self.pane.move_cursor(match nav {
+                Nav::Up => -1,
+                Nav::Down => 1,
+            }) {
+                self.follow_cursor(now);
+            }
+            cx.redraw();
+            return true;
+        }
+        match field.key(&key) {
+            field::Response::Ignored => return false,
+            field::Response::Cancel => {
+                self.filter = None;
+                self.pane.set_filter("");
+                self.follow_cursor(now);
+            }
+            field::Response::Submit => {
+                // Leave the field; the folder stays filtered until Esc or
+                // a new folder.
+                self.filter = None;
+                self.open();
+            }
+            field::Response::Changed => {
+                let text = field.text().to_owned();
+                self.pane.set_filter(&text);
+                self.follow_cursor(now);
+            }
+            // The clipboard arrives with the next step of the plan.
+            field::Response::Moved
+            | field::Response::Copy(_)
+            | field::Response::Cut(_)
+            | field::Response::Paste => {}
+        }
+        cx.redraw();
+        true
+    }
+
+    fn open_filter(&mut self, cx: &mut Cx<'_>) {
+        if self.filter.is_none() {
+            self.filter = Some(TextField::new(self.pane.filter()));
+        }
+        cx.redraw();
+    }
+
     fn key(&mut self, key: KeyEvent, cx: &mut Cx<'_>, now: Instant) {
+        if self.filter_key(key, cx, now) {
+            return;
+        }
         let mods = key.mods;
         let g = std::mem::take(&mut self.pending_g);
         let rows = self.visible_rows();
@@ -231,6 +295,19 @@ impl Files {
                     self.load(request);
                     false
                 }
+                Key::Char('/') if mods.is_plain() => {
+                    self.open_filter(cx);
+                    return;
+                }
+                Key::Char('f') if mods.ctrl => {
+                    self.open_filter(cx);
+                    return;
+                }
+                // A filter left on from before: Esc takes it off.
+                Key::Escape if !self.pane.filter().is_empty() => {
+                    self.pane.set_filter("");
+                    true
+                }
                 Key::Char('~') => {
                     let request = self.pane.navigate(self.home.clone());
                     self.load(request);
@@ -278,6 +355,7 @@ impl Files {
                 let hover = self.hit(x, y);
                 cx.set_cursor(match hover {
                     Some(Hit::Crumb(_) | Hit::Back | Hit::Forward) => Cursor::Pointer,
+                    Some(Hit::Filter(_)) => Cursor::Text,
                     _ => Cursor::Default,
                 });
                 if hover != self.hover {
@@ -308,6 +386,21 @@ impl Files {
                     (Button::Left, Some(Hit::Crumb(path))) => self.pane.navigate(path),
                     (Button::Left, Some(Hit::Back)) => self.pane.back(),
                     (Button::Left, Some(Hit::Forward)) => self.pane.forward(),
+                    (Button::Left, Some(Hit::Filter(text_x))) => {
+                        self.open_filter(cx);
+                        let size = self.font(type_scale::BODY);
+                        if let Some(field) = &mut self.filter {
+                            field.click(
+                                |text| cx.measure(&Text::new(text, size, Rgba::TRANSPARENT)).w,
+                                x - text_x,
+                                false,
+                            );
+                            if clicks >= 2 {
+                                field.select_word();
+                            }
+                        }
+                        None
+                    }
                     (Button::Left, Some(Hit::Title)) => {
                         if clicks >= 2 {
                             self.clicks.reset();
@@ -385,7 +478,7 @@ impl Files {
         let size = self.font(type_scale::BODY);
         let separator = Text::new("›", size, colors.muted);
         let gap = canvas.measure(&separator).w + space::SM * 2.0;
-        let right = area.right() - space::LG;
+        let right = self.draw_filter(canvas, area) - space::LG;
         let widths: Vec<f32> = crumbs
             .iter()
             .enumerate()
@@ -590,6 +683,77 @@ impl Files {
         }
     }
 
+    /// The filter at the right of the title row: a field while it's open
+    /// or a filter is on, a quiet magnifier otherwise. Returns where it
+    /// starts, for the path to stop short of.
+    fn draw_filter(&mut self, canvas: &mut Canvas<'_>, area: Rect) -> f32 {
+        let colors = self.ctx.theme.colors.clone();
+        let accent = self.ctx.accent();
+        let size = self.font(type_scale::BODY);
+        let height = 32.0;
+        let open = self.filter.is_some() || !self.pane.filter().is_empty();
+        let width = if open {
+            (area.w * 0.32).clamp(160.0, 280.0)
+        } else {
+            height
+        };
+        let rect = Rect::new(
+            area.right() - space::MD - width,
+            area.y + (area.h - height) / 2.0,
+            width,
+            height,
+        );
+        let hovered = matches!(self.hover, Some(Hit::Filter(_)));
+        if open {
+            canvas.fill(rect, radius::pill(height), colors.surface);
+            let ring = if self.filter.is_some() {
+                accent
+            } else {
+                colors.highlight_med
+            };
+            canvas.stroke(rect, radius::pill(height), stroke::HAIRLINE, ring);
+        } else if hovered {
+            canvas.fill(rect, radius::pill(height), colors.highlight_low);
+        }
+        let icon_box = Rect::new(rect.x + space::SM, rect.y, 18.0, rect.h);
+        canvas.icon(
+            icon::SEARCH,
+            16.0,
+            colors.subtle,
+            if open { icon_box } else { rect },
+            if open { Align::Start } else { Align::Center },
+        );
+        let text_rect = Rect::new(
+            icon_box.right() + space::SM,
+            rect.y,
+            (rect.right() - space::MD - icon_box.right() - space::SM).max(0.0),
+            rect.h,
+        );
+        if open {
+            let style = field::Style {
+                size,
+                color: colors.text,
+                placeholder: "Filter",
+                placeholder_color: colors.muted,
+                caret: accent,
+                selection: accent.alpha(opacity::TINT * 2.0),
+            };
+            let focused = self.filter.is_some();
+            match &mut self.filter {
+                Some(field) => field.draw(canvas, text_rect, &style, focused),
+                None => {
+                    canvas.text_in(
+                        &Text::new(self.pane.filter(), size, colors.subtle),
+                        text_rect,
+                        Align::Start,
+                    );
+                }
+            }
+        }
+        self.hits.push((rect, Hit::Filter(text_rect.x)));
+        rect.x
+    }
+
     fn draw_status(&self, canvas: &mut Canvas<'_>, area: Rect) {
         let colors = &self.ctx.theme.colors;
         let small = self.font(type_scale::SMALL);
@@ -602,6 +766,11 @@ impl Files {
         let mut left = match self.pane.load() {
             Load::Loading => "Loading…".to_owned(),
             Load::Failed(_) => String::new(),
+            Load::Ready if !self.pane.filter().is_empty() => format!(
+                "{} of {} match",
+                self.pane.len(),
+                format::count(self.pane.unfiltered_len(), "item", "items")
+            ),
             Load::Ready => format::count(self.pane.len(), "item", "items"),
         };
         if self.pane.hidden_count() > 0 {
@@ -861,6 +1030,19 @@ mod tests {
                 &Hit::Crumb("/home/me/dev".into())
             ]
         );
+    }
+
+    #[test]
+    fn renders_the_filter() {
+        let mut files = files();
+        let mut field = TextField::new("carg");
+        field.select(1..3);
+        files.filter = Some(field);
+        files.pane.set_filter("carg");
+        let frame = render(&mut files, (900, 300));
+        snapshot(&frame, "enso-files-filter");
+        assert_eq!(files.pane.len(), 2);
+        assert!(files.hits.iter().any(|(_, hit)| matches!(hit, Hit::Filter(_))));
     }
 
     #[test]

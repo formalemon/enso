@@ -15,6 +15,7 @@ use std::{
 };
 
 use enso_fs::{
+    fuzzy::Pattern,
     list::{Entry, Listing, Meta},
     sort::{self, By, Keys, Sort},
 };
@@ -55,6 +56,9 @@ pub struct Pane {
     cursor: usize,
     sort: Sort,
     hidden: bool,
+    /// What the folder is being filtered by, as typed and as prepared.
+    filter: String,
+    pattern: Pattern,
     load: Load,
     generation: u64,
     /// How many entries' metadata has arrived for this generation.
@@ -78,6 +82,8 @@ impl Pane {
             cursor: 0,
             sort,
             hidden,
+            filter: String::new(),
+            pattern: Pattern::default(),
             load: Load::Loading,
             generation: 0,
             statted: 0,
@@ -112,8 +118,19 @@ impl Pane {
         if self.hidden {
             0
         } else {
-            self.listing.len() - self.shown.len()
+            (0..self.listing.len())
+                .filter(|&index| self.listing.is_hidden(index))
+                .count()
         }
+    }
+
+    /// How many entries there are before the filter.
+    pub fn unfiltered_len(&self) -> usize {
+        self.listing.len() - self.hidden_count()
+    }
+
+    pub fn filter(&self) -> &str {
+        &self.filter
     }
 
     /// The `row`th entry shown.
@@ -209,6 +226,8 @@ impl Pane {
         }
         self.want = self.remembered.get(&path).cloned();
         self.location = path;
+        self.filter.clear();
+        self.pattern = Pattern::default();
         self.listing = Listing::default();
         self.keys = Keys::default();
         self.shown.clear();
@@ -278,6 +297,27 @@ impl Pane {
 
     // Order and filtering.
 
+    /// Show only what fuzzily matches `filter`, in the folder's order,
+    /// with the cursor on the best match. An empty filter shows everything,
+    /// the cursor staying where it was.
+    pub fn set_filter(&mut self, filter: &str) {
+        if filter == self.filter {
+            return;
+        }
+        let keep = self.cursor_name();
+        self.filter = filter.to_owned();
+        self.pattern = Pattern::new(filter);
+        self.refresh(keep);
+        if !filter.is_empty() {
+            let best = (0..self.shown.len()).max_by_key(|&row| {
+                // Earlier rows win ties: `max_by_key` keeps the last of equals.
+                let score = self.pattern.score(&self.name(row)).unwrap_or(i32::MIN);
+                (score, std::cmp::Reverse(row))
+            });
+            self.cursor = best.unwrap_or(0);
+        }
+    }
+
     pub fn toggle_hidden(&mut self) {
         self.hidden = !self.hidden;
         self.refresh(self.cursor_name());
@@ -291,6 +331,13 @@ impl Pane {
         let mut shown = sort::order(&self.listing, &self.keys, self.sort);
         if !self.hidden {
             shown.retain(|&index| !self.listing.is_hidden(index as usize));
+        }
+        if !self.filter.is_empty() {
+            shown.retain(|&index| {
+                self.pattern
+                    .score(&self.listing.display_name(index as usize))
+                    .is_some()
+            });
         }
         self.shown = shown;
         self.cursor = keep
@@ -509,6 +556,39 @@ mod tests {
         assert_eq!(names(&pane), ["small", "mid", "big"]);
         // Still on the same file, wherever it went.
         assert_eq!(cursor_name(&pane), at_cursor);
+    }
+
+    #[test]
+    fn filtering_keeps_the_order_and_finds_the_best_match() {
+        let mut pane = pane_at(
+            "/h",
+            &[
+                "notes.txt",
+                "Cargo.toml",
+                "cargo-notes.md",
+                "src/",
+                ".cargo/",
+            ],
+        );
+        pane.set_filter("crgo");
+        assert_eq!(names(&pane), ["cargo-notes.md", "Cargo.toml"]);
+        assert_eq!(cursor_name(&pane), "Cargo.toml");
+        pane.set_filter("notes");
+        assert_eq!(names(&pane), ["cargo-notes.md", "notes.txt"]);
+        // The name that starts with the words wins.
+        assert_eq!(cursor_name(&pane), "notes.txt");
+        assert_eq!(pane.unfiltered_len(), 4);
+        pane.set_filter("zzz");
+        assert!(pane.is_empty());
+        // Clearing it shows everything, the cursor where it was.
+        pane.set_filter("notes");
+        pane.set_filter("");
+        assert_eq!(pane.len(), 4);
+        assert_eq!(cursor_name(&pane), "notes.txt");
+        // A new folder starts unfiltered.
+        pane.set_filter("src");
+        pane.navigate("/elsewhere".into());
+        assert_eq!(pane.filter(), "");
     }
 
     #[test]
