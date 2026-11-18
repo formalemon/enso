@@ -5,8 +5,12 @@
 //! - [`sort`] — natural ordering of a listing, by name, size, date, or
 //!   extension.
 //! - [`format`] — sizes and dates the way a person reads them.
+//! - [`ops`] — copying, moving, renaming, deleting, with progress,
+//!   conflicts, and undo.
 //! - [`places`] — home, the XDG user folders, and free space.
 //! - [`watch`] — following a folder as it changes, stopped by dropping.
+//! - [`trash`] — the freedesktop trash: trashing, listing, restoring,
+//!   emptying, on the home filesystem and others.
 //! - [`uri`] — `file://` URIs, URI lists, and the portal's byte paths.
 //! - [`apps`] — installed applications, from freedesktop desktop entries,
 //!   and launching them.
@@ -33,9 +37,11 @@ pub mod ignores;
 pub mod list;
 pub mod mime;
 pub mod open;
+pub mod ops;
 pub mod places;
 pub mod search;
 pub mod sort;
+pub mod trash;
 pub mod uri;
 pub mod watch;
 
