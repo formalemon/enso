@@ -87,7 +87,7 @@ impl Files {
             Row::Grid => {
                 self.overrides.view = Some(match config.view {
                     View::Grid => View::List,
-                    View::List => View::Grid,
+                    View::List | View::Columns => View::Grid,
                 });
             }
             Row::Compact => {

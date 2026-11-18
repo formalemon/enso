@@ -52,15 +52,28 @@ impl Files {
         } else {
             body
         };
-        // The preview pane, where there's room for it beside the list.
-        let list = if self.previewing && list.w > preview::PANE * 2.0 {
+        // The preview pane, where there's room for it beside the list (the
+        // columns have their own).
+        let columns = self.config.view == crate::config::View::Columns;
+        let list = if self.previewing && !columns && list.w > preview::PANE * 2.0 {
             let pane = Rect::new(list.right() - preview::PANE, list.y, preview::PANE, list.h);
             self.draw_preview(canvas, pane);
             Rect::new(list.x, list.y, list.w - preview::PANE, list.h)
         } else {
             list
         };
-        animating |= self.draw_list(canvas, list, now);
+        // A folder just arrived slides in the way we went, and fades up.
+        let arrival = self.arrival.get(now);
+        let shifted = list.translate((1.0 - arrival) * 18.0 * self.sliding, 0.0);
+        let columns_view = self.config.view == crate::config::View::Columns && list.w > 640.0;
+        canvas.with_opacity(0.35 + 0.65 * arrival, |canvas| {
+            animating |= if columns_view {
+                self.draw_columns(canvas, shifted, now)
+            } else {
+                self.draw_list(canvas, shifted, now)
+            };
+        });
+        animating |= self.arrival.is_animating(now);
         self.draw_band(canvas, now);
         if let Some(bar) = bar {
             self.draw_bar(canvas, bar);
@@ -227,7 +240,8 @@ impl Files {
             ("/  Ctrl+F", "filter as you type"),
             ("Ctrl+L", "type a location"),
             ("i  ·  Shift+Space", "preview · quick look"),
-            ("Ctrl+1  ·  Ctrl+2", "list · grid (Ctrl+= −)"),
+            ("Ctrl+1 · 2 · 3", "list · grid · columns"),
+            ("Ctrl+=  ·  Ctrl+−", "bigger · smaller tiles"),
             ("Ctrl+H  ·  .", "dotfiles"),
             ("~  ·  g h", "home"),
             ("g g  ·  G", "first · last"),
@@ -342,7 +356,7 @@ impl Files {
     }
 
     /// The list, with its headings. Returns whether anything is moving.
-    fn draw_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, now: Instant) -> bool {
+    pub(super) fn draw_list(&mut self, canvas: &mut Canvas<'_>, area: Rect, now: Instant) -> bool {
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let row_height = self.row_height();
@@ -1517,6 +1531,46 @@ mod tests {
         assert_eq!(files.selection.len(), 1);
         assert!(files.end_band());
         assert!(!files.end_band());
+    }
+
+    #[test]
+    fn renders_columns() {
+        let root = std::env::temp_dir().join(format!("enso-files-columns-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in [
+            "dev/enso/crates/enso-ui",
+            "dev/enso/crates/enso-fs",
+            "dev/enso/docs",
+            "dev/sumi",
+            "dev/notes",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("dev/enso/Cargo.toml"), "").unwrap();
+        let here = root.join("dev/enso");
+        let mut files = Files::new(context(), FilesConfig::default(), here.clone());
+        files.places = Vec::new();
+        files.config.view = crate::config::View::Columns;
+        let request = files.pending.take().unwrap();
+        assert!(
+            files
+                .pane
+                .set_listing(request.generation, Ok(Listing::read(&here).unwrap()))
+        );
+        let frame = render(&mut files, (1100, 420));
+        snapshot(&frame, "enso-files-columns");
+        let sides: Vec<&Hit> = files
+            .hits
+            .iter()
+            .map(|(_, hit)| hit)
+            .filter(|hit| matches!(hit, Hit::Side(..)))
+            .collect();
+        // The folder above (enso, notes, sumi), and the cursor's folder
+        // (crates: enso-fs, enso-ui).
+        assert_eq!(sides.len(), 5, "{sides:?}");
+        assert!(sides.contains(&&Hit::Side(root.join("dev/sumi"), false)));
+        assert!(sides.contains(&&Hit::Side(here.join("crates/enso-ui"), true)));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

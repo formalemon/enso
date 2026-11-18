@@ -82,6 +82,8 @@ impl From<SortBy> for By {
 pub enum View {
     List,
     Grid,
+    /// The folder above, this one, and what's under the cursor.
+    Columns,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]

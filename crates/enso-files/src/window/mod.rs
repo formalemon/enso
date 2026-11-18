@@ -9,6 +9,7 @@
 //! everything out again.
 
 mod band;
+mod columns;
 mod draw;
 mod grid;
 mod input;
@@ -95,6 +96,8 @@ enum Hit {
     Eject(usize),
     TrashPlace,
     EmptyTrash,
+    /// An entry of a side column: go to it, or (`true`) show it chosen.
+    Side(PathBuf, bool),
     /// A line of the settings panel, and its sort choices.
     Setting(usize),
     SortPill(crate::config::SortBy),
@@ -240,6 +243,16 @@ pub struct Files {
     thumbnailer: Option<crate::jobs::Thumbnailer>,
     /// A box being dragged to choose with.
     band: Option<band::Band>,
+    /// A new folder's arrival, `0 → 1`, and from which side: `1` from the
+    /// right (going in), `-1` from the left (going out), `0` not at all.
+    arrival: Tween<f32>,
+    sliding: f32,
+    /// A navigation is on its way: its listing slides in. (A reload
+    /// doesn't.)
+    slide_pending: bool,
+    /// The columns view's side columns.
+    side_parent: columns::Side,
+    side_child: columns::Side,
     /// The preview pane, and the quick look.
     previewing: bool,
     peek: bool,
@@ -306,6 +319,11 @@ impl Files {
             thumbs: grid::Thumbs::default(),
             thumbnailer: None,
             band: None,
+            arrival: Tween::new(1.0),
+            sliding: 0.0,
+            slide_pending: false,
+            side_parent: columns::Side::default(),
+            side_child: columns::Side::default(),
             previewing: false,
             peek: false,
             shown: preview::Shown::default(),
@@ -378,6 +396,19 @@ impl Files {
         self.anchor = None;
         // The pane starts the new folder unfiltered; so does the field.
         self.filter = None;
+        // Into a folder below: from the right; out to one above: from the
+        // left; elsewhere, or reloading: no slide.
+        let from = self.pane.location();
+        self.sliding = if request.path == from {
+            0.0
+        } else if request.path.starts_with(from) {
+            1.0
+        } else if from.starts_with(&request.path) {
+            -1.0
+        } else {
+            0.0
+        };
+        self.slide_pending = true;
         // Thumbnails and previews are for what's shown.
         self.thumbs.keep_only(&request.path);
         self.shown = preview::Shown::default();
@@ -532,7 +563,7 @@ impl Files {
         let (_, height) = self.span_of(0);
         let rows = ((self.list.h / height).floor() as isize).max(1);
         match self.config.view {
-            crate::config::View::List => rows,
+            crate::config::View::List | crate::config::View::Columns => rows,
             crate::config::View::Grid => rows * self.columns() as isize,
         }
     }
@@ -702,6 +733,15 @@ impl App for Files {
                 if self.pane.set_listing(generation, result) {
                     self.follow(generation);
                     self.listed();
+                    // The side columns read again, in case they changed too.
+                    self.side_parent = columns::Side::default();
+                    self.side_child = columns::Side::default();
+                    // A new folder arrives sliding the way we went.
+                    if std::mem::take(&mut self.slide_pending) && self.sliding != 0.0 {
+                        self.arrival.jump(0.0);
+                        self.arrival
+                            .set(1.0, self.transition(Transition::SELECT), now);
+                    }
                     self.refresh_git(generation);
                     self.maybe_ask_git();
                     // Landing on a remembered row: be there, don't glide.

@@ -29,7 +29,7 @@ impl Files {
     /// the whole list.
     pub(super) fn content_rect(&self, index: usize) -> Rect {
         match self.config.view {
-            View::List => {
+            View::List | View::Columns => {
                 let height = self.row_height();
                 Rect::new(self.list.x, index as f32 * height, self.list.w, height)
             }

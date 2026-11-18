@@ -78,7 +78,7 @@ impl Files {
     /// grid row the entry is in.
     pub(super) fn span_of(&self, index: usize) -> (f32, f32) {
         match self.config.view {
-            View::List => (index as f32 * self.row_height(), self.row_height()),
+            View::List | View::Columns => (index as f32 * self.row_height(), self.row_height()),
             View::Grid => {
                 let (_, height) = self.tile();
                 ((index / self.columns()) as f32 * height + space::SM, height)

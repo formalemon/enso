@@ -91,7 +91,8 @@ descending = false
 folders_first = true
 # Row height: "comfortable" or "compact".
 density = "comfortable"
-# "list", or "grid" for thumbnails. Ctrl+1 and Ctrl+2 switch.
+# "list", "grid" for thumbnails, or "columns" (the folder above, this one,
+# and what's under the cursor). Ctrl+1, Ctrl+2, and Ctrl+3 switch.
 view = "list"
 
 [notify]

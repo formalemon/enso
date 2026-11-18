@@ -815,7 +815,11 @@ clipboard, the widget set, enso-fs). **P1** done (the picker behind the
 portal, set up by `enso-files portal enable`). **P2** done: opening and
 "Open with…", file operations with undo, the trash, drives through udisks2,
 live updates, settings, version control's basics, "Show in folder",
-links' real paths, and programs that run only when asked. Next: **P3**.
+links' real paths, and programs that run only when asked. **P3** done:
+thumbnails through the freedesktop cache (PNG, JPEG, WebP, GIF), the grid
+and its zoom, the preview pane and quick look, columns, rubber-band
+choosing, colour by kind, folders sliding in; SVG and PDF thumbnails wait
+on a renderer worth its weight. Next: **P4**.
 
 Each phase ends usable, tested, committed, and measured against §8.
 

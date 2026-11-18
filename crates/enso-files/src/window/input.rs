@@ -56,7 +56,7 @@ impl Files {
         }
         let across = match self.config.view {
             crate::config::View::Grid => self.columns() as isize,
-            crate::config::View::List => 1,
+            crate::config::View::List | crate::config::View::Columns => 1,
         };
         let delta = match key.key {
             Key::Escape | Key::Char(' ') | Key::Enter => {
@@ -748,11 +748,11 @@ impl Files {
                 self.open_location(cx);
                 return;
             }
-            Key::Char(digit @ ('1' | '2')) if mods.ctrl => {
-                let view = if digit == '1' {
-                    crate::config::View::List
-                } else {
-                    crate::config::View::Grid
+            Key::Char(digit @ ('1' | '2' | '3')) if mods.ctrl => {
+                let view = match digit {
+                    '1' => crate::config::View::List,
+                    '2' => crate::config::View::Grid,
+                    _ => crate::config::View::Columns,
                 };
                 self.overrides.view = Some(view);
                 self.save_overrides(cx);
@@ -986,6 +986,7 @@ impl Files {
                         | Hit::KeepFiles
                         | Hit::Branch
                         | Hit::Volume(_)
+                        | Hit::Side(..)
                         | Hit::Eject(_)
                         | Hit::TrashPlace
                         | Hit::EmptyTrash
@@ -1238,6 +1239,7 @@ impl Files {
                     cx.begin_move();
                 }
             }
+            Some(Hit::Side(path, reveal)) => self.side_clicked(path, reveal),
             Some(Hit::Volume(index)) => self.open_volume(index, cx),
             Some(Hit::Eject(index)) => self.eject(index, cx),
             Some(Hit::TrashPlace) => self.open_trash(),
