@@ -53,9 +53,11 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
     })
 }
 
-/// Whether some file of Niri's config already includes the generated one.
+/// Whether some file of Niri's config already includes the generated one —
+/// in the folder or in folders under it, where a config split into parts
+/// keeps them.
 fn includes(dir: &Path) -> bool {
-    mentions(&files(dir, &["kdl"], 0), "//", &format!("enso/{FILE}"))
+    mentions(&files(dir, &["kdl"], 2), "//", &format!("enso/{FILE}"))
 }
 
 /// The palette as Niri config: only colours (and the cursor), so that gaps,
@@ -145,6 +147,21 @@ mod tests {
         assert!(dawn.contains(r##"color "#00000033""##));
         // Balanced braces: the cheapest check that Niri can read it.
         assert_eq!(moon.matches('{').count(), moon.matches('}').count());
+    }
+
+    #[test]
+    fn an_include_in_a_part_of_the_config_counts() {
+        let sandbox = Sandbox::new("niri-nested");
+        let dir = sandbox.root.join(".config/niri");
+        std::fs::create_dir_all(dir.join("enso")).unwrap();
+        std::fs::write(dir.join("config.kdl"), "include \"enso/ctl.kdl\"\n").unwrap();
+        assert!(!includes(&dir));
+        std::fs::write(
+            dir.join("enso/ctl.kdl"),
+            "include optional=true \"~/.local/state/enso/niri.kdl\"\n",
+        )
+        .unwrap();
+        assert!(includes(&dir));
     }
 
     #[test]
