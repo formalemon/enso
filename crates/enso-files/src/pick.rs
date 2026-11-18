@@ -139,6 +139,10 @@ pub struct Request {
     /// The asking window, as an `xdg-foreign` handle.
     #[serde(default)]
     pub parent: Option<String>,
+    /// The asking application, as the portal names it: its last folder is
+    /// remembered under this.
+    #[serde(default)]
+    pub app_id: String,
 }
 
 impl Request {
@@ -153,6 +157,7 @@ impl Request {
             folder: None,
             current_file: None,
             parent: None,
+            app_id: String::new(),
         }
     }
 

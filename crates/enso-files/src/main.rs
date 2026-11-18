@@ -11,10 +11,12 @@
 mod bench;
 mod config;
 mod jobs;
+mod location;
 mod pane;
 mod pick;
 mod picker;
 mod portal;
+mod recall;
 mod selection;
 mod service;
 mod window;
@@ -108,7 +110,7 @@ enum Command {
     Open(Option<PathBuf>),
     Service,
     Portal(String),
-    Pick(Pick),
+    Pick(Box<Pick>),
     Bench(PathBuf),
 }
 
@@ -131,7 +133,7 @@ fn main() -> ExitCode {
     match command {
         Command::Bench(folder) => bench::list(&folder),
         Command::Open(folder) => open(folder),
-        Command::Pick(pick) => run_pick(pick),
+        Command::Pick(pick) => run_pick(*pick),
         Command::Service => service::run(),
         Command::Portal(command) => portal::run(&command),
     }
@@ -236,7 +238,8 @@ fn parse_args(mut parser: lexopt::Parser) -> Result<Option<Command>, String> {
                 )));
             }
             Some(Value(word)) if folder.is_none() && word == "pick" => {
-                return parse_pick(parser).map(|pick| pick.map(Command::Pick));
+                return parse_pick(parser)
+                    .map(|pick| pick.map(|pick| Command::Pick(Box::new(pick))));
             }
             Some(Value(path)) if folder.is_none() => folder = Some(PathBuf::from(path)),
             Some(arg) => return Err(arg.unexpected().to_string()),

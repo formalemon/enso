@@ -63,6 +63,9 @@ impl Files {
             menu.draw(canvas, bounds, &look.menu());
         }
         self.draw_confirm(canvas, bounds);
+        if self.help {
+            self.draw_help(canvas, bounds);
+        }
         Paint::when(animating)
     }
 
@@ -106,6 +109,10 @@ impl Files {
         let separator = Text::new("›", size, colors.muted);
         let gap = canvas.measure(&separator).w + space::SM * 2.0;
         let right = self.draw_filter(canvas, area) - space::LG;
+        if self.location.is_some() {
+            self.draw_location(canvas, Rect::new(x, area.y, (right - x).max(0.0), area.h));
+            return;
+        }
         let widths: Vec<f32> = crumbs
             .iter()
             .enumerate()
@@ -157,6 +164,93 @@ impl Files {
                 self.hits.push((rect, hit));
             }
             x += widths[i];
+        }
+    }
+
+    /// The location as text, in place of the crumbs, while it's typed.
+    fn draw_location(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
+        let colors = self.ctx.theme.colors.clone();
+        let accent = self.ctx.accent();
+        let height = 32.0;
+        let rect = Rect::new(area.x, area.y + (area.h - height) / 2.0, area.w, height);
+        canvas.fill(rect, radius::pill(height), colors.surface);
+        let ring = if self.location_missing {
+            colors.love
+        } else {
+            accent
+        };
+        canvas.stroke(rect, radius::pill(height), stroke::HAIRLINE, ring);
+        let text_rect = rect.inset_xy(space::LG, 0.0);
+        let style = field::Style {
+            size: self.font(type_scale::BODY),
+            color: colors.text,
+            placeholder: "Type a folder, ~ for home; Tab completes",
+            placeholder_color: colors.muted,
+            caret: accent,
+            selection: accent.alpha(opacity::TINT * 2.0),
+        };
+        if let Some(field) = &mut self.location {
+            field.draw(canvas, text_rect, &style, true);
+        }
+        self.hits.push((rect, Hit::Location(text_rect.x)));
+    }
+
+    /// The keys, on a card over everything (`?` or F1).
+    fn draw_help(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
+        let look = self.look();
+        let colors = self.ctx.theme.colors.clone();
+        let small = self.font(type_scale::SMALL);
+        let mut keys: Vec<(&str, &str)> = vec![
+            ("↑ ↓  j k", "move"),
+            ("Enter  →  l", "open"),
+            ("←  h  Backspace", "up a folder"),
+            ("Alt+← →  H L", "back, forward"),
+            ("Space", "choose, and move on"),
+            ("Shift+↑ ↓", "choose a run"),
+            ("Ctrl+A  ·  *", "choose all · turn round"),
+            ("Esc", "clear filter, then choice"),
+            ("/  Ctrl+F", "filter as you type"),
+            ("Ctrl+L", "type a location"),
+            ("Ctrl+H  ·  .", "dotfiles"),
+            ("~  ·  g h", "home"),
+            ("g g  ·  G", "first · last"),
+            ("Ctrl+B", "sidebar"),
+            ("Ctrl+Shift+C", "copy the path"),
+            ("Menu  ·  right-click", "more"),
+            ("Ctrl+R", "reload"),
+        ];
+        if let Some(picker) = &self.picker {
+            keys.push(("Ctrl+Enter", "finish"));
+            if picker.name.is_some() {
+                keys.push(("Tab", "list, or the name"));
+            }
+            keys.push(("Esc (nothing left)", "cancel"));
+        } else {
+            keys.push(("Ctrl+Q", "close"));
+        }
+        let rows = keys.len().div_ceil(2);
+        let line = (small * 1.9).round();
+        let height = 40.0 + rows as f32 * line + 2.0 * space::XL;
+        let inner = controls::dialog(canvas, bounds, 640.0, height, &look, 1.0);
+        canvas.text(
+            &Text::new("Keys", self.font(type_scale::TITLE), colors.text).medium(),
+            inner.x,
+            inner.y,
+        );
+        let column = (inner.w - space::XL) / 2.0;
+        let key_width = column * 0.48;
+        for (index, (key, what)) in keys.iter().enumerate() {
+            let (col, row) = (index / rows, index % rows);
+            let x = inner.x + col as f32 * (column + space::XL);
+            let y = inner.y + 40.0 + row as f32 * line;
+            let rect = Rect::new(x, y, key_width, line);
+            canvas.text_in(
+                &Text::new(key, small, look.accent).medium(),
+                rect,
+                Align::Start,
+            );
+            let rest = Rect::new(x + key_width, y, column - key_width, line);
+            canvas.text_in(&Text::new(what, small, colors.subtle), rest, Align::Start);
         }
     }
 
@@ -1169,6 +1263,30 @@ mod tests {
             [&Hit::Replace, &Hit::KeepFile],
             "only the question answers"
         );
+    }
+
+    #[test]
+    fn renders_the_location_and_the_keys() {
+        let mut files = files();
+        let mut field = TextField::new("~/dev/en");
+        field.select(0..0);
+        files.location = Some(field);
+        snapshot(&render(&mut files, (900, 300)), "enso-files-location");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Location(_)))
+        );
+        assert!(
+            !files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Crumb(_)))
+        );
+        files.location = None;
+        files.help = true;
+        snapshot(&render(&mut files, (900, 560)), "enso-files-keys");
     }
 
     #[test]

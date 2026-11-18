@@ -15,17 +15,26 @@ use enso_ui::{
 };
 
 use super::{Action, Files, Hit, MenuFor};
-use crate::{pane::Open, pick::Choice, picker::Under};
+use crate::{location, pane::Open, pick::Choice, picker::Under};
 
 /// Rows a wheel notch scrolls.
 const WHEEL_ROWS: f32 = 3.0;
 
 impl Files {
     pub(super) fn key(&mut self, key: KeyEvent, cx: &mut Cx<'_>, now: Instant) {
+        if self.help {
+            // Any key puts the keys away.
+            self.help = false;
+            cx.redraw();
+            return;
+        }
         if self.confirm_key(&key, cx) || self.menu_key(&key, cx) {
             return;
         }
-        if self.filter_key(key, cx, now) || self.name_key(key, cx, now) {
+        if self.location_key(key, cx)
+            || self.filter_key(key, cx, now)
+            || self.name_key(key, cx, now)
+        {
             return;
         }
         self.list_key(key, cx, now);
@@ -41,8 +50,8 @@ impl Files {
         };
         match key.key {
             Key::Enter => {
-                picker.answer(vec![path]);
-                cx.exit();
+                self.finish(vec![path], cx);
+                return true;
             }
             Key::Escape => picker.confirm = None,
             _ => {}
@@ -310,9 +319,76 @@ impl Files {
         true
     }
 
+    /// Keys for the location typed as text, while it's open.
+    fn location_key(&mut self, key: KeyEvent, cx: &mut Cx<'_>) -> bool {
+        let Some(field) = &mut self.location else {
+            return false;
+        };
+        if key.key == Key::Tab {
+            let files = self
+                .picker
+                .as_ref()
+                .is_none_or(|picker| !picker.request.directory());
+            let completed = location::complete(
+                field.text(),
+                self.pane.location(),
+                &self.home,
+                files,
+                self.pane.shows_hidden(),
+            );
+            if let Some(completed) = completed {
+                field.replace_all(&completed);
+                self.location_missing = false;
+            }
+            cx.redraw();
+            return true;
+        }
+        match field.key(&key) {
+            field::Response::Ignored => return false,
+            field::Response::Cancel => self.location = None,
+            field::Response::Submit => {
+                match location::target(field.text(), self.pane.location(), &self.home) {
+                    location::Target::Folder(path) => {
+                        self.location = None;
+                        self.navigate(path);
+                    }
+                    location::Target::File(path) => {
+                        self.location = None;
+                        self.reveal(&path);
+                    }
+                    location::Target::Missing => self.location_missing = true,
+                }
+            }
+            field::Response::Changed => self.location_missing = false,
+            field::Response::Copy(text) | field::Response::Cut(text) => {
+                cx.copy(Clip::text(&text));
+            }
+            field::Response::Paste => cx.paste(&TEXT_TYPES),
+            field::Response::Moved => {}
+        }
+        cx.redraw();
+        true
+    }
+
+    /// Open the location as text, all of it selected to type over.
+    fn open_location(&mut self, cx: &mut Cx<'_>) {
+        let mut field = TextField::new(&location::display(self.pane.location(), &self.home));
+        field.select_all();
+        self.location = Some(field);
+        self.location_missing = false;
+        self.filter = None;
+        if let Some(picker) = &mut self.picker {
+            picker.typing_name = false;
+        }
+        cx.redraw();
+    }
+
     /// Text from the clipboard, for whichever field asked.
     pub(super) fn paste(&mut self, text: &str, now: Instant, cx: &mut Cx<'_>) {
-        if let Some(field) = &mut self.filter {
+        if let Some(field) = &mut self.location {
+            field.insert(text);
+            self.location_missing = false;
+        } else if let Some(field) = &mut self.filter {
             field.insert(text);
             let text = field.text().to_owned();
             self.pane.set_filter(&text);
@@ -450,6 +526,15 @@ impl Files {
                 self.open_filter(cx);
                 return;
             }
+            Key::Char('l') if mods.ctrl => {
+                self.open_location(cx);
+                return;
+            }
+            Key::Char('?') | Key::F(1) => {
+                self.help = true;
+                cx.redraw();
+                return;
+            }
             Key::Tab if self.picker.as_ref().is_some_and(|p| p.name.is_some()) => {
                 if let Some(picker) = &mut self.picker {
                     picker.typing_name = true;
@@ -578,7 +663,7 @@ impl Files {
                 let hover = self.hit(x, y);
                 cx.set_cursor(match hover {
                     Some(Hit::SidebarEdge) => Cursor::ColResize,
-                    Some(Hit::Filter(_) | Hit::Name(_)) => Cursor::Text,
+                    Some(Hit::Filter(_) | Hit::Name(_) | Hit::Location(_)) => Cursor::Text,
                     Some(
                         Hit::Crumb(_)
                         | Hit::Back
@@ -632,7 +717,15 @@ impl Files {
     }
 
     fn press(&mut self, x: f32, y: f32, button: Button, clicks: u8, cx: &mut Cx<'_>, now: Instant) {
+        if self.help {
+            self.help = false;
+            return;
+        }
         let hit = self.hit(x, y);
+        // Clicking anywhere but the location puts it away.
+        if self.location.is_some() && !matches!(hit, Some(Hit::Location(_))) {
+            self.location = None;
+        }
         // A question is open: only its answers count.
         if self
             .picker
@@ -641,11 +734,12 @@ impl Files {
         {
             match hit {
                 Some(Hit::Replace) => {
-                    if let Some(picker) = &self.picker
-                        && let Some(path) = picker.confirm.clone()
+                    if let Some(path) = self
+                        .picker
+                        .as_ref()
+                        .and_then(|picker| picker.confirm.clone())
                     {
-                        picker.answer(vec![path]);
-                        cx.exit();
+                        self.finish(vec![path], cx);
                     }
                 }
                 Some(Hit::KeepFile) | None => {
@@ -737,6 +831,19 @@ impl Files {
                 self.open_filter(cx);
                 let size = self.font(type_scale::BODY);
                 if let Some(field) = &mut self.filter {
+                    field.click(
+                        |text| cx.measure(&Text::new(text, size, Rgba::TRANSPARENT)).w,
+                        x - text_x,
+                        mods.shift,
+                    );
+                    if clicks >= 2 {
+                        field.select_word();
+                    }
+                }
+            }
+            Some(Hit::Location(text_x)) => {
+                let size = self.font(type_scale::BODY);
+                if let Some(field) = &mut self.location {
                     field.click(
                         |text| cx.measure(&Text::new(text, size, Rgba::TRANSPARENT)).w,
                         x - text_x,

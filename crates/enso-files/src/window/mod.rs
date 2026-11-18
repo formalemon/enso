@@ -37,6 +37,7 @@ use crate::{
     pane::{Open, Pane, Request},
     pick,
     picker::{Accept, Outcome, Picker, Under},
+    recall::{self, Recall},
     selection::Selection,
 };
 
@@ -54,6 +55,8 @@ enum Hit {
     Title,
     /// The filter field, whose text starts at this `x`.
     Filter(f32),
+    /// The location typed as text, whose text starts at this `x`.
+    Location(f32),
     Place(PathBuf),
     /// The edge between the sidebar and the list.
     SidebarEdge,
@@ -138,6 +141,12 @@ pub struct Files {
     places: Vec<Place>,
     picker: Option<Picker>,
     menu: Option<(Menu, MenuFor)>,
+    /// The location as text (`Ctrl+L`), while it's being typed, and
+    /// whether Enter found nothing there.
+    location: Option<TextField>,
+    location_missing: bool,
+    /// The keys, shown over everything (`?`, `F1`).
+    help: bool,
 }
 
 impl Files {
@@ -170,17 +179,36 @@ impl Files {
             sidebar_open: true,
             picker: None,
             menu: None,
+            location: None,
+            location_missing: false,
+            help: false,
         }
     }
 
     /// The window as a picker, answering `request` into `outcome`.
+    ///
+    /// It opens where this application last picked from; else where the
+    /// application asked; else in Downloads (Documents, to save).
     pub fn picker(
         ctx: Context,
         config: FilesConfig,
-        request: pick::Request,
+        mut request: pick::Request,
         outcome: Outcome,
     ) -> Self {
-        let fallback = places::home();
+        let recall = Recall::load(&ctx.paths.state_dir.join(recall::FILE));
+        if let Some(folder) = recall.folder(&request.app_id) {
+            request.folder = Some(folder.to_owned());
+        }
+        let dirs = UserDirs::load();
+        let usual = if request.is_save() {
+            UserDir::Documents
+        } else {
+            UserDir::Downloads
+        };
+        let fallback = dirs
+            .get(usual)
+            .filter(|dir| dir.is_dir())
+            .map_or_else(places::home, Path::to_owned);
         let start = request.start(&fallback);
         let mut files = Self::new(ctx, config, start);
         files.size = (900.0, 600.0);
@@ -285,10 +313,7 @@ impl Files {
             selection.insert(path.clone());
         }
         match picker.accept(self.pane.location(), &selection, &under) {
-            Accept::Answer(paths) => {
-                picker.answer(paths);
-                cx.exit();
-            }
+            Accept::Answer(paths) => self.finish(paths, cx),
             Accept::Enter(path) => {
                 // Typing a folder's name went there; the name to save as
                 // goes back to the one suggested.
@@ -309,6 +334,22 @@ impl Files {
             Accept::Nothing => {}
         }
         cx.redraw();
+    }
+
+    /// Hand back `paths` and close, remembering where they were chosen.
+    fn finish(&mut self, paths: Vec<PathBuf>, cx: &mut Cx<'_>) {
+        let Some(picker) = &self.picker else { return };
+        let app = picker.request.app_id.clone();
+        picker.answer(paths);
+        if !app.is_empty() {
+            let file = self.ctx.paths.state_dir.join(recall::FILE);
+            let mut recall = Recall::load(&file);
+            recall.remember(&app, self.pane.location());
+            if let Err(err) = recall.save(&file) {
+                eprintln!("enso-files: cannot remember the folder: {err}");
+            }
+        }
+        cx.exit();
     }
 
     /// Close without choosing anything.

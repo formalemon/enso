@@ -200,7 +200,7 @@ fn request(
     request.folder =
         get::<Vec<u8>>(options, "current_folder").map(|bytes| uri::from_portal_bytes(&bytes));
     request.parent = parent_window.strip_prefix("wayland:").map(str::to_owned);
-    let _ = app_id;
+    request.app_id = app_id.to_owned();
     request
 }
 
