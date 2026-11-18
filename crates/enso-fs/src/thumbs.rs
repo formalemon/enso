@@ -241,16 +241,14 @@ pub fn fit(image: &Thumb, max_side: u32) -> Thumb {
                 }
             }
             let count = u64::from((y1 - y0) * (x1 - x0));
-            if sum[3] == 0 {
-                out.extend([0, 0, 0, 0]);
-            } else {
-                out.extend([
-                    (sum[0] / sum[3]) as u8,
-                    (sum[1] / sum[3]) as u8,
-                    (sum[2] / sum[3]) as u8,
-                    (sum[3] / count) as u8,
-                ]);
-            }
+            // Fully transparent: nothing to average.
+            let channel = |c: u64| c.checked_div(sum[3]).unwrap_or(0) as u8;
+            out.extend([
+                channel(sum[0]),
+                channel(sum[1]),
+                channel(sum[2]),
+                (sum[3] / count) as u8,
+            ]);
         }
     }
     Thumb {
