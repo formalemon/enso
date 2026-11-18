@@ -150,6 +150,20 @@ impl Keymap {
             (syms::End, Key::End),
             (syms::Page_Up, Key::PageUp),
             (syms::Page_Down, Key::PageDown),
+            (syms::Insert, Key::Insert),
+            (syms::Menu, Key::Menu),
+            (syms::F1, Key::F(1)),
+            (syms::F2, Key::F(2)),
+            (syms::F3, Key::F(3)),
+            (syms::F4, Key::F(4)),
+            (syms::F5, Key::F(5)),
+            (syms::F6, Key::F(6)),
+            (syms::F7, Key::F(7)),
+            (syms::F8, Key::F(8)),
+            (syms::F9, Key::F(9)),
+            (syms::F10, Key::F(10)),
+            (syms::F11, Key::F(11)),
+            (syms::F12, Key::F(12)),
         ];
         let key = named
             .iter()

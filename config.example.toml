@@ -81,6 +81,17 @@ default_ignores = true
 # ignore = ["*.iso", "Music/incoming", "~/VMs", "!target"]
 ignore = []
 
+[files]
+# Show dotfiles. Ctrl+H or "." toggles them in the window.
+hidden = false
+# Order folders by "name", "size", "modified", "created", or "extension".
+sort = "name"
+descending = false
+# Folders before files, whatever the order.
+folders_first = true
+# Row height: "comfortable" or "compact".
+density = "comfortable"
+
 [notify]
 width = 360
 # Lifetime of notifications that do not set one, in milliseconds.

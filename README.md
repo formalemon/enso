@@ -14,7 +14,7 @@ and one way of moving.
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
-| `enso-files` | File picker for every app (behind the desktop portal) and a file manager: multi-select across folders, previews, keyboard and mouse alike — see [the plan](docs/plans/enso-files.md) | planned |
+| `enso-files` | File picker for every app (behind the desktop portal) and a file manager: multi-select across folders, previews, keyboard and mouse alike — see [the plan](docs/plans/enso-files.md) | browsing; picker next |
 
 This is the initial scaffold: the architecture, shared libraries, and a thin
 working slice of every tool. See [Roadmap](#roadmap) for what is not built yet.
@@ -683,4 +683,4 @@ quickest way to see a visual change without restarting anything.
   means PAM.
 - **enso-power** — a tile in the control center.
 - **enso-ui** — fractional scaling for the single-surface runtime (the
-  per-output one has it), a shaped-text cache.
+  per-output one has it).

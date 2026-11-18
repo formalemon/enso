@@ -1,6 +1,7 @@
 //! Shared interface layer of the enso desktop suite.
 //!
-//! - [`shell`] — a small layer-shell runtime: implement [`App`], call [`run`].
+//! - [`shell`] — a small runtime for one layer surface or one window:
+//!   implement [`App`], call [`run`].
 //! - [`screens`] — its sibling for interfaces that cover every output, one
 //!   surface each: the wallpaper and the lock screen.
 //! - [`canvas`] — a software canvas for rounded shapes, soft shadows, text,
@@ -32,11 +33,14 @@ pub mod watch;
 pub use canvas::{Canvas, Offscreen, Shape};
 pub use geom::{Align, Rect, Size};
 pub use image::Image;
-pub use input::{Button, Key, KeyEvent, Mods, Nav, PointerEvent};
+pub use input::{
+    BUTTON_BACK, BUTTON_FORWARD, Button, Clicks, Key, KeyEvent, Mods, Nav, PointerEvent,
+};
 pub use picture::Picture;
 pub use presence::Presence;
 pub use screens::{Role, Screen, Screens, run_screens};
 pub use shell::{
-    Anchor, App, Cx, Error, Event, Keyboard, Layer, Margin, Paint, Proxy, SurfaceSpec, run,
+    Anchor, App, Cursor, Cx, Error, Event, Keyboard, Layer, Margin, Paint, Proxy, SurfaceSpec,
+    WindowSpec, run,
 };
 pub use text::{Font, Text, TextEngine, Weight};

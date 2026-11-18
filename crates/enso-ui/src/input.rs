@@ -1,5 +1,7 @@
 //! Toolkit-independent keyboard and pointer events.
 
+use std::time::{Duration, Instant};
+
 /// A key, reduced to what the suite's interfaces act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
@@ -16,6 +18,11 @@ pub enum Key {
     End,
     PageUp,
     PageDown,
+    Insert,
+    /// The context-menu key.
+    Menu,
+    /// A function key, `F(1)` to `F(12)`.
+    F(u8),
     /// A printable character, as produced by the active layout.
     Char(char),
     /// Anything else (modifiers, function keys, …).
@@ -117,7 +124,64 @@ pub enum PointerEvent {
         y: f32,
         dx: f32,
         dy: f32,
+        /// From a mouse wheel, which moves in notches, rather than a
+        /// touchpad, which glides: lists step by rows for the one and
+        /// follow the fingers for the other.
+        wheel: bool,
     },
+}
+
+/// The side buttons most mice have, which browsers and file managers use
+/// for back and forward (evdev's `BTN_SIDE` and `BTN_EXTRA`).
+pub const BUTTON_BACK: Button = Button::Other(0x113);
+pub const BUTTON_FORWARD: Button = Button::Other(0x114);
+
+/// Counts clicks: the second press of a double-click, the third of a
+/// triple. A press counts on from the one before if it is the same button,
+/// soon enough, and near enough; otherwise it is a first click.
+#[derive(Clone, Copy, Debug)]
+pub struct Clicks {
+    last: Option<(Instant, f32, f32, Button, u8)>,
+    /// Longest gap between the clicks of a double-click.
+    pub interval: Duration,
+    /// How far the pointer may wander between them, in logical pixels.
+    pub slop: f32,
+}
+
+impl Default for Clicks {
+    fn default() -> Self {
+        Self {
+            last: None,
+            // GTK's and libinput's usual.
+            interval: Duration::from_millis(400),
+            slop: 4.0,
+        }
+    }
+}
+
+impl Clicks {
+    /// Take a press and say which click it is: 1, 2, 3, … .
+    pub fn press(&mut self, x: f32, y: f32, button: Button, now: Instant) -> u8 {
+        let count = match self.last {
+            Some((at, last_x, last_y, last_button, count))
+                if last_button == button
+                    && now.saturating_duration_since(at) <= self.interval
+                    && (x - last_x).abs() <= self.slop
+                    && (y - last_y).abs() <= self.slop =>
+            {
+                count.saturating_add(1)
+            }
+            _ => 1,
+        };
+        self.last = Some((now, x, y, button, count));
+        count
+    }
+
+    /// Forget the last click, so the next press is a first one (after a
+    /// drag, say, or once the thing clicked has gone).
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +197,24 @@ mod tests {
             },
             repeat: false,
         }
+    }
+
+    #[test]
+    fn clicks_count_up_while_quick_and_close() {
+        let mut clicks = Clicks::default();
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        assert_eq!(clicks.press(10.0, 10.0, Button::Left, at(0)), 1);
+        assert_eq!(clicks.press(11.0, 12.0, Button::Left, at(200)), 2);
+        assert_eq!(clicks.press(11.0, 12.0, Button::Left, at(400)), 3);
+        // Too slow.
+        assert_eq!(clicks.press(11.0, 12.0, Button::Left, at(1000)), 1);
+        // Too far.
+        assert_eq!(clicks.press(40.0, 12.0, Button::Left, at(1100)), 1);
+        // Another button.
+        assert_eq!(clicks.press(40.0, 12.0, Button::Right, at(1200)), 1);
+        clicks.reset();
+        assert_eq!(clicks.press(40.0, 12.0, Button::Right, at(1300)), 1);
     }
 
     #[test]

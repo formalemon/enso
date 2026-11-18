@@ -404,8 +404,10 @@ impl Shaped {
     }
 }
 
-/// Shapes in a generation: comfortably more than any one interface shows.
-const GENERATION: usize = 256;
+/// Shapes in a generation: comfortably more than any one interface shows —
+/// a file manager's full window of rows and columns among them — so
+/// scrolling back over what was just on screen finds it still shaped.
+const GENERATION: usize = 1024;
 
 impl Layouts {
     /// Whether this is shaped, promoting it to fresh if it was stale.

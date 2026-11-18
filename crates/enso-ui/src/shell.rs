@@ -1,5 +1,11 @@
-//! The layer-shell runtime: one Wayland surface, an event loop, and the
-//! [`App`] trait each tool implements.
+//! The runtime: one Wayland surface, an event loop, and the [`App`] trait
+//! each tool implements.
+//!
+//! The surface is a layer-shell one — a bar, a toast, an overlay — unless
+//! the app asks for a window ([`SurfaceSpec::window`]): an ordinary
+//! `xdg-shell` toplevel that the compositor tiles, moves, and resizes like
+//! any other, and that can belong to another program's window (a file
+//! chooser to the browser that asked for it).
 //!
 //! The runtime owns everything Wayland-specific — surface configuration,
 //! shared-memory buffers, HiDPI scale, keyboard layouts and key repeat,
@@ -18,6 +24,10 @@ use calloop::{
     timer::{TimeoutAction, Timer},
 };
 use enso_core::config::Appearance;
+use smithay_client_toolkit::reexports::protocols::xdg::foreign::zv2::client::{
+    zxdg_imported_v2::{self, ZxdgImportedV2},
+    zxdg_importer_v2::ZxdgImporterV2,
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     delegate_dispatch2, delegate_registry,
@@ -31,6 +41,7 @@ use smithay_client_toolkit::{
             protocol::{
                 wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
                 wl_output::{self, WlOutput},
+                wl_pointer::AxisSource,
                 wl_pointer::WlPointer,
                 wl_seat::WlSeat,
                 wl_shm,
@@ -52,6 +63,10 @@ use smithay_client_toolkit::{
         wlr_layer::{
             self, KeyboardInteractivity, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure, SurfaceKind,
+        },
+        xdg::{
+            XdgShell,
+            window::{Window, WindowConfigure, WindowDecorations, WindowHandler},
         },
     },
     shm::{Shm, ShmHandler, slot::SlotPool},
@@ -167,6 +182,26 @@ pub struct SurfaceSpec {
     pub keyboard: Keyboard,
     /// Whether to show the surface at startup. Hidden surfaces cost nothing.
     pub visible: bool,
+    /// Be an ordinary window instead of a layer surface. The layer, anchor,
+    /// margin, exclusive zone, and keyboard fields are then not used, and
+    /// `width`/`height` are only the size to start at: the compositor
+    /// decides from there.
+    pub window: Option<WindowSpec>,
+}
+
+/// What a window is called, and whose it is.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowSpec {
+    /// Identifies the program to the compositor (for Niri `window-rule`s)
+    /// and to the desktop (its `.desktop` file name).
+    pub app_id: String,
+    pub title: String,
+    /// The smallest it is any use at, in logical pixels.
+    pub min_size: (u32, u32),
+    /// Another program's window this one belongs to, as an `xdg-foreign`
+    /// handle — what the desktop portal passes as `wayland:<handle>`. The
+    /// compositor then keeps this window above that one, as a dialog.
+    pub parent: Option<String>,
 }
 
 impl SurfaceSpec {
@@ -182,6 +217,18 @@ impl SurfaceSpec {
             margin: Margin::default(),
             keyboard: Keyboard::None,
             visible: true,
+            window: None,
+        }
+    }
+
+    /// An ordinary window of `width × height` to start with.
+    pub fn window(window: WindowSpec, width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            keyboard: Keyboard::Exclusive,
+            window: Some(window),
+            ..Self::new("", Layer::Top, Anchor::NONE)
         }
     }
 
@@ -213,6 +260,58 @@ pub enum Event<M> {
     },
     /// The surface is now shown on the output with this connector name.
     Output(String),
+    /// A window was asked to close (its close binding, or the compositor
+    /// going away). It stays open unless the app calls [`Cx::exit`].
+    Close,
+    /// A window was maximised or made full-screen, or stopped being so.
+    /// Apps round corners and draw edges only when it is free.
+    WindowState {
+        maximized: bool,
+        fullscreen: bool,
+        activated: bool,
+    },
+}
+
+/// The pointer's look over a surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cursor {
+    #[default]
+    Default,
+    /// Over something to click: a link, a button.
+    Pointer,
+    /// Over text that can be selected or typed into.
+    Text,
+    /// Over something that can be picked up and dragged.
+    Grab,
+    Grabbing,
+    /// A drop here copies.
+    Copy,
+    /// A drop here makes a link.
+    Alias,
+    NotAllowed,
+    /// Busy, but still listening.
+    Progress,
+    /// Over an edge that resizes something side to side, or up and down.
+    ColResize,
+    RowResize,
+}
+
+impl From<Cursor> for CursorIcon {
+    fn from(cursor: Cursor) -> Self {
+        match cursor {
+            Cursor::Default => Self::Default,
+            Cursor::Pointer => Self::Pointer,
+            Cursor::Text => Self::Text,
+            Cursor::Grab => Self::Grab,
+            Cursor::Grabbing => Self::Grabbing,
+            Cursor::Copy => Self::Copy,
+            Cursor::Alias => Self::Alias,
+            Cursor::NotAllowed => Self::NotAllowed,
+            Cursor::Progress => Self::Progress,
+            Cursor::ColResize => Self::ColResize,
+            Cursor::RowResize => Self::RowResize,
+        }
+    }
 }
 
 /// Whether a frame finished an animation or needs a follow-up.
@@ -245,6 +344,10 @@ pub(crate) struct Requests {
     visible: Option<bool>,
     input_region: Option<Option<Rect>>,
     keyboard: Option<Keyboard>,
+    cursor: Option<Cursor>,
+    title: Option<String>,
+    begin_move: bool,
+    toggle_maximized: bool,
 }
 
 /// Handed to an app while it handles an event: lets it measure text and ask
@@ -314,6 +417,28 @@ impl<'a> Cx<'a> {
     /// keyboard only while a text field is being typed into.
     pub fn set_keyboard(&mut self, keyboard: Keyboard) {
         self.requests.keyboard = Some(keyboard);
+    }
+
+    /// Change how the pointer looks while it is over the surface.
+    pub fn set_cursor(&mut self, cursor: Cursor) {
+        self.requests.cursor = Some(cursor);
+    }
+
+    /// Retitle a window.
+    pub fn set_title(&mut self, title: &str) {
+        self.requests.title = Some(title.to_owned());
+    }
+
+    /// Let the pointer carry a window away: call while handling the press
+    /// that grabbed it (on a title row, say). Floating windows follow it;
+    /// tiled ones are the compositor's to place.
+    pub fn begin_move(&mut self) {
+        self.requests.begin_move = true;
+    }
+
+    /// Maximise a window, or give it back its own size.
+    pub fn toggle_maximized(&mut self) {
+        self.requests.toggle_maximized = true;
     }
 }
 
@@ -394,20 +519,52 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
 
     let compositor = CompositorState::bind(&globals, &qh)
         .map_err(|err| Error::new("compositor lacks wl_compositor", err))?;
-    let layer_shell = LayerShell::bind(&globals, &qh)
-        .map_err(|err| Error::new("compositor lacks wlr-layer-shell", err))?;
     let shm = Shm::bind(&globals, &qh).map_err(|err| Error::new("compositor lacks wl_shm", err))?;
     let pool =
         SlotPool::new(256 * 256 * 4, &shm).map_err(|err| Error::new("shared memory", err))?;
 
     let spec = app.surface();
-    let layer = layer_shell.create_layer_surface(
-        &qh,
-        compositor.create_surface(&qh),
-        spec.layer.into(),
-        Some(spec.namespace.clone()),
-        None,
-    );
+    let wl_surface = compositor.create_surface(&qh);
+    let surface = match &spec.window {
+        None => {
+            let layer_shell = LayerShell::bind(&globals, &qh)
+                .map_err(|err| Error::new("compositor lacks wlr-layer-shell", err))?;
+            Surface::Layer(layer_shell.create_layer_surface(
+                &qh,
+                wl_surface,
+                spec.layer.into(),
+                Some(spec.namespace.clone()),
+                None,
+            ))
+        }
+        Some(window_spec) => {
+            let xdg = XdgShell::bind(&globals, &qh)
+                .map_err(|err| Error::new("compositor lacks xdg-shell", err))?;
+            // Decorations are the app's to draw: Niri draws a border and a
+            // focus ring around windows, never a title bar.
+            let window = xdg.create_window(wl_surface, WindowDecorations::RequestClient, &qh);
+            window.set_app_id(window_spec.app_id.clone());
+            window.set_title(window_spec.title.clone());
+            let (min_w, min_h) = window_spec.min_size;
+            if min_w > 0 || min_h > 0 {
+                window.set_min_size(Some((min_w.max(1), min_h.max(1))));
+            }
+            // A parent that can't be found leaves a window of its own, not
+            // no window at all.
+            let imported = window_spec.parent.as_deref().and_then(|handle| {
+                let importer: ZxdgImporterV2 = globals.bind(&qh, 1..=1, ForeignData).ok()?;
+                let imported = importer.import_toplevel(handle.to_owned(), &qh, ForeignData);
+                imported.set_parent_of(window.wl_surface());
+                importer.destroy();
+                Some(imported)
+            });
+            Surface::Window {
+                window,
+                _xdg: xdg,
+                _parent: imported,
+            }
+        }
+    };
 
     let (sender, messages) = channel::channel();
     handle
@@ -426,7 +583,8 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         compositor,
         shm,
         pool,
-        layer,
+        surface,
+        conn,
         qh,
         handle,
         text: TextEngine::new(appearance),
@@ -444,6 +602,10 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         keys: Keys::default(),
         repeating: None,
         pointer: None,
+        seat: None,
+        press_serial: None,
+        cursor: Cursor::Default,
+        maximized: false,
         spec,
     };
 
@@ -470,7 +632,8 @@ struct Runtime<A: App> {
     compositor: CompositorState,
     shm: Shm,
     pool: SlotPool,
-    layer: LayerSurface,
+    surface: Surface,
+    conn: Connection,
     qh: QueueHandle<Self>,
     handle: LoopHandle<'static, Self>,
     text: TextEngine,
@@ -492,6 +655,51 @@ struct Runtime<A: App> {
     /// The key currently auto-repeating and its timer.
     repeating: Option<(u32, RegistrationToken)>,
     pointer: Option<ThemedPointer>,
+    /// The seat the pointer belongs to, and the serial of its latest press:
+    /// what a window move has to show the compositor.
+    seat: Option<WlSeat>,
+    press_serial: Option<u32>,
+    cursor: Cursor,
+    maximized: bool,
+}
+
+/// The surface's role: what the compositor treats it as.
+enum Surface {
+    Layer(LayerSurface),
+    Window {
+        window: Window,
+        /// Kept for as long as the window: it owns the `xdg_wm_base`.
+        _xdg: XdgShell,
+        /// The other program's window this one belongs to, while it does.
+        _parent: Option<ZxdgImportedV2>,
+    },
+}
+
+impl Surface {
+    fn wl_surface(&self) -> &WlSurface {
+        match self {
+            Self::Layer(layer) => layer.wl_surface(),
+            Self::Window { window, .. } => window.wl_surface(),
+        }
+    }
+
+    fn commit(&self) {
+        self.wl_surface().commit();
+    }
+
+    fn layer(&self) -> Option<&LayerSurface> {
+        match self {
+            Self::Layer(layer) => Some(layer),
+            Self::Window { .. } => None,
+        }
+    }
+
+    fn window(&self) -> Option<&Window> {
+        match self {
+            Self::Layer(_) => None,
+            Self::Window { window, .. } => Some(window),
+        }
+    }
 }
 
 impl<A: App> Runtime<A> {
@@ -513,9 +721,12 @@ impl<A: App> Runtime<A> {
         {
             self.spec.width = width;
             self.spec.height = height;
-            if self.visible {
-                self.layer.set_size(width, height);
-                self.layer.commit();
+            // A window's size is the compositor's call once it is mapped.
+            if self.visible
+                && let Some(layer) = self.surface.layer()
+            {
+                layer.set_size(width, height);
+                layer.commit();
             }
         }
         if let Some(region) = requests.input_region
@@ -525,16 +736,41 @@ impl<A: App> Runtime<A> {
             if self.visible {
                 self.send_input_region();
                 // Surface state only takes effect with a commit.
-                self.layer.commit();
+                self.surface.commit();
             }
         }
         if let Some(keyboard) = requests.keyboard
             && keyboard != self.spec.keyboard
         {
             self.spec.keyboard = keyboard;
-            if self.visible {
-                self.layer.set_keyboard_interactivity(keyboard.into());
-                self.layer.commit();
+            if self.visible
+                && let Some(layer) = self.surface.layer()
+            {
+                layer.set_keyboard_interactivity(keyboard.into());
+                layer.commit();
+            }
+        }
+        if let Some(cursor) = requests.cursor
+            && cursor != self.cursor
+        {
+            self.cursor = cursor;
+            self.show_cursor();
+        }
+        if let Some(window) = self.surface.window() {
+            if let Some(title) = requests.title {
+                window.set_title(title);
+            }
+            if requests.begin_move
+                && let (Some(seat), Some(serial)) = (&self.seat, self.press_serial)
+            {
+                window.move_(seat, serial);
+            }
+            if requests.toggle_maximized {
+                if self.maximized {
+                    window.unset_maximized();
+                } else {
+                    window.set_maximized();
+                }
             }
         }
         if let Some(visible) = requests.visible
@@ -546,7 +782,7 @@ impl<A: App> Runtime<A> {
 
     /// Queue the current input region on the surface (applied on commit).
     fn send_input_region(&self) {
-        let surface = self.layer.wl_surface();
+        let surface = self.surface.wl_surface();
         let Some(rect) = self.input_region else {
             return surface.set_input_region(None);
         };
@@ -567,6 +803,23 @@ impl<A: App> Runtime<A> {
         self.visible = visible;
         self.configured = false;
         self.frame_pending = false;
+        if !visible {
+            self.stop_repeat();
+        }
+        let layer = match &self.surface {
+            Surface::Layer(layer) => layer,
+            Surface::Window { window, .. } => {
+                if visible {
+                    // Mapping starts with a bufferless commit; the
+                    // compositor answers with a configure.
+                    self.send_input_region();
+                } else {
+                    window.wl_surface().attach(None, 0, 0);
+                }
+                window.commit();
+                return;
+            }
+        };
         if visible {
             // (Re)mapping starts with a bufferless commit carrying the full
             // layer state; the compositor answers with a configure.
@@ -575,29 +828,27 @@ impl<A: App> Runtime<A> {
             // layer it was created on and falls back to the background one —
             // a re-shown toast would sit behind every window. So the layer is
             // stated again on each map (possible since layer-shell version 2).
-            if let SurfaceKind::Wlr(surface) = self.layer.kind()
+            if let SurfaceKind::Wlr(surface) = layer.kind()
                 && surface.version() >= 2
             {
-                self.layer.set_layer(spec.layer.into());
+                layer.set_layer(spec.layer.into());
             }
-            self.layer
-                .set_anchor(wlr_layer::Anchor::from_bits_truncate(spec.anchor.0));
-            self.layer.set_size(spec.width, spec.height);
-            self.layer.set_exclusive_zone(spec.exclusive_zone);
+            layer.set_anchor(wlr_layer::Anchor::from_bits_truncate(spec.anchor.0));
+            layer.set_size(spec.width, spec.height);
+            layer.set_exclusive_zone(spec.exclusive_zone);
             let Margin {
                 top,
                 right,
                 bottom,
                 left,
             } = spec.margin;
-            self.layer.set_margin(top, right, bottom, left);
-            self.layer.set_keyboard_interactivity(spec.keyboard.into());
+            layer.set_margin(top, right, bottom, left);
+            layer.set_keyboard_interactivity(spec.keyboard.into());
             self.send_input_region();
-            self.layer.commit();
+            layer.commit();
         } else {
-            self.stop_repeat();
-            self.layer.wl_surface().attach(None, 0, 0);
-            self.layer.commit();
+            layer.wl_surface().attach(None, 0, 0);
+            layer.commit();
         }
     }
 
@@ -648,7 +899,7 @@ impl<A: App> Runtime<A> {
         );
         let paint = self.app.draw(&mut canvas, Instant::now());
 
-        let surface = self.layer.wl_surface();
+        let surface = self.surface.wl_surface();
         surface.set_buffer_scale(scale);
         surface.damage_buffer(0, 0, width, height);
         if paint == Paint::Animating {
@@ -658,7 +909,7 @@ impl<A: App> Runtime<A> {
         if let Err(err) = buffer.attach_to(surface) {
             return self.fail(Error::new("cannot attach a frame buffer", err));
         }
-        self.layer.commit();
+        self.surface.commit();
     }
 
     fn fail(&mut self, error: Error) {
@@ -667,7 +918,15 @@ impl<A: App> Runtime<A> {
     }
 
     fn is_own(&self, surface: &WlSurface) -> bool {
-        self.layer.wl_surface() == surface
+        self.surface.wl_surface() == surface
+    }
+
+    /// Show the app's chosen cursor. Cosmetic: a missing cursor theme must
+    /// not break input.
+    fn show_cursor(&self) {
+        if let Some(pointer) = &self.pointer {
+            let _ = pointer.set_cursor(&self.conn, self.cursor.into());
+        }
     }
 
     fn press(&mut self, keycode: u32, repeat: bool) {
@@ -852,6 +1111,87 @@ impl<A: App> LayerShellHandler for Runtime<A> {
     }
 }
 
+impl<A: App> WindowHandler for Runtime<A> {
+    fn request_close(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &Window) {
+        self.deliver(Event::Close);
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &Window,
+        configure: WindowConfigure,
+        _serial: u32,
+    ) {
+        if !self.visible {
+            return;
+        }
+        // No size suggested: the window picks, keeping what it has.
+        let current = if self.configured {
+            self.size
+        } else {
+            (self.spec.width.max(1), self.spec.height.max(1))
+        };
+        let size = (
+            configure.new_size.0.map_or(current.0, |w| w.get()),
+            configure.new_size.1.map_or(current.1, |h| h.get()),
+        );
+        let changed = size != self.size || !self.configured;
+        self.size = size;
+        self.configured = true;
+        self.dirty = true;
+        if changed {
+            self.deliver(Event::Resized {
+                width: size.0,
+                height: size.1,
+            });
+        }
+        self.maximized = configure.is_maximized();
+        self.deliver(Event::WindowState {
+            maximized: self.maximized,
+            fullscreen: configure.is_fullscreen(),
+            activated: configure.is_activated(),
+        });
+    }
+}
+
+/// User data for the `xdg-foreign` objects that tie a window to another
+/// program's.
+struct ForeignData;
+
+impl<A: App> Dispatch2<ZxdgImporterV2, Runtime<A>> for ForeignData {
+    fn event(
+        &self,
+        _: &mut Runtime<A>,
+        _: &ZxdgImporterV2,
+        _: <ZxdgImporterV2 as smithay_client_toolkit::reexports::client::Proxy>::Event,
+        _: &Connection,
+        _: &QueueHandle<Runtime<A>>,
+    ) {
+    }
+}
+
+impl<A: App> Dispatch2<ZxdgImportedV2, Runtime<A>> for ForeignData {
+    fn event(
+        &self,
+        runtime: &mut Runtime<A>,
+        imported: &ZxdgImportedV2,
+        event: zxdg_imported_v2::Event,
+        _: &Connection,
+        _: &QueueHandle<Runtime<A>>,
+    ) {
+        // The parent closed, or the handle was never good: the window
+        // carries on as one of its own.
+        if let zxdg_imported_v2::Event::Destroyed = event {
+            imported.destroy();
+            if let Surface::Window { _parent, .. } = &mut runtime.surface {
+                *_parent = None;
+            }
+        }
+    }
+}
+
 impl<A: App> SeatHandler for Runtime<A> {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
@@ -871,6 +1211,7 @@ impl<A: App> SeatHandler for Runtime<A> {
                 self.keyboard = Some(seat.get_keyboard(qh, KeyboardData));
             }
             Capability::Pointer if self.pointer.is_none() => {
+                self.seat = Some(seat.clone());
                 let cursor_surface = self.compositor.create_surface(qh);
                 self.pointer = self
                     .seats
@@ -916,7 +1257,7 @@ impl<A: App> SeatHandler for Runtime<A> {
 impl<A: App> PointerHandler for Runtime<A> {
     fn pointer_frame(
         &mut self,
-        conn: &Connection,
+        _: &Connection,
         _: &QueueHandle<Self>,
         _: &WlPointer,
         events: &[SctkPointerEvent],
@@ -934,19 +1275,23 @@ impl<A: App> PointerHandler for Runtime<A> {
             };
             let event = match &event.kind {
                 PointerEventKind::Enter { .. } => {
-                    if let Some(pointer) = &self.pointer {
-                        // Cosmetic: a missing cursor theme must not break input.
-                        let _ = pointer.set_cursor(conn, CursorIcon::Default);
-                    }
+                    self.show_cursor();
                     PointerEvent::Enter { x, y }
                 }
                 PointerEventKind::Leave { .. } => PointerEvent::Leave,
                 PointerEventKind::Motion { .. } => PointerEvent::Move { x, y },
-                PointerEventKind::Press { button: code, .. } => PointerEvent::Press {
-                    x,
-                    y,
-                    button: button(*code),
-                },
+                PointerEventKind::Press {
+                    button: code,
+                    serial,
+                    ..
+                } => {
+                    self.press_serial = Some(*serial);
+                    PointerEvent::Press {
+                        x,
+                        y,
+                        button: button(*code),
+                    }
+                }
                 PointerEventKind::Release { button: code, .. } => PointerEvent::Release {
                     x,
                     y,
@@ -955,12 +1300,17 @@ impl<A: App> PointerHandler for Runtime<A> {
                 PointerEventKind::Axis {
                     horizontal,
                     vertical,
+                    source,
                     ..
                 } => PointerEvent::Scroll {
                     x,
                     y,
                     dx: horizontal.absolute as f32,
                     dy: vertical.absolute as f32,
+                    // Wheels click from notch to notch; fingers glide.
+                    wheel: matches!(source, Some(AxisSource::Wheel | AxisSource::WheelTilt))
+                        || horizontal.value120 != 0
+                        || vertical.value120 != 0,
                 },
             };
             self.deliver(Event::Pointer(event));

@@ -4,6 +4,7 @@
 //!   once, sizes and dates from a pool of threads after.
 //! - [`sort`] — natural ordering of a listing, by name, size, date, or
 //!   extension.
+//! - [`format`] — sizes and dates the way a person reads them.
 //! - [`places`] — home, the XDG user folders, and free space.
 //! - [`uri`] — `file://` URIs, URI lists, and the portal's byte paths.
 //! - [`apps`] — installed applications, from freedesktop desktop entries,
@@ -23,6 +24,7 @@
 
 mod app_index;
 pub mod apps;
+pub mod format;
 pub mod fuzzy;
 pub mod ignores;
 pub mod list;
