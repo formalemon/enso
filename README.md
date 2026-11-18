@@ -1,5 +1,9 @@
 # enso
 
+> **This README is behind.** It describes the suite as it stood before
+> 2026-11-18; [CHANGES.md](CHANGES.md) lists everything since, newest
+> first, and is the current word until this file catches up.
+
 A small, pure-Rust desktop suite for the [Niri](https://github.com/YaLTeR/niri)
 Wayland compositor: a bar, a control center, a launcher, a notification
 daemon, a wallpaper, a power menu, and a lock screen that share one palette
