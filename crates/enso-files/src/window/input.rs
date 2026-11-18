@@ -995,7 +995,8 @@ impl Files {
                         | Hit::FormSave
                         | Hit::FormCancel
                         | Hit::Setting(_)
-                        | Hit::SortPill(_),
+                        | Hit::SortPill(_)
+                        | Hit::ViewPill(_),
                     ) => Cursor::Pointer,
                     Some(Hit::FormField(_)) => Cursor::Text,
                     _ => Cursor::Default,
@@ -1263,7 +1264,8 @@ impl Files {
                 | Hit::FormSave
                 | Hit::FormCancel
                 | Hit::Setting(_)
-                | Hit::SortPill(_),
+                | Hit::SortPill(_)
+                | Hit::ViewPill(_),
             )
             | None => {}
         }

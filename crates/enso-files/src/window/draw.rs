@@ -1378,6 +1378,15 @@ mod tests {
                 .iter()
                 .any(|(_, hit)| matches!(hit, Hit::SortPill(_)))
         );
+        assert_eq!(
+            files
+                .hits
+                .iter()
+                .filter(|(_, hit)| matches!(hit, Hit::ViewPill(_)))
+                .count(),
+            3,
+            "list, grid, and columns can be chosen in settings"
+        );
         files.settings = None;
         snapshot(&render(&mut files, (900, 420)), "enso-files-branch");
         assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::Branch));

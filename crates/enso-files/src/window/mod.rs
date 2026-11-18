@@ -101,6 +101,7 @@ enum Hit {
     /// A line of the settings panel, and its sort choices.
     Setting(usize),
     SortPill(crate::config::SortBy),
+    ViewPill(crate::config::View),
     /// The name being saved as, whose text starts at this `x`.
     Name(f32),
     FilterMenu,

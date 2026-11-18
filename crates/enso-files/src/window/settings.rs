@@ -21,7 +21,7 @@ use crate::{
 pub(super) enum Row {
     Hidden,
     FoldersFirst,
-    Grid,
+    View,
     Compact,
     Reversed,
     Sort,
@@ -31,6 +31,12 @@ pub(super) enum Row {
     /// Who commits in this repository.
     Repository,
 }
+
+const VIEWS: [(View, &str); 3] = [
+    (View::List, "List"),
+    (View::Grid, "Grid"),
+    (View::Columns, "Columns"),
+];
 
 const SORTS: [(SortBy, &str); 4] = [
     (SortBy::Name, "Name"),
@@ -45,7 +51,7 @@ impl Files {
         let mut rows = vec![
             Row::Hidden,
             Row::FoldersFirst,
-            Row::Grid,
+            Row::View,
             Row::Compact,
             Row::Reversed,
             Row::Sort,
@@ -84,11 +90,13 @@ impl Files {
         match row {
             Row::Hidden => self.overrides.hidden = Some(!config.hidden),
             Row::FoldersFirst => self.overrides.folders_first = Some(!config.folders_first),
-            Row::Grid => {
-                self.overrides.view = Some(match config.view {
-                    View::Grid => View::List,
-                    View::List | View::Columns => View::Grid,
-                });
+            Row::View => {
+                let at = VIEWS
+                    .iter()
+                    .position(|(view, _)| *view == config.view)
+                    .unwrap_or(0) as isize;
+                let next = (at + if step == 0 { 1 } else { step }).rem_euclid(VIEWS.len() as isize);
+                self.overrides.view = Some(VIEWS[next as usize].0);
             }
             Row::Compact => {
                 self.overrides.density = Some(match config.density {
@@ -146,8 +154,12 @@ impl Files {
                 Key::Escape => self.settings = None,
                 Key::Char(',') if key.mods.ctrl => self.settings = None,
                 Key::Enter | Key::Char(' ') => self.change(rows[focus], 0, cx),
-                Key::Left if rows[focus] == Row::Sort => self.change(Row::Sort, -1, cx),
-                Key::Right if rows[focus] == Row::Sort => self.change(Row::Sort, 1, cx),
+                Key::Left | Key::Char('h') if matches!(rows[focus], Row::Sort | Row::View) => {
+                    self.change(rows[focus], -1, cx);
+                }
+                Key::Right | Key::Char('l') if matches!(rows[focus], Row::Sort | Row::View) => {
+                    self.change(rows[focus], 1, cx);
+                }
                 Key::Tab => self.settings = Some((focus + 1) % rows.len()),
                 _ => {}
             }
@@ -171,6 +183,10 @@ impl Files {
             }
             Some(Hit::SortPill(by)) => {
                 self.overrides.sort = Some(*by);
+                self.save_overrides(cx);
+            }
+            Some(Hit::ViewPill(view)) => {
+                self.overrides.view = Some(*view);
                 self.save_overrides(cx);
             }
             Some(Hit::FormCancel) => self.settings = None,
@@ -238,7 +254,7 @@ impl Files {
             let (label, note): (&str, Option<String>) = match row {
                 Row::Hidden => ("Show dotfiles", None),
                 Row::FoldersFirst => ("Folders before files", None),
-                Row::Grid => ("Show as a grid (Ctrl+1, Ctrl+2)", None),
+                Row::View => ("Show as", None),
                 Row::Compact => ("Compact rows", None),
                 Row::Reversed => ("Reverse the order", None),
                 Row::Sort => ("Sort by", None),
@@ -282,7 +298,6 @@ impl Files {
             let on = match row {
                 Row::Hidden => Some(config.hidden),
                 Row::FoldersFirst => Some(config.folders_first),
-                Row::Grid => Some(config.view == View::Grid),
                 Row::Compact => Some(config.density == Density::Compact),
                 Row::Reversed => Some(config.descending),
                 Row::Git => Some(self.git_on()),
@@ -312,28 +327,35 @@ impl Files {
                         Align::End,
                     );
                 }
-            } else if *row == Row::Sort {
+            } else if matches!(row, Row::Sort | Row::View) {
+                // A row of pills, the chosen one filled.
+                let pills: Vec<(&str, bool, Hit)> = if *row == Row::Sort {
+                    SORTS
+                        .iter()
+                        .map(|(by, name)| (*name, config.sort == *by, Hit::SortPill(*by)))
+                        .collect()
+                } else {
+                    VIEWS
+                        .iter()
+                        .map(|(view, name)| (*name, config.view == *view, Hit::ViewPill(*view)))
+                        .collect()
+                };
                 let mut x = control.right();
-                for (by, name) in SORTS.iter().rev() {
-                    let text = Text::new(
-                        name,
-                        small,
-                        if config.sort == *by {
-                            look.base
-                        } else {
-                            colors.subtle
-                        },
-                    );
+                for (name, chosen, hit) in pills.into_iter().rev() {
+                    let ink = if chosen { look.base } else { colors.subtle };
+                    let text = Text::new(name, small, ink);
                     let width = canvas.measure(&text).w + 2.0 * space::MD;
                     let pill = Rect::new(x - width, y + 8.0, width, line - 20.0);
-                    let fill = if config.sort == *by {
+                    let fill = if chosen {
                         accent
+                    } else if self.hover.as_ref() == Some(&hit) {
+                        colors.highlight_med
                     } else {
                         colors.overlay
                     };
                     canvas.fill(pill, radius::pill(pill.h), fill);
                     canvas.text_in(&text, pill, Align::Center);
-                    self.hits.push((pill, Hit::SortPill(*by)));
+                    self.hits.push((pill, hit));
                     x = pill.x - space::XS;
                 }
             } else if let Some(note) = &note {
