@@ -14,6 +14,7 @@ and one way of moving.
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
+| `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-files` | File picker for every app (behind the desktop portal) and a file manager: multi-select across folders, previews, keyboard and mouse alike — see [the plan](docs/plans/enso-files.md) | browsing; picker next |
 
 This is the initial scaffold: the architecture, shared libraries, and a thin
@@ -36,6 +37,7 @@ cargo build --release -p enso-bar   # or just one tool
 ./target/release/enso-wall set ~/Pictures/dawn.png --theme rose-pine-dawn # one theme's own
 ./target/release/enso-power                  # menu; `enso-power lock` acts at once
 ./target/release/enso-lock
+./target/release/enso-auth &                 # then `enso-auth try password` to see its card
 ```
 
 Each tool is standalone: no config file, theme file, or other enso tool needs
@@ -47,6 +49,7 @@ Hooking them into Niri (`~/.config/niri/config.kdl`):
 spawn-at-startup "enso-bar"
 spawn-at-startup "enso-notify"
 spawn-at-startup "enso-wall"
+spawn-at-startup "enso-auth"
 
 binds {
     Mod+D { spawn "enso-launch"; }   // press again to close
@@ -148,6 +151,8 @@ loads C plugins, which this suite does not do.
   library. `enso-lock` instead asks `unix_chkpwd`, the setuid helper PAM
   itself uses to check a password when it is not root. The cost is that
   only the password counts: no fingerprint reader, no `pam_faillock`.
+  `enso-auth` doesn't link PAM either: polkit's own helper runs it, so
+  there the whole PAM stack applies.
 - **`unsafe` is forbidden** across the workspace.
 
 ## The tools up close
@@ -467,6 +472,41 @@ spawn-at-startup "enso-lock" "watch"
 
 Only one lock screen runs at a time: a second, from the key while the first
 is up, steps aside.
+
+**`enso-auth`** — when a program asks for something only an administrator
+may do (mounting an internal disk, changing a system setting, `pkexec`),
+polkit asks the session's *authentication agent* to have someone show who
+they are; without one it just says no. When a Bluetooth device wants a PIN,
+a passkey, or numbers compared, BlueZ asks its *pairing agent*; without one
+such a device can't be paired. `enso-auth` is both, started with the session:
+
+```kdl
+spawn-at-startup "enso-auth"
+```
+
+Each question is one card over the dimmed screen, the same for all of them.
+For polkit: what is being asked and by which program, who answers (a choice,
+`←`/`→` or `Tab`, when polkit would take any administrator), and a field that
+fills with dots; a wrong password shakes it, Caps Lock is pointed out, and
+anything PAM says — a second factor's question, "the account is locked" —
+is shown as it comes. For Bluetooth: the number to compare or to type on the
+device, large and spaced in threes, or a field for the PIN or passkey; a
+device not yet trusted asking for a service (audio, input, the network) is
+asked about by name. `Enter` answers yes, `Esc` no, and the mouse works too;
+a stray click outside doesn't dismiss it. `enso-auth try password` (or
+`confirm`, `pin`, `passkey`, `show`, `authorize`, `service`) shows each card
+with nothing checked.
+
+The agent itself never holds a password. Each card is a short-lived process
+of its own, kept out of core dumps, which hands what's typed straight to
+polkit's helper (`/run/polkit/agent-helper.socket`, or the setuid
+`polkit-agent-helper-1`): the helper runs PAM as root and tells polkit the
+outcome itself, so nothing in enso can answer "yes" for you. The helper is
+only reached once `Enter` is pressed — a PAM conversation left unanswered
+counts as a failed attempt, and `pam_faillock` locks the account after three.
+Only polkit may ask for a password and only BlueZ for a pairing code: calls
+from anyone else are refused. If either service restarts, the agent
+registers again.
 
 ## Theming
 

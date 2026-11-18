@@ -189,10 +189,19 @@ pub fn eject(volume: &Volume, all: &[Volume]) -> Result<()> {
 }
 
 /// Whether `err` is polkit saying no — this user may not do that here
-/// without an administrator, and no one was there to ask.
+/// without an administrator, and no one was there to ask (no
+/// authentication agent, such as enso-auth, is running).
 pub fn is_denied(err: &crate::Error) -> bool {
     err.name()
         .is_some_and(|name| name.contains("NotAuthorized"))
+        && !is_dismissed(err)
+}
+
+/// Whether `err` is the person at the screen declining polkit's question:
+/// nothing went wrong, it's just not done.
+pub fn is_dismissed(err: &crate::Error) -> bool {
+    err.name()
+        .is_some_and(|name| name.ends_with("NotAuthorizedDismissed"))
 }
 
 /// Block, calling `on_change` whenever disks come, go, or are mounted,

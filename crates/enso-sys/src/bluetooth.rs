@@ -4,9 +4,11 @@
 //! it knows or can currently see; take it again after every change reported
 //! by [`Bluez::watch`].
 //!
-//! Pairing covers devices that need nothing typed or confirmed (headphones,
-//! speakers, mice, most controllers). A device that wants a PIN or a passkey
-//! has to be paired once by other means; after that it connects from here.
+//! Pairing a device that needs nothing typed or confirmed (headphones,
+//! speakers, mice, most controllers) works on its own. One that wants a PIN,
+//! a passkey, or numbers compared asks BlueZ's pairing agent — enso-auth,
+//! if it's running, which shows the question on screen; without an agent
+//! such a device can't be paired from here.
 
 use crate::bus::{self, Error, Objects, Props, Result, Service};
 

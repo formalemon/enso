@@ -73,9 +73,11 @@ impl Files {
             .name("enso-files-mount".to_owned())
             .spawn(move || {
                 let result = udisks::mount(&volume).map_err(|err| {
-                    if udisks::is_denied(&err) {
+                    if udisks::is_dismissed(&err) {
+                        format!("{name} stays unmounted")
+                    } else if udisks::is_denied(&err) {
                         format!(
-                            "Mounting {name} needs an administrator's permission, and nothing here can ask for it · enso's contrib/50-enso-udisks.rules lets the wheel group mount disks"
+                            "Mounting {name} needs an administrator's permission, and nothing is running to ask for it · enso-auth asks; or enso's contrib/50-enso-udisks.rules lets the wheel group mount disks"
                         )
                     } else {
                         format!("Can't mount {name}: {err}")
