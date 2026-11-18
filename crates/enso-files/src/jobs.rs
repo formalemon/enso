@@ -47,6 +47,12 @@ pub enum Message {
         generation: u64,
         status: Option<(PathBuf, enso_fs::git::Status)>,
     },
+    /// The drives, as udisks has them now.
+    Volumes(Vec<enso_sys::udisks::Volume>),
+    /// A drive was mounted here, or why not.
+    Mounted(Result<PathBuf, String>),
+    /// A drive was ejected (what to say), or why not.
+    Ejected(Result<String, String>),
     /// An operation got further.
     Progress(Progress),
     /// An operation found a name taken, and waits for `reply`.

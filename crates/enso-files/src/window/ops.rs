@@ -341,6 +341,19 @@ impl Files {
         self.toast(message, cx);
     }
 
+    /// Delete `paths` for good — from the trash with their records, else
+    /// as a job.
+    fn delete_for_good(&mut self, paths: Vec<PathBuf>, cx: &mut Cx<'_>) {
+        for path in &paths {
+            self.selection.remove(path);
+        }
+        if self.in_trash() {
+            self.delete_from_trash(&paths, cx);
+        } else {
+            self.start_op(Op::Delete(paths), cx);
+        }
+    }
+
     pub(super) fn ask_delete(&mut self, cx: &mut Cx<'_>) {
         let targets = self.targets();
         if !targets.is_empty() {
@@ -464,10 +477,7 @@ impl Files {
                 Key::Enter | Key::Delete => {
                     let paths = paths.clone();
                     self.confirm_delete = None;
-                    for path in &paths {
-                        self.selection.remove(path);
-                    }
-                    self.start_op(Op::Delete(paths), cx);
+                    self.delete_for_good(paths, cx);
                 }
                 Key::Escape => self.confirm_delete = None,
                 _ => {}
@@ -510,10 +520,7 @@ impl Files {
             match hit {
                 Some(Hit::DeleteForGood) => {
                     self.confirm_delete = None;
-                    for path in &paths {
-                        self.selection.remove(path);
-                    }
-                    self.start_op(Op::Delete(paths), cx);
+                    self.delete_for_good(paths, cx);
                 }
                 Some(Hit::KeepFiles) | None => self.confirm_delete = None,
                 _ => {}
@@ -759,7 +766,11 @@ impl Files {
             );
             canvas.text(
                 &Text::new(
-                    "They won't go to the trash, and can't be brought back.",
+                    if self.in_trash() {
+                        "They're in the trash; this takes them out of it, for good."
+                    } else {
+                        "They won't go to the trash, and can't be brought back."
+                    },
                     small,
                     colors.subtle,
                 )

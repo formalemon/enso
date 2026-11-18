@@ -12,6 +12,7 @@ mod draw;
 mod input;
 mod ops;
 mod settings;
+mod sidebar;
 mod vcs;
 
 use std::{
@@ -86,6 +87,11 @@ enum Hit {
     FormField(usize),
     FormSave,
     FormCancel,
+    /// A drive, and its ⏏.
+    Volume(usize),
+    Eject(usize),
+    TrashPlace,
+    EmptyTrash,
     /// A line of the settings panel, and its sort choices.
     Setting(usize),
     SortPill(crate::config::SortBy),
@@ -125,6 +131,8 @@ enum Action {
     Undo,
     InitRepo,
     Settings,
+    Restore,
+    EmptyTrash,
 }
 
 /// What an open menu is for.
@@ -209,6 +217,9 @@ pub struct Files {
     undo: Vec<enso_fs::ops::Done>,
     redo: Vec<enso_fs::ops::Done>,
     toast: Option<(String, Instant)>,
+    /// The drives udisks knows, and the one being mounted.
+    volumes: Vec<enso_sys::udisks::Volume>,
+    mounting: Option<String>,
 }
 
 impl Files {
@@ -263,6 +274,8 @@ impl Files {
             undo: Vec::new(),
             redo: Vec::new(),
             toast: None,
+            volumes: Vec::new(),
+            mounting: None,
         }
     }
 
@@ -556,7 +569,7 @@ impl Files {
 fn places_for(home: &Path, dirs: &UserDirs) -> Vec<Place> {
     let mut places = vec![Place {
         label: "Home".to_owned(),
-        icon: icon::FOLDER,
+        icon: icon::HOME,
         path: home.to_owned(),
     }];
     for (dir, path) in dirs.existing() {
@@ -573,11 +586,6 @@ fn places_for(home: &Path, dirs: &UserDirs) -> Vec<Place> {
             path: path.to_owned(),
         });
     }
-    places.push(Place {
-        label: "Computer".to_owned(),
-        icon: icon::FOLDER,
-        path: PathBuf::from("/"),
-    });
     places
 }
 
@@ -619,6 +627,7 @@ impl App for Files {
             eprintln!("enso-files: live theme switching unavailable: {err}");
         }
         self.proxy = Some(proxy);
+        self.watch_drives();
     }
 
     fn event(&mut self, event: Event<Message>, cx: &mut Cx<'_>) {
@@ -670,6 +679,15 @@ impl App for Files {
             }
             Event::Message(Message::Git { generation, status }) => {
                 self.git_arrived(generation, status, cx);
+            }
+            Event::Message(Message::Volumes(volumes)) => {
+                self.volumes = volumes;
+                cx.redraw();
+            }
+            Event::Message(Message::Mounted(result)) => self.mounted(result, cx),
+            Event::Message(Message::Ejected(result)) => {
+                let text = result.unwrap_or_else(|why| why);
+                self.toast(text, cx);
             }
             Event::Message(Message::Progress(progress)) => self.op_progress(progress, cx),
             Event::Message(Message::Conflict {

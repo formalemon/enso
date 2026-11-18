@@ -28,7 +28,6 @@ const SIZE_WIDTH: f32 = 96.0;
 const DATE_WIDTH: f32 = 128.0;
 /// The window needs this much width before the sidebar is shown.
 const SIDEBAR_FROM: f32 = 640.0;
-const PLACE_HEIGHT: f32 = 32.0;
 
 impl Files {
     pub(super) fn draw_window(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
@@ -325,78 +324,6 @@ impl Files {
         }
         self.hits.push((rect, Hit::Filter(text_rect.x)));
         rect.x
-    }
-
-    fn draw_sidebar(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
-        let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
-        let size = self.font(type_scale::BODY);
-        canvas.fill(area, 0.0, colors.surface);
-        let edge = Rect::new(
-            area.right() - controls::SPLITTER_GRAB,
-            area.y,
-            controls::SPLITTER_GRAB * 2.0,
-            area.h,
-        );
-        let edge_color = if self.sidebar.is_dragging() || self.hover == Some(Hit::SidebarEdge) {
-            accent.alpha(0.5)
-        } else {
-            colors.highlight_low
-        };
-        canvas.fill(
-            Rect::new(area.right() - 1.0, area.y, stroke::HAIRLINE, area.h),
-            0.0,
-            edge_color,
-        );
-
-        let mut y = area.y + space::SM;
-        let location = self.pane.location().to_owned();
-        for place in self.places.clone() {
-            if y + PLACE_HEIGHT > area.bottom() {
-                break;
-            }
-            let row = Rect::new(
-                area.x + space::SM,
-                y,
-                area.w - 2.0 * space::SM,
-                PLACE_HEIGHT,
-            );
-            let here = place.path == location;
-            let hit = Hit::Place(place.path.clone());
-            if here {
-                canvas.fill(row, radius::CONTROL, accent.alpha(opacity::TINT));
-            } else if self.hover.as_ref() == Some(&hit) {
-                canvas.fill(row, radius::CONTROL, colors.highlight_low);
-            }
-            let inner = row.inset_xy(space::MD, 0.0);
-            let color = if here { accent } else { colors.subtle };
-            canvas.icon(
-                place.icon,
-                16.0,
-                color,
-                Rect::new(inner.x, inner.y, 18.0, inner.h),
-                Align::Start,
-            );
-            let label = Text::new(
-                &place.label,
-                size,
-                if here { colors.text } else { colors.subtle },
-            );
-            let label = if here { label.medium() } else { label };
-            canvas.text_in(
-                &label,
-                Rect::new(
-                    inner.x + 18.0 + space::MD,
-                    inner.y,
-                    inner.w - 18.0 - space::MD,
-                    inner.h,
-                ),
-                Align::Start,
-            );
-            self.hits.push((row, hit));
-            y += PLACE_HEIGHT + 2.0;
-        }
-        self.hits.push((edge, Hit::SidebarEdge));
     }
 
     /// The list, with its headings. Returns whether anything is moving.
@@ -865,7 +792,29 @@ impl Files {
             inner.right()
         };
         let inner = Rect::new(inner.x, inner.y, right - inner.x, inner.h);
-        if self.draw_running(canvas, inner) {
+        if self.in_trash() && self.picker.is_none() && !self.pane.is_empty() {
+            let small = self.font(type_scale::SMALL);
+            let label = Text::new("Empty the trash", small, colors.text);
+            let width = canvas.measure(&label).w + 2.0 * space::MD;
+            let rect = Rect::new(
+                inner.right() - width,
+                inner.y + (inner.h - 22.0) / 2.0,
+                width,
+                22.0,
+            );
+            let hovered = self.hover == Some(Hit::EmptyTrash);
+            canvas.fill(
+                rect,
+                radius::pill(22.0),
+                if hovered {
+                    colors.love.alpha(0.3)
+                } else {
+                    colors.overlay
+                },
+            );
+            canvas.text_in(&label, rect, Align::Center);
+            self.hits.push((rect, Hit::EmptyTrash));
+        } else if self.draw_running(canvas, inner) {
             // The job in hand says more than the free space.
         } else if let Ok(space) = places::space(self.pane.location()) {
             let free = format!("{} free", format::size(space.free));
@@ -1399,6 +1348,44 @@ mod tests {
         ));
         snapshot(&render(&mut files, (900, 420)), "enso-files-identity");
         assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::FormField(1)));
+    }
+
+    #[test]
+    fn renders_the_drives_and_the_trash() {
+        let mut files = files();
+        files.places = vec![super::super::Place {
+            label: "Home".into(),
+            icon: icon::HOME,
+            path: "/home/me".into(),
+        }];
+        let volume =
+            |label: Option<&str>, mount: Option<&str>, removable| enso_sys::udisks::Volume {
+                object: format!(
+                    "/org/freedesktop/UDisks2/block_devices/{}",
+                    label.unwrap_or("x")
+                ),
+                device: "/dev/sdb1".into(),
+                label: label.map(str::to_owned),
+                kind: "ntfs".into(),
+                size: 1_022_789_419_008,
+                mount: mount.map(PathBuf::from),
+                removable,
+                system: !removable,
+                drive: Some("/d".into()),
+                can_eject: removable,
+            };
+        files.volumes = vec![
+            volume(Some("STICK"), Some("/tmp"), true),
+            volume(None, None, false),
+        ];
+        let frame = render(&mut files, (900, 520));
+        snapshot(&frame, "enso-files-drives");
+        let hits: Vec<&Hit> = files.hits.iter().map(|(_, hit)| hit).collect();
+        assert!(hits.contains(&&Hit::Volume(1)));
+        assert!(hits.contains(&&Hit::Eject(0)), "a mounted drive ejects");
+        assert!(!hits.contains(&&Hit::Eject(1)), "an unmounted one doesn't");
+        assert!(hits.contains(&&Hit::TrashPlace));
+        assert!(hits.contains(&&Hit::Place("/".into())));
     }
 
     #[test]

@@ -174,6 +174,8 @@ impl Files {
             Action::Terminal => self.terminal_here(cx),
             Action::Undo => self.undo_last(cx),
             Action::InitRepo => self.init_repository(cx),
+            Action::Restore => self.restore(cx),
+            Action::EmptyTrash => self.ask_empty(cx),
             Action::Settings => {
                 self.learn_git();
                 self.settings = Some(0);
@@ -212,35 +214,47 @@ impl Files {
                 );
             }
             let managing = self.picker.is_none();
-            add(Item::new("Rename").keys("F2"), Some(Action::Rename));
-            if managing {
-                add(Item::new("Copy").keys("Ctrl+C"), Some(Action::Copy));
-                add(Item::new("Cut").keys("Ctrl+X"), Some(Action::Cut));
+            if managing && self.in_trash() {
+                add(Item::new("Put back"), Some(Action::Restore));
                 add(
-                    Item::new("Duplicate").keys("Ctrl+Shift+D"),
-                    Some(Action::Duplicate),
-                );
-            }
-            add(
-                Item::new("Copy path").keys("Ctrl+Shift+C"),
-                Some(Action::CopyPath(path)),
-            );
-            if managing {
-                add(
-                    Item::new("Move to the trash").keys("Delete"),
-                    Some(Action::Trash),
-                );
-                add(
-                    Item::new("Delete for good…").keys("Shift+Delete"),
+                    Item::new("Delete for good…").keys("Delete"),
                     Some(Action::Delete),
                 );
+            } else {
+                add(Item::new("Rename").keys("F2"), Some(Action::Rename));
+                if managing {
+                    add(Item::new("Copy").keys("Ctrl+C"), Some(Action::Copy));
+                    add(Item::new("Cut").keys("Ctrl+X"), Some(Action::Cut));
+                    add(
+                        Item::new("Duplicate").keys("Ctrl+Shift+D"),
+                        Some(Action::Duplicate),
+                    );
+                }
+                add(
+                    Item::new("Copy path").keys("Ctrl+Shift+C"),
+                    Some(Action::CopyPath(path)),
+                );
+                if managing {
+                    add(
+                        Item::new("Move to the trash").keys("Delete"),
+                        Some(Action::Trash),
+                    );
+                    add(
+                        Item::new("Delete for good…").keys("Shift+Delete"),
+                        Some(Action::Delete),
+                    );
+                }
             }
             add(Item::Separator, None);
         }
-        add(
-            Item::new("New folder").keys("Ctrl+Shift+N"),
-            Some(Action::NewFolder),
-        );
+        if self.picker.is_none() && self.in_trash() {
+            add(Item::new("Empty the trash…"), Some(Action::EmptyTrash));
+        } else {
+            add(
+                Item::new("New folder").keys("Ctrl+Shift+N"),
+                Some(Action::NewFolder),
+            );
+        }
         if self.git_on() && enso_fs::git::root(self.pane.location()).is_none() {
             add(
                 Item::new("Start a Git repository here"),
@@ -682,6 +696,10 @@ impl Files {
                 self.ask_delete(cx);
                 return;
             }
+            Key::Delete if !picking && self.in_trash() => {
+                self.ask_delete(cx);
+                return;
+            }
             Key::Delete if !picking => {
                 self.trash_targets(cx);
                 return;
@@ -817,6 +835,10 @@ impl Files {
                         | Hit::DeleteForGood
                         | Hit::KeepFiles
                         | Hit::Branch
+                        | Hit::Volume(_)
+                        | Hit::Eject(_)
+                        | Hit::TrashPlace
+                        | Hit::EmptyTrash
                         | Hit::GitYes
                         | Hit::GitNo
                         | Hit::FormSave
@@ -1042,6 +1064,10 @@ impl Files {
                     cx.begin_move();
                 }
             }
+            Some(Hit::Volume(index)) => self.open_volume(index, cx),
+            Some(Hit::Eject(index)) => self.eject(index, cx),
+            Some(Hit::TrashPlace) => self.open_trash(),
+            Some(Hit::EmptyTrash) => self.ask_empty(cx),
             Some(Hit::Branch) => {
                 if let Some(rect) = self.hit_rect(&Hit::Branch) {
                     self.branch_menu(rect);

@@ -1,0 +1,26 @@
+// Let members of the `wheel` group, sitting at the machine, mount and
+// unmount internal disks — a second drive, a Windows partition — from
+// enso-files' Drives, without a password.
+//
+// udisks2 lets anyone at the machine mount a USB stick, but asks for an
+// administrator's password for disks that are part of the machine. Asking
+// takes a polkit agent, which a minimal desktop doesn't run, so the answer
+// is "no" and enso-files says so. This rule makes it "yes" for wheel, and
+// only for mounting: formatting, partitioning, and the rest still need root.
+//
+// Install:
+//   sudo install -m 644 contrib/50-enso-udisks.rules /etc/polkit-1/rules.d/
+// (polkit picks it up at once.) Use another group by changing "wheel".
+//
+// Careful with a Windows partition: if Windows was hibernated or "fast
+// started", mounting it writable can lose what Windows hadn't written yet.
+// Shut Windows down fully first.
+
+polkit.addRule(function (action, subject) {
+    if ((action.id == "org.freedesktop.udisks2.filesystem-mount-system" ||
+         action.id == "org.freedesktop.udisks2.filesystem-mount-other-seat" ||
+         action.id == "org.freedesktop.udisks2.encrypted-unlock-system") &&
+        subject.local && subject.active && subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});
