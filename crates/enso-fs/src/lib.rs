@@ -49,6 +49,7 @@ pub mod places;
 pub mod recent;
 pub mod search;
 pub mod sort;
+pub mod tally;
 pub mod thumbs;
 pub mod trash;
 pub mod uri;

@@ -76,6 +76,7 @@ impl Files {
         self.draw_vcs(canvas, bounds);
         self.draw_settings(canvas, bounds, now);
         self.draw_renamer(canvas, bounds);
+        self.draw_properties(canvas, bounds);
         self.draw_palette(canvas, bounds);
         if self.peek {
             self.draw_peek(canvas, bounds);
@@ -281,6 +282,7 @@ impl Files {
             ("Ctrl+F  ·  //", "search below here"),
             ("Ctrl+Shift+F", "search inside files"),
             ("Ctrl+D", "bookmark this folder"),
+            ("Ctrl+I  ·  Alt+Enter", "properties"),
             ("Ctrl+P  ·  :", "everything else, by name"),
             ("Ctrl+L", "type a location"),
             ("i  ·  Shift+Space", "preview · quick look"),
@@ -1915,6 +1917,59 @@ mod tests {
         let done = files.undo.pop().unwrap();
         enso_fs::ops::undo(&done).unwrap();
         assert!(root.join("IMG_0040.jpg").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn properties_count_and_permissions_change() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("enso-files-props-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("album")).unwrap();
+        std::fs::write(root.join("album/a.jpg"), [0; 1500]).unwrap();
+        std::fs::write(root.join("run.sh"), "echo hi").unwrap();
+        std::fs::set_permissions(root.join("run.sh"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let now = Instant::now();
+        let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+        files.asked_git = true;
+        let first = files.pending.take().unwrap();
+        files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
+
+        // A folder: counted (here, by hand) as it would be in the background.
+        files.pane.set_cursor(0);
+        files.open_properties();
+        let token = files.tallies;
+        let tally = enso_fs::tally::tally(
+            &[root.join("album")],
+            &std::sync::atomic::AtomicBool::new(false),
+            |_| {},
+        );
+        files.tallied(token, tally, true);
+        snapshot(&render(&mut files, (900, 720)), "enso-files-properties");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| *hit == Hit::Permission(0o200))
+        );
+
+        // A file: others may now write, then not.
+        files.properties = None;
+        files.pane.set_cursor(1);
+        files.open_properties();
+        let mode = |files: &Files| {
+            let _ = files;
+            std::fs::metadata(root.join("run.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(files.flip_bit(0o002), 0);
+        assert_eq!(mode(&files), 0o646);
+        files.flip_bit(0o002);
+        assert_eq!(mode(&files), 0o644);
         std::fs::remove_dir_all(root).unwrap();
     }
 

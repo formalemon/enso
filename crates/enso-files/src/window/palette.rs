@@ -124,6 +124,13 @@ const MANAGING: &[(&str, &str, Key, Mods)] = &[
     ("Redo", "Ctrl+Shift+Z", Key::Char('Z'), CTRL_SHIFT),
     ("Bookmark this folder", "Ctrl+D", Key::Char('d'), CTRL),
     ("Terminal here", "F4", Key::F(4), PLAIN),
+    ("Properties", "Ctrl+I", Key::Char('i'), CTRL),
+    (
+        "Run as a program, or not",
+        "Ctrl+Shift+X",
+        Key::Char('X'),
+        CTRL_SHIFT,
+    ),
     ("Settings", "Ctrl+,", Key::Char(','), CTRL),
 ];
 

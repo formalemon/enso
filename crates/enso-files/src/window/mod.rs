@@ -16,6 +16,7 @@ mod input;
 mod ops;
 mod palette;
 mod preview;
+mod properties;
 mod renamer;
 mod seek;
 mod settings;
@@ -115,6 +116,9 @@ enum Hit {
     PaletteField,
     /// Renaming many.
     Rename(renamer::RenameHit),
+    /// A permission box (its bit), and the rest of the properties card.
+    Permission(u32),
+    PropertiesCard,
     /// Something on the split's other side: it comes in front first.
     Other(Box<Hit>),
     /// The name being saved as, whose text starts at this `x`.
@@ -288,6 +292,9 @@ pub struct Files {
     /// The tab on the split's other side, and where it was drawn.
     split: Option<usize>,
     split_rect: Rect,
+    /// The properties, while they're up, and how many counts were begun.
+    properties: Option<properties::Properties>,
+    tallies: u64,
     /// Renaming many, while it's open.
     renamer: Option<renamer::Renamer>,
     /// The command palette, while it's open.
@@ -379,6 +386,8 @@ impl Files {
             split_rect: Rect::default(),
             palette: None,
             renamer: None,
+            properties: None,
+            tallies: 0,
             seek: None,
             seek_due: None,
             bookmarks: enso_fs::bookmarks::Bookmarks::load(&enso_fs::bookmarks::file()).folders(),
@@ -954,6 +963,10 @@ impl App for Files {
                 }
             }
             Event::Message(Message::Edited(result)) => self.edited(result, cx),
+            Event::Message(Message::Tallied { token, tally, done }) => {
+                self.tallied(token, tally, done);
+                cx.redraw();
+            }
             Event::Message(Message::Volumes(volumes)) => {
                 self.volumes = volumes;
                 cx.redraw();

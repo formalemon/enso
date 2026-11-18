@@ -26,6 +26,12 @@ use crate::pane::{Request, Source, describe};
 
 #[derive(Debug)]
 pub enum Message {
+    /// How much is in what the properties show, so far or in all.
+    Tallied {
+        token: u64,
+        tally: enso_fs::tally::Tally,
+        done: bool,
+    },
     /// The editor renaming many has closed: what was saved in it.
     Edited(Result<String, String>),
     /// A folder's entries, or why there are none.
