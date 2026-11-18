@@ -546,22 +546,25 @@ Chromium, and anything built on libsecret use. `enso-keyring enable` makes
 it the session's keyring, started by the session bus the first time a
 program wants a secret.
 
-It opens with your login password. The password is checked against the
-system's own record (`unix_chkpwd`, as `enso-lock` checks it) and never
-kept: it unlocks, for the session, a random master key that is stored
-sealed by a key made from it (Argon2id, 64 MiB, three passes;
-XChaCha20-Poly1305), and the master key seals everything else — labels,
-attributes, secrets — in `~/.local/share/enso/keyring.toml`, readable by you
-alone. Attributes are also kept hashed, as gnome-keyring keeps them, so a
-program can find its secret while the keyring is locked and ask for it to
-be opened. The card says which program is asking.
+It opens with your login password, checked against the system's own record
+(`unix_chkpwd`, as `enso-lock` checks it) every time — the password is the
+gate, and nothing else: it's never kept, and never used to seal anything.
+What seals the keyring is this machine: a random master key, sealed by
+systemd's credential service with the host key and the TPM and scoped to
+your account, so it opens only here, only for you, and not from a copy of
+the disk. Everything else — labels, attributes, secrets — is sealed by the
+master key (XChaCha20-Poly1305) in `~/.local/share/enso/keyring.toml`,
+readable by you alone. Attributes are also kept hashed, as gnome-keyring
+keeps them, so a program can find its secret while the keyring is locked
+and ask for it to be opened. The card says which program is asking.
 
-When the login password changes the keyring keeps up: changed while it's
-open (`passwd` in a terminal), it notices the system's record change and
-asks for the new password once; changed while it's locked, the next unlock
-takes the new password — the system agrees it's yours — and asks once for
-the one before. Doing that with no question at all would mean adding to
-`/etc/pam.d`, which enso doesn't touch. `enso-keyring lock` locks it;
+So changing your password — even resetting it as root, having forgotten it
+— strands nothing: the next unlock takes the new one. The other side of
+that: something already running as you could have systemd unseal the key
+without the password, as it could read an unlocked keyring anyway. Bound
+to no TPM registers, it survives firmware and Secure Boot updates; only
+clearing the TPM loses it, and then the card says so and starts a new one,
+keeping the old file beside it. `enso-keyring lock` locks it;
 `enso-keyring status` says how it stands.
 
 ## Theming

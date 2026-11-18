@@ -240,14 +240,10 @@ impl Card {
                 "Unlock your keyring",
                 format!("{who} wants a password or token kept there. Your login password opens it."),
             ),
-            Mode::OldPassword => (
-                "Your login password changed",
-                "The keyring still opens with the one before. Type that old password once, and from now on it opens with the new one."
+            Mode::Lost => (
+                "This machine can't open your keyring",
+                "What sealed it here no longer opens it — the TPM was cleared, or this is another machine. Your login password starts a new, empty keyring; the old one is kept beside it."
                     .to_owned(),
-            ),
-            Mode::Changed => (
-                "Your login password changed",
-                "Type the new one, so your keyring keeps opening with it.".to_owned(),
             ),
         }
     }
@@ -319,8 +315,6 @@ impl Card {
         if dots <= 0.0 {
             let hint = match (self.waiting, self.mode) {
                 (true, _) => "Checking…",
-                (false, Mode::OldPassword) => "The password before",
-                (false, Mode::Changed) => "Your new login password",
                 (false, _) => "Your login password",
             };
             canvas.text_in(
@@ -366,10 +360,10 @@ impl Card {
         }
 
         let row_y = inner.bottom() - controls::HEIGHT;
-        let label = if self.mode == Mode::Create {
-            "Set up"
-        } else {
-            "Unlock"
+        let label = match self.mode {
+            Mode::Create => "Set up",
+            Mode::Unlock => "Unlock",
+            Mode::Lost => "Start anew",
         };
         let primary = Button::new(label, Kind::Primary);
         let w = primary.width(canvas, &look);
@@ -555,10 +549,11 @@ mod tests {
         );
         assert!(!card.waiting && card.shake.is_animating(now));
         render(&mut card, "enso-keyring-unlock");
-        // A new question: the old password.
-        card.message(Message::Again(Mode::OldPassword, String::new()), now);
-        assert_eq!(card.mode, Mode::OldPassword);
-        render(&mut card, "enso-keyring-old");
+        // A new question: the keyring can't be opened here anymore.
+        card.message(Message::Again(Mode::Lost, String::new()), now);
+        assert_eq!(card.mode, Mode::Lost);
+        assert!(card.complaint.is_none());
+        render(&mut card, "enso-keyring-lost");
         assert_eq!(card.message(Message::Done, now), Outcome::Close);
     }
 

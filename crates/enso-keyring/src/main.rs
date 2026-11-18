@@ -7,6 +7,7 @@
 
 mod asking;
 mod crypto;
+mod machine;
 mod prompt;
 mod service;
 mod store;
@@ -17,7 +18,6 @@ use std::{
     process::ExitCode,
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
 };
 
 use enso_core::Context;
@@ -31,14 +31,15 @@ Usage: enso-keyring             Serve the keyring (the session bus starts it)
        enso-keyring status      Say whether it's set up, running, unlocked
        enso-keyring lock        Lock it now
        enso-keyring try MODE    Show the card as it would look (create,
-                                unlock, old, changed); nothing is checked
+                                unlock, lost); nothing is checked
 
 Programs keep passwords and tokens here through the Secret Service — gh,
 git (credential.helper = libsecret), VS Code, Chromium, and anything built
 on libsecret. It's sealed on disk (~/.local/share/enso/keyring.toml, yours
-alone) and opened with your login password, which is checked against the
-system's own record and never kept. When the login password changes, the
-keyring asks once to keep up.
+alone) to this machine and your account — systemd's credentials, with the
+TPM — and opened when your login password, checked against the system's
+own record, says it's you. The password is never kept or used to seal, so
+resetting it (as root, say) changes nothing.
 
 Options:
   -h, --help       Print this help
@@ -75,7 +76,7 @@ fn main() -> ExitCode {
         }
         Some("try") => match args.next().as_deref().and_then(asking::Mode::from_word) {
             Some(mode) => card(mode, "gh".to_owned(), None),
-            None => Err("try what? create, unlock, old, or changed".to_owned()),
+            None => Err("try what? create, unlock, or lost".to_owned()),
         },
         Some("enable") => enable(true),
         Some("disable") => enable(false),
@@ -129,46 +130,9 @@ fn serve() -> Result<(), String> {
         zbus::Result::Ok(connection)
     })
     .map_err(|err| format!("can't be the keyring (is another running?): {err}"))?;
-    // Keep up with the login password: when it changes while the keyring
-    // is open, ask for the new one once.
-    let watched = state.clone();
-    let _ = thread::Builder::new()
-        .name("enso-keyring-shadow".to_owned())
-        .spawn(move || follow_password(&watched));
     let _keep = connection;
     loop {
         thread::park();
-    }
-}
-
-/// Watch the system's password record; when it changes while the keyring
-/// is unlocked, have it locked with the new password.
-fn follow_password(state: &service::State) {
-    let changed = || {
-        fs::metadata("/etc/shadow")
-            .and_then(|meta| meta.modified())
-            .ok()
-    };
-    let mut last = changed();
-    loop {
-        thread::sleep(Duration::from_secs(5));
-        let now = changed();
-        if now == last {
-            continue;
-        }
-        last = now;
-        let open = state
-            .lock()
-            .map(|shared| {
-                shared
-                    .keyring
-                    .as_ref()
-                    .is_some_and(store::Keyring::is_unlocked)
-            })
-            .unwrap_or(false);
-        if open {
-            service::follow_change(state);
-        }
     }
 }
 

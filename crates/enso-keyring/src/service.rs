@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     asking::{self, Asked},
+    machine::Machine,
     store::{self, Item, Keyring},
 };
 
@@ -39,8 +40,6 @@ pub struct Shared {
     next: u64,
     /// A prompt is up: no second one at once.
     prompting: bool,
-    /// The new login password, while the old one is asked for.
-    pending_new: Option<Zeroizing<Vec<u8>>>,
 }
 
 pub type State = Arc<Mutex<Shared>>;
@@ -710,112 +709,53 @@ pub fn unlock_with_card(state: &State, asker: &str) -> bool {
 
 /// What the card's answer comes to: `Ok` closes it, `Err` asks again
 /// (with what to say, and in which mode).
+///
+/// The password is checked against the system's own record every time —
+/// it's the gate — and never used for anything else: the machine opens the
+/// keyring. So a password reset by root, forgotten or not, changes nothing.
 fn answer(state: &State, asked: Asked) -> Result<(), (String, asking::Mode)> {
-    let not_login = || {
-        (
-            "That's not your login password".to_owned(),
-            asking::Mode::Unlock,
-        )
+    match enso_sys::auth::verify(&asked.password) {
+        Ok(true) => {}
+        Ok(false) => return Err(("That's not your login password".to_owned(), asked.mode)),
+        Err(err) => return Err((format!("Can't check it: {err}"), asked.mode)),
+    }
+    let mut shared = lock(state);
+    let fresh = |shared: &mut Shared| {
+        let keyring = Keyring::create(&store::path(), &Machine).map_err(|why| {
+            (
+                format!("Couldn't make the keyring: {why}"),
+                asking::Mode::Create,
+            )
+        })?;
+        shared.keyring = Some(keyring);
+        Ok(())
     };
-    match asked {
-        Asked::Password(password) => {
-            let mut shared = lock(state);
-            match &mut shared.keyring {
-                None => {
-                    // The first time: the login password, checked with the system.
-                    if !enso_sys::auth::verify(&password).unwrap_or(false) {
-                        return Err((
-                            "That's not your login password".to_owned(),
-                            asking::Mode::Create,
-                        ));
-                    }
-                    let keyring =
-                        Keyring::create(&store::path(), &password, crate::crypto::Cost::default())
-                            .map_err(|why| {
-                                (
-                                    format!("Couldn't make the keyring: {why}"),
-                                    asking::Mode::Create,
-                                )
-                            })?;
-                    shared.keyring = Some(keyring);
-                    Ok(())
-                }
-                Some(keyring) => match keyring.unlock(&password) {
-                    Ok(()) => Ok(()),
-                    Err(store::Refused::Damaged(why)) => Err((
-                        format!("The keyring doesn't read: {why}"),
-                        asking::Mode::Unlock,
-                    )),
-                    Err(store::Refused::Password) => {
-                        // Not what locked it — but is it the login password
-                        // now? Then the password changed since: ask for the
-                        // one before.
-                        if enso_sys::auth::verify(&password).unwrap_or(false) {
-                            shared.pending_new = Some(password);
-                            Err((String::new(), asking::Mode::OldPassword))
-                        } else {
-                            Err(not_login())
-                        }
-                    }
-                },
-            }
+    match (&mut shared.keyring, asked.mode) {
+        (None, _) => fresh(&mut shared),
+        // Starting anew: the old one is kept beside it, in case.
+        (Some(_), asking::Mode::Lost) => {
+            let old = store::path();
+            let kept = old.with_extension(format!("lost-{}.toml", store::now()));
+            std::fs::rename(&old, &kept).map_err(|err| {
+                (
+                    format!("Couldn't put the old one aside: {err}"),
+                    asking::Mode::Lost,
+                )
+            })?;
+            fresh(&mut shared)
         }
-        Asked::Old(old) => {
-            let mut shared = lock(state);
-            let new = shared.pending_new.take();
-            let Some(keyring) = &mut shared.keyring else {
-                return Err(not_login());
-            };
-            match keyring.unlock(&old) {
-                Ok(()) => {
-                    if let Some(new) = new {
-                        let _ = keyring.rewrap(&new);
-                    }
-                    Ok(())
-                }
-                Err(_) => {
-                    shared.pending_new = new;
-                    Err((
-                        "That's not it either — the password before the last change".to_owned(),
-                        asking::Mode::OldPassword,
-                    ))
-                }
+        (Some(keyring), _) => match keyring.unlock(&Machine) {
+            Ok(()) => Ok(()),
+            Err(store::Refused::Machine(why)) => {
+                eprintln!("enso-keyring: this machine won't open the keyring: {why}");
+                Err((String::new(), asking::Mode::Lost))
             }
-        }
-        Asked::New(new) => {
-            // The login password changed while unlocked: re-lock with it.
-            if !enso_sys::auth::verify(&new).unwrap_or(false) {
-                return Err((
-                    "That's not your login password now".to_owned(),
-                    asking::Mode::Changed,
-                ));
-            }
-            let mut shared = lock(state);
-            match &mut shared.keyring {
-                Some(keyring) if keyring.is_unlocked() => keyring
-                    .rewrap(&new)
-                    .map_err(|why| (format!("Couldn't keep up: {why}"), asking::Mode::Changed)),
-                _ => Ok(()),
-            }
-        }
+            Err(store::Refused::Damaged(why)) => Err((
+                format!("The keyring doesn't read: {why}"),
+                asking::Mode::Unlock,
+            )),
+        },
     }
-}
-
-/// The login password changed while the keyring was open: ask for the
-/// new one once, and lock the keyring with it.
-pub fn follow_change(state: &State) {
-    {
-        let mut shared = lock(state);
-        if shared.prompting {
-            return;
-        }
-        shared.prompting = true;
-    }
-    let state_for = state.clone();
-    asking::ask(asking::Mode::Changed, "", move |asked| {
-        answer(&state_for, asked)
-    });
-    lock(state).prompting = false;
 }
 
 impl Shared {
@@ -824,7 +764,6 @@ impl Shared {
             keyring,
             next: 0,
             prompting: false,
-            pending_new: None,
         }
     }
 }
@@ -837,7 +776,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::crypto::Cost;
 
     /// A bus of its own, so the test touches nothing of the session's.
     struct Bus {
@@ -905,11 +843,8 @@ mod tests {
         };
         let dir = std::env::temp_dir().join(format!("enso-keyring-bus-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let light = Cost {
-            memory: 1024,
-            passes: 1,
-        };
-        let keyring = Keyring::create(&dir.join("keyring.toml"), b"test password", light).unwrap();
+        let here = crate::store::tests::Pretend([5; 32]);
+        let keyring = Keyring::create(&dir.join("keyring.toml"), &here).unwrap();
         let state: State = Arc::new(Mutex::new(Shared::new(Some(keyring))));
         let connection = zbus::block_on(async {
             let connection = zbus::connection::Builder::address(bus.address.as_str())
@@ -959,8 +894,9 @@ mod tests {
             1
         );
 
-        // Locked: found, but not given out (the card can't show in a test,
-        // so the unlock is put away).
+        // Locked: found, but not given out. No card in a test: as if one
+        // were up already, the unlock is refused at once.
+        lock(&state).prompting = true;
         lock(&state).keyring.as_mut().unwrap().lock();
         let (found, _) = secret_tool(&bus, &["lookup", "service", "github.com"], None);
         assert!(!found, "a locked keyring gave its secret away");
@@ -968,9 +904,10 @@ mod tests {
             .keyring
             .as_mut()
             .unwrap()
-            .unlock(b"test password")
+            .unlock(&here)
             .unwrap();
 
+        lock(&state).prompting = false;
         let (cleared, said) = secret_tool(&bus, &["clear", "service", "github.com"], None);
         assert!(cleared, "clear: {said}");
         assert!(!secret_tool(&bus, &["lookup", "service", "github.com"], None).0);

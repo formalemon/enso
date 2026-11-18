@@ -1,7 +1,7 @@
 //! Asking for the login password: the card is this program again, as
 //! `enso-keyring prompt`, its own short-lived process. Lines go between:
 //!
-//! - to the card: `mode <create|unlock|old|changed>`, `asker <name>`, then
+//! - to the card: `mode <create|unlock|lost>`, `asker <name>`, then
 //!   after each try `ok` (done: it closes) or `again <mode> <words, hex>`;
 //! - from the card: `password <hex>`, or `cancel`.
 //!
@@ -23,10 +23,9 @@ pub enum Mode {
     /// The first time: the login password, to make the keyring with.
     Create,
     Unlock,
-    /// The login password changed while locked: the one before it.
-    OldPassword,
-    /// The login password changed while unlocked: the new one.
-    Changed,
+    /// The machine can't open the keyring anymore: the password starts a
+    /// new one.
+    Lost,
 }
 
 impl Mode {
@@ -34,8 +33,7 @@ impl Mode {
         match self {
             Self::Create => "create",
             Self::Unlock => "unlock",
-            Self::OldPassword => "old",
-            Self::Changed => "changed",
+            Self::Lost => "lost",
         }
     }
 
@@ -43,19 +41,17 @@ impl Mode {
         Some(match word {
             "create" => Self::Create,
             "unlock" => Self::Unlock,
-            "old" => Self::OldPassword,
-            "changed" => Self::Changed,
+            "lost" => Self::Lost,
             _ => return None,
         })
     }
 }
 
-/// What was typed, by what it was asked for.
+/// What was typed: the login password, and what it was asked for.
 #[derive(Debug)]
-pub enum Asked {
-    Password(Zeroizing<Vec<u8>>),
-    Old(Zeroizing<Vec<u8>>),
-    New(Zeroizing<Vec<u8>>),
+pub struct Asked {
+    pub mode: Mode,
+    pub password: Zeroizing<Vec<u8>>,
 }
 
 /// Bring the card up in `mode` for `asker`, and hand each try to `answer`
@@ -93,11 +89,9 @@ pub fn ask(
         let Some(typed) = line.trim_end().strip_prefix("password ").and_then(unhex) else {
             break;
         };
-        let typed = Zeroizing::new(typed);
-        let asked = match mode {
-            Mode::Create | Mode::Unlock => Asked::Password(typed),
-            Mode::OldPassword => Asked::Old(typed),
-            Mode::Changed => Asked::New(typed),
+        let asked = Asked {
+            mode,
+            password: Zeroizing::new(typed),
         };
         match answer(asked) {
             Ok(()) => {

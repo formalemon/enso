@@ -1,16 +1,10 @@
-//! The cryptography, kept to three well-worn pieces from RustCrypto:
+//! The cryptography, kept to two well-worn pieces:
 //!
-//! - a **key from the password**: Argon2id, 64 MiB and three passes —
-//!   slow and memory-hungry on purpose, so guessing is too;
-//! - **authenticated encryption**: XChaCha20-Poly1305, whose 24-byte
-//!   nonces are safe to choose at random, and which notices any change to
-//!   what it sealed;
+//! - **authenticated encryption**: XChaCha20-Poly1305 (RustCrypto), whose
+//!   24-byte nonces are safe to choose at random, and which notices any
+//!   change to what it sealed;
 //! - **randomness** from the kernel (`getrandom`).
-//!
-//! The password itself is never kept: it unlocks the master key and is
-//! wiped.
 
-use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::{
     KeyInit, XChaCha20Poly1305, XNonce,
     aead::{Aead, Key},
@@ -19,24 +13,6 @@ use zeroize::Zeroizing;
 
 /// A 256-bit key, wiped when dropped.
 pub type Secret32 = Zeroizing<[u8; 32]>;
-
-/// How hard the password is worked, kept with what it locked so later
-/// changes to these don't strand an older keyring.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-pub struct Cost {
-    /// Memory, in KiB.
-    pub memory: u32,
-    pub passes: u32,
-}
-
-impl Default for Cost {
-    fn default() -> Self {
-        Self {
-            memory: 64 * 1024,
-            passes: 3,
-        }
-    }
-}
 
 /// Bytes from the kernel's random source.
 pub fn random<const N: usize>() -> [u8; N] {
@@ -51,17 +27,6 @@ pub fn random<const N: usize>() -> [u8; N] {
         }
     }
     bytes
-}
-
-/// The key a password makes, with this salt and cost.
-pub fn derive(password: &[u8], salt: &[u8; 16], cost: Cost) -> Result<Secret32, String> {
-    let params =
-        Params::new(cost.memory, cost.passes, 1, Some(32)).map_err(|err| err.to_string())?;
-    let mut key = Zeroizing::new([0; 32]);
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(password, salt, key.as_mut())
-        .map_err(|err| err.to_string())?;
-    Ok(key)
 }
 
 /// `plain`, sealed with `key`: a fresh nonce, then the ciphertext.
@@ -121,17 +86,8 @@ mod tests {
     }
 
     #[test]
-    fn a_password_makes_the_same_key_each_time() {
-        // Light, for the test's sake.
-        let cost = Cost {
-            memory: 1024,
-            passes: 1,
-        };
-        let salt = [7; 16];
-        let one = derive(b"login password", &salt, cost).unwrap();
-        assert_eq!(one, derive(b"login password", &salt, cost).unwrap());
-        assert_ne!(one, derive(b"login passwore", &salt, cost).unwrap());
-        assert_ne!(one, derive(b"login password", &[8; 16], cost).unwrap());
+    fn hex_both_ways() {
         assert_eq!(unhex(&hex(&[0, 15, 255])).unwrap(), [0, 15, 255]);
+        assert!(unhex("abc").is_none());
     }
 }

@@ -1,10 +1,13 @@
 //! What the keyring keeps, and how it's kept on disk
 //! (`~/.local/share/enso/keyring.toml`, readable by you alone).
 //!
-//! A random master key seals everything; the master key is kept sealed by
-//! a key made from your login password. Changing the password re-seals the
-//! master key and nothing else. Every collection, label, attribute, and
-//! secret is in the sealed part. Beside it, each item's attributes are
+//! A random master key seals everything; the master key is kept sealed to
+//! this machine and you ([`crate::machine`]): systemd opens it again only
+//! here, only for your account — not from a copy of the disk, and whatever
+//! your password is now. Your password is only ever checked (against the
+//! system's own record), never used to seal anything, so resetting it — as
+//! root, having forgotten it — strands nothing. Every collection, label,
+//! attribute, and secret is in the sealed part. Beside it, each item's attributes are
 //! kept hashed — as gnome-keyring keeps them — so a program can find its
 //! secret while the keyring is locked, and so know to ask for it to be
 //! unlocked; a hash says nothing of what's in it.
@@ -19,7 +22,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::crypto::{self, Cost, Secret32};
+use crate::{
+    crypto::{self, Secret32},
+    machine::Sealer,
+};
 
 /// One secret: a password, a token.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -73,10 +79,9 @@ pub struct Contents {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 struct File {
     version: u32,
-    cost: Cost,
-    /// Hex: the password's salt, the sealed master key, the sealed contents.
-    salt: String,
+    /// The master key, sealed by the machine (systemd's own encoding).
     master: String,
+    /// The contents, sealed by the master key (hex).
     contents: String,
     /// For each collection, each item's attribute hashes.
     #[serde(default)]
@@ -87,11 +92,12 @@ struct File {
 /// of their attributes.
 pub type Index = BTreeMap<String, BTreeMap<u64, Vec<String>>>;
 
-/// Why it wouldn't unlock.
+/// Why it wouldn't open.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refused {
-    /// The password doesn't open it.
-    Password,
+    /// The machine won't open the master key: the TPM was cleared, or
+    /// this is another machine.
+    Machine(String),
     /// It doesn't read: damaged, or not a keyring.
     Damaged(String),
 }
@@ -126,14 +132,12 @@ fn hashes(item: &Item) -> Vec<String> {
 #[derive(Debug)]
 pub struct Keyring {
     path: PathBuf,
-    cost: Cost,
     /// The master key, while unlocked.
     master: Option<Secret32>,
     pub contents: Contents,
     pub index: Index,
-    /// The password's salt and the sealed master key, as on disk.
-    salt: [u8; 16],
-    sealed_master: Vec<u8>,
+    /// The master key as the machine sealed it.
+    sealed_master: String,
 }
 
 impl Keyring {
@@ -145,9 +149,6 @@ impl Keyring {
             Err(err) => return Err(err),
         };
         let file: File = toml::from_str(&text).map_err(io::Error::other)?;
-        let salt: [u8; 16] = crypto::unhex(&file.salt)
-            .and_then(|salt| salt.try_into().ok())
-            .ok_or_else(|| io::Error::other("the keyring's salt doesn't read"))?;
         let index = file
             .index
             .into_iter()
@@ -161,29 +162,23 @@ impl Keyring {
             .collect();
         Ok(Some(Self {
             path: path.to_owned(),
-            cost: file.cost,
             master: None,
             contents: Contents::default(),
             index,
-            salt,
-            sealed_master: crypto::unhex(&file.master).unwrap_or_default(),
+            sealed_master: file.master,
         }))
     }
 
-    /// A new, empty keyring locked by `password`, with a "login" collection;
+    /// A new, empty keyring sealed by `sealer`, with a "login" collection;
     /// unlocked.
-    pub fn create(path: &Path, password: &[u8], cost: Cost) -> Result<Self, String> {
+    pub fn create(path: &Path, sealer: &dyn Sealer) -> Result<Self, String> {
         let master = Zeroizing::new(crypto::random::<32>());
-        let salt = crypto::random::<16>();
-        let wrapping = crypto::derive(password, &salt, cost)?;
         let mut keyring = Self {
             path: path.to_owned(),
-            cost,
-            sealed_master: crypto::seal(&wrapping, master.as_ref()),
+            sealed_master: sealer.seal(master.as_ref())?,
             master: Some(master),
             contents: Contents::default(),
             index: Index::default(),
-            salt,
         };
         let now = now();
         keyring.contents.collections.insert(
@@ -203,10 +198,10 @@ impl Keyring {
         self.master.is_some()
     }
 
-    /// Unlock with `password`.
-    pub fn unlock(&mut self, password: &[u8]) -> Result<(), Refused> {
-        let wrapping = crypto::derive(password, &self.salt, self.cost).map_err(Refused::Damaged)?;
-        let master = crypto::open(&wrapping, &self.sealed_master).ok_or(Refused::Password)?;
+    /// Open it: the machine unseals the master key, the master key the
+    /// contents.
+    pub fn unlock(&mut self, sealer: &dyn Sealer) -> Result<(), Refused> {
+        let master = Zeroizing::new(sealer.open(&self.sealed_master).map_err(Refused::Machine)?);
         let master: [u8; 32] = master
             .as_slice()
             .try_into()
@@ -236,17 +231,6 @@ impl Keyring {
         self.contents = Contents::default();
     }
 
-    /// Lock the master key with a new password (the login password has
-    /// changed). Unlocked only.
-    pub fn rewrap(&mut self, password: &[u8]) -> Result<(), String> {
-        let master = self.master.as_ref().ok_or("locked")?;
-        let salt = crypto::random::<16>();
-        let wrapping = crypto::derive(password, &salt, self.cost)?;
-        self.sealed_master = crypto::seal(&wrapping, master.as_ref());
-        self.salt = salt;
-        self.save().map_err(|err| err.to_string())
-    }
-
     /// Write it all, sealed. Unlocked only. Written beside it and put in
     /// place whole, readable by you alone.
     pub fn save(&mut self) -> io::Result<()> {
@@ -269,10 +253,8 @@ impl Keyring {
             .collect();
         let plain = Zeroizing::new(toml::to_string(&self.contents).map_err(io::Error::other)?);
         let file = File {
-            version: 1,
-            cost: self.cost,
-            salt: crypto::hex(&self.salt),
-            master: crypto::hex(&self.sealed_master),
+            version: 2,
+            master: self.sealed_master.clone(),
             contents: crypto::hex(&crypto::seal(master, plain.as_bytes())),
             index: self
                 .index
@@ -376,13 +358,24 @@ pub fn now() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
-    const LIGHT: Cost = Cost {
-        memory: 1024,
-        passes: 1,
-    };
+    /// Seals with a fixed key: a machine of the test's own.
+    pub struct Pretend(pub [u8; 32]);
+
+    impl Sealer for Pretend {
+        fn seal(&self, plain: &[u8]) -> Result<String, String> {
+            Ok(crypto::hex(&crypto::seal(&self.0, plain)))
+        }
+
+        fn open(&self, sealed: &str) -> Result<Vec<u8>, String> {
+            let sealed = crypto::unhex(sealed).ok_or("not hex")?;
+            crypto::open(&self.0, &sealed)
+                .map(|plain| plain.to_vec())
+                .ok_or_else(|| "not this machine".to_owned())
+        }
+    }
 
     fn item(service: &str, secret: &str) -> Item {
         Item {
@@ -401,11 +394,12 @@ mod tests {
     }
 
     #[test]
-    fn kept_sealed_found_while_locked_and_rewrapped() {
+    fn kept_sealed_found_while_locked_opened_only_here() {
         let dir = std::env::temp_dir().join(format!("enso-keyring-store-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let path = dir.join("keyring.toml");
-        let mut keyring = Keyring::create(&path, b"old login", LIGHT).unwrap();
+        let here = Pretend([3; 32]);
+        let mut keyring = Keyring::create(&path, &here).unwrap();
         let id = keyring
             .store("login", item("github.com", "gho_secret"), true)
             .unwrap();
@@ -440,23 +434,20 @@ mod tests {
             .collect();
         assert_eq!(locked.search(None, &wanted), [("login".to_owned(), id)]);
         assert!(locked.contents.collections.is_empty());
-        assert_eq!(locked.unlock(b"wrong"), Err(Refused::Password));
-        locked.unlock(b"old login").unwrap();
+        // Another machine can't open it.
+        assert!(matches!(
+            locked.unlock(&Pretend([4; 32])),
+            Err(Refused::Machine(_))
+        ));
+        locked.unlock(&here).unwrap();
         assert_eq!(
             locked.contents.collections["login"].items[&id]
                 .secret
                 .as_slice(),
             b"gho_newer"
         );
-
-        // The login password changed: re-sealed, the old one no longer works.
-        locked.rewrap(b"new login").unwrap();
-        let mut again = Keyring::load(&path).unwrap().unwrap();
-        assert_eq!(again.unlock(b"old login"), Err(Refused::Password));
-        again.unlock(b"new login").unwrap();
-        assert_eq!(again.contents.collections["login"].items.len(), 2);
-        again.lock();
-        assert!(!again.is_unlocked() && again.contents.collections.is_empty());
+        locked.lock();
+        assert!(!locked.is_unlocked() && locked.contents.collections.is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 }
