@@ -208,7 +208,9 @@ fn decode_webp(bytes: &[u8]) -> Option<Thumb> {
         buffer
     } else {
         buffer
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect()
     };
@@ -517,10 +519,12 @@ mod tests {
             let palette = [0, 255, 0, 255, 0, 255];
             let mut encoder = gif::Encoder::new(&mut gif_bytes, 3, 3, &palette).unwrap();
             for index in [0u8, 1] {
-                let mut frame = gif::Frame::default();
-                frame.width = 3;
-                frame.height = 3;
-                frame.buffer = std::borrow::Cow::Owned(vec![index; 9]);
+                let frame = gif::Frame {
+                    width: 3,
+                    height: 3,
+                    buffer: std::borrow::Cow::Owned(vec![index; 9]),
+                    ..gif::Frame::default()
+                };
                 encoder.write_frame(&frame).unwrap();
             }
         }
