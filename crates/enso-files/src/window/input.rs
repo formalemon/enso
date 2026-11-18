@@ -28,6 +28,9 @@ impl Files {
             cx.redraw();
             return;
         }
+        if self.peek_key(&key, cx, now) {
+            return;
+        }
         if self.settings_key(&key, cx)
             || self.vcs_key(&key, cx)
             || self.ops_key(&key, cx)
@@ -43,6 +46,34 @@ impl Files {
             return;
         }
         self.list_key(key, cx, now);
+    }
+
+    /// Keys while the quick look is up: moving shows the next file in it;
+    /// Space or Esc puts it away.
+    fn peek_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>, now: Instant) -> bool {
+        if !self.peek {
+            return false;
+        }
+        let across = match self.config.view {
+            crate::config::View::Grid => self.columns() as isize,
+            crate::config::View::List => 1,
+        };
+        let delta = match key.key {
+            Key::Escape | Key::Char(' ') | Key::Enter => {
+                self.peek = false;
+                None
+            }
+            Key::Left | Key::Char('h') => Some(-1),
+            Key::Right | Key::Char('l') => Some(1),
+            _ => key.nav(true).map(|nav| step(nav) * across),
+        };
+        if let Some(delta) = delta
+            && self.pane.move_cursor(delta)
+        {
+            self.follow_cursor(now);
+        }
+        cx.redraw();
+        true
     }
 
     /// Keys for the question about replacing a file.
@@ -676,6 +707,15 @@ impl Files {
                 self.load(request);
                 false
             }
+            Key::Char(' ') if mods.shift && !mods.ctrl => {
+                self.peek = true;
+                cx.redraw();
+                return;
+            }
+            Key::Char('i') if mods.is_plain() => {
+                self.previewing = !self.previewing;
+                true
+            }
             Key::Char(' ') if mods.is_plain() => {
                 if let Some(row) = self.pane.cursor() {
                     self.toggle(row);
@@ -1006,8 +1046,9 @@ impl Files {
     }
 
     fn press(&mut self, x: f32, y: f32, button: Button, clicks: u8, cx: &mut Cx<'_>, now: Instant) {
-        if self.help {
+        if self.help || self.peek {
             self.help = false;
+            self.peek = false;
             return;
         }
         let hit = self.hit(x, y);

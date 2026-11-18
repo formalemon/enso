@@ -12,6 +12,7 @@ mod draw;
 mod grid;
 mod input;
 mod ops;
+mod preview;
 mod settings;
 mod sidebar;
 mod vcs;
@@ -236,6 +237,11 @@ pub struct Files {
     zoom: usize,
     thumbs: grid::Thumbs,
     thumbnailer: Option<crate::jobs::Thumbnailer>,
+    /// The preview pane, and the quick look.
+    previewing: bool,
+    peek: bool,
+    shown: preview::Shown,
+    previewer: Option<crate::jobs::Previewer>,
 }
 
 impl Files {
@@ -296,6 +302,10 @@ impl Files {
             zoom: grid::ZOOM,
             thumbs: grid::Thumbs::default(),
             thumbnailer: None,
+            previewing: false,
+            peek: false,
+            shown: preview::Shown::default(),
+            previewer: None,
         }
     }
 
@@ -364,8 +374,9 @@ impl Files {
         self.anchor = None;
         // The pane starts the new folder unfiltered; so does the field.
         self.filter = None;
-        // Thumbnails are for what's shown.
+        // Thumbnails and previews are for what's shown.
         self.thumbs.keep_only(&request.path);
+        self.shown = preview::Shown::default();
         if let Some(thumbnailer) = &self.thumbnailer {
             thumbnailer.clear();
         }
@@ -674,6 +685,7 @@ impl App for Files {
             eprintln!("enso-files: live theme switching unavailable: {err}");
         }
         self.thumbnailer = Some(crate::jobs::Thumbnailer::start(&proxy));
+        self.previewer = Some(crate::jobs::Previewer::start(&proxy));
         self.proxy = Some(proxy);
         self.watch_drives();
     }
@@ -726,6 +738,10 @@ impl App for Files {
             }
             Event::Message(Message::Git { generation, status }) => {
                 self.git_arrived(generation, status, cx);
+            }
+            Event::Message(Message::Preview { path, preview }) => {
+                self.preview_arrived(path, preview);
+                cx.redraw();
             }
             Event::Message(Message::Thumb { path, thumb }) => {
                 if path.parent() == Some(self.pane.location()) {

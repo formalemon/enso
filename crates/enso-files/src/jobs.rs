@@ -58,6 +58,8 @@ pub enum Message {
         path: PathBuf,
         thumb: Option<enso_fs::thumbs::Thumb>,
     },
+    /// What a file looks like, for the preview.
+    Preview { path: PathBuf, preview: Preview },
     /// An operation got further.
     Progress(Progress),
     /// An operation found a name taken, and waits for `reply`.
@@ -68,6 +70,107 @@ pub enum Message {
     },
     /// An operation finished (or stopped).
     Finished { op: Op, report: Report },
+}
+
+/// What the preview shows of a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Preview {
+    /// A picture, fitted to the size asked for.
+    Picture(enso_fs::thumbs::Thumb),
+    /// The start of a text file, line by line.
+    Text(Vec<String>),
+    /// A folder: how many things are in it.
+    Folder(usize),
+    /// Nothing to show but its details.
+    Nothing,
+}
+
+/// Bytes of a text file read for its preview.
+const TEXT_BYTES: usize = 64 << 10;
+/// Lines of it kept.
+const TEXT_LINES: usize = 400;
+
+/// What `path` looks like: decoded, read, or counted.
+pub fn preview(path: &Path, max_side: u32) -> Preview {
+    use std::io::Read;
+    if path.is_dir() {
+        return std::fs::read_dir(path)
+            .map_or(Preview::Nothing, |entries| Preview::Folder(entries.count()));
+    }
+    if let Some(picture) = enso_fs::thumbs::decode(path, max_side) {
+        return Preview::Picture(picture);
+    }
+    let mut head = vec![0; TEXT_BYTES];
+    let Ok(read) = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)) else {
+        return Preview::Nothing;
+    };
+    head.truncate(read);
+    if head.contains(&0) {
+        return Preview::Nothing;
+    }
+    // A character cut off at the end is still text.
+    let text = match std::str::from_utf8(&head) {
+        Ok(text) => text,
+        Err(err) if err.error_len().is_none() => {
+            std::str::from_utf8(&head[..err.valid_up_to()]).unwrap_or_default()
+        }
+        Err(_) => return Preview::Nothing,
+    };
+    Preview::Text(
+        text.lines()
+            .take(TEXT_LINES)
+            .map(|line| line.replace('\t', "    "))
+            .collect(),
+    )
+}
+
+/// Makes previews on one thread, the latest asked for only: holding a key
+/// down through a folder never queues work behind it.
+#[derive(Debug)]
+pub struct Previewer {
+    slot: Slot,
+}
+
+/// The one preview waiting, and the signal that wakes the worker.
+type Slot = Arc<(std::sync::Mutex<Option<(PathBuf, u32)>>, std::sync::Condvar)>;
+
+impl Previewer {
+    pub fn start(proxy: &Proxy<Message>) -> Self {
+        let slot: Slot = Arc::default();
+        let (waiting, proxy) = (slot.clone(), proxy.clone());
+        let _ = thread::Builder::new()
+            .name("enso-files-preview".to_owned())
+            .spawn(move || {
+                loop {
+                    let (path, side) = {
+                        let (lock, ready) = &*waiting;
+                        let Ok(mut next) = lock.lock() else { return };
+                        loop {
+                            if let Some(job) = next.take() {
+                                break job;
+                            }
+                            let Ok(woken) = ready.wait(next) else { return };
+                            next = woken;
+                        }
+                    };
+                    let preview = preview(&path, side);
+                    if !proxy.send(Message::Preview { path, preview }) {
+                        return;
+                    }
+                }
+            });
+        Self { slot }
+    }
+
+    /// Preview `path`, fitting pictures within `side` pixels — instead of
+    /// whatever was asked before and not yet started.
+    pub fn request(&self, path: PathBuf, side: u32) {
+        let (lock, ready) = &*self.slot;
+        if let Ok(mut next) = lock.lock() {
+            *next = Some((path, side));
+            ready.notify_one();
+        }
+    }
 }
 
 /// Makes thumbnails on a few threads, newest request first: what was asked

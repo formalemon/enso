@@ -16,7 +16,7 @@ use enso_ui::{
     widget::{Button, Interaction, Kind, controls, field},
 };
 
-use super::{Files, Hit};
+use super::{Files, Hit, preview};
 use crate::{pane::Load, pick::Choice, picker::Under};
 
 pub(super) const TITLE_HEIGHT: f32 = 52.0;
@@ -52,6 +52,14 @@ impl Files {
         } else {
             body
         };
+        // The preview pane, where there's room for it beside the list.
+        let list = if self.previewing && list.w > preview::PANE * 2.0 {
+            let pane = Rect::new(list.right() - preview::PANE, list.y, preview::PANE, list.h);
+            self.draw_preview(canvas, pane);
+            Rect::new(list.x, list.y, list.w - preview::PANE, list.h)
+        } else {
+            list
+        };
         animating |= self.draw_list(canvas, list, now);
         if let Some(bar) = bar {
             self.draw_bar(canvas, bar);
@@ -66,6 +74,9 @@ impl Files {
         self.draw_questions(canvas, bounds);
         self.draw_vcs(canvas, bounds);
         self.draw_settings(canvas, bounds, now);
+        if self.peek {
+            self.draw_peek(canvas, bounds);
+        }
         if self.help {
             self.draw_help(canvas, bounds);
         }
@@ -214,6 +225,8 @@ impl Files {
             ("Esc", "clear filter, then choice"),
             ("/  Ctrl+F", "filter as you type"),
             ("Ctrl+L", "type a location"),
+            ("i  ·  Shift+Space", "preview · quick look"),
+            ("Ctrl+1  ·  Ctrl+2", "list · grid (Ctrl+= −)"),
             ("Ctrl+H  ·  .", "dotfiles"),
             ("~  ·  g h", "home"),
             ("g g  ·  G", "first · last"),
@@ -1438,6 +1451,47 @@ mod tests {
             .count();
         assert_eq!(tiles, 9, "every tile answers the pointer");
         assert!(files.columns() >= 4);
+    }
+
+    #[test]
+    fn renders_the_preview_and_the_quick_look() {
+        let mut files = files();
+        files.pane.set_cursor(6);
+        files.previewing = true;
+        let path = files.pane.path(6);
+        files.shown.path = Some(path.clone());
+        files.shown.side = 10_000;
+        files.preview_arrived(
+            path,
+            crate::jobs::Preview::Text(vec![
+                "[workspace]".into(),
+                "resolver = \"3\"".into(),
+                "members = [\"crates/*\"]".into(),
+            ]),
+        );
+        snapshot(&render(&mut files, (1000, 480)), "enso-files-preview");
+
+        files.pane.set_cursor(7);
+        let picture = files.pane.path(7);
+        assert!(picture.ends_with("photo.png"));
+        files.shown = Default::default();
+        files.shown.path = Some(picture.clone());
+        files.shown.side = 10_000;
+        let (w, h) = (300u32, 200u32);
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| [(i % w * 255 / w) as u8, 120, (i / w * 255 / h) as u8, 255])
+            .collect();
+        files.preview_arrived(
+            picture,
+            crate::jobs::Preview::Picture(enso_fs::thumbs::Thumb {
+                width: w,
+                height: h,
+                rgba,
+            }),
+        );
+        files.peek = true;
+        snapshot(&render(&mut files, (1000, 600)), "enso-files-peek");
+        assert!(files.hits.is_empty(), "the quick look takes every click");
     }
 
     #[test]
