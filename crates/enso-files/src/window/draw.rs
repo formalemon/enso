@@ -58,11 +58,13 @@ impl Files {
             self.draw_bar(canvas, bar);
         }
         self.draw_status(canvas, status);
+        self.draw_toast(canvas, bar.map_or(status.y, |bar| bar.y));
         let look = self.look();
         if let Some((menu, _)) = &mut self.menu {
             menu.draw(canvas, bounds, &look.menu());
         }
         self.draw_confirm(canvas, bounds);
+        self.draw_questions(canvas, bounds);
         if self.help {
             self.draw_help(canvas, bounds);
         }
@@ -472,6 +474,8 @@ impl Files {
         let highlight = self.highlight.get(now);
         let chosen = colors.iris;
 
+        let renaming = self.renaming.as_ref().map(|renaming| renaming.path.clone());
+        let mut rename_at = None;
         canvas.with_clip(list, |canvas| {
             // The cursor's highlight glides on its own, under the rows.
             if cursor.is_some() {
@@ -527,12 +531,16 @@ impl Files {
                     (icon::FILE, colors.subtle)
                 };
                 canvas.icon(icon, 18.0, faded(icon_color), columns.icon, Align::Center);
-                let name = self.pane.name(row);
-                canvas.text_in(
-                    &Text::new(&name, body, faded(colors.text)),
-                    columns.name,
-                    Align::Start,
-                );
+                if renaming.as_ref() == Some(&path) {
+                    rename_at = Some(columns.name);
+                } else {
+                    let name = self.pane.name(row);
+                    canvas.text_in(
+                        &Text::new(&name, body, faded(colors.text)),
+                        columns.name,
+                        Align::Start,
+                    );
+                }
                 if let Some(meta) = entry.meta
                     && columns.size.w > 0.0
                 {
@@ -565,6 +573,9 @@ impl Files {
             if rect.h > 0.0 {
                 self.hits.push((rect, Hit::Row(row)));
             }
+        }
+        if let Some(rect) = rename_at.filter(|rect| list.contains(rect.x, rect.center().1)) {
+            self.draw_rename(canvas, rect);
         }
         let hovered_bar = self.hover == Some(Hit::ScrollBar);
         self.scroll
@@ -816,8 +827,8 @@ impl Files {
         }
     }
 
-    fn draw_status(&self, canvas: &mut Canvas<'_>, area: Rect) {
-        let colors = &self.ctx.theme.colors;
+    fn draw_status(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
+        let colors = self.ctx.theme.colors.clone();
         let small = self.font(type_scale::SMALL);
         canvas.fill(
             Rect::new(area.x, area.y, area.w, stroke::HAIRLINE),
@@ -846,7 +857,9 @@ impl Files {
             }
         }
         canvas.text_in(&Text::new(&left, small, colors.subtle), inner, Align::Start);
-        if let Ok(space) = places::space(self.pane.location()) {
+        if self.draw_running(canvas, inner) {
+            // The job in hand says more than the free space.
+        } else if let Ok(space) = places::space(self.pane.location()) {
             let free = format!("{} free", format::size(space.free));
             canvas.text_in(&Text::new(&free, small, colors.subtle), inner, Align::End);
         }
@@ -1287,6 +1300,48 @@ mod tests {
         files.location = None;
         files.help = true;
         snapshot(&render(&mut files, (900, 560)), "enso-files-keys");
+    }
+
+    #[test]
+    fn renders_operations_and_their_questions() {
+        let mut files = files();
+        files.begin_rename("/home/me/dev/enso/Cargo.toml".into());
+        files.running = Some(super::super::ops::Running {
+            label: "Copying 3 items".into(),
+            progress: enso_fs::ops::Progress {
+                bytes: 40,
+                total_bytes: 100,
+                ..Default::default()
+            },
+            stop: Default::default(),
+        });
+        files.toast = Some((
+            "Moved 2 items to the trash · Ctrl+Z puts them back".into(),
+            Instant::now(),
+        ));
+        snapshot(&render(&mut files, (900, 420)), "enso-files-rename");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::StopOp));
+
+        let (reply, _answer) = std::sync::mpsc::channel();
+        files.asked = Some(super::super::ops::Asked {
+            source: "/tmp/notes.txt".into(),
+            target: "/home/me/dev/enso/notes.txt".into(),
+            reply,
+            all: true,
+        });
+        snapshot(&render(&mut files, (900, 420)), "enso-files-conflict");
+        let hits: Vec<&Hit> = files.hits.iter().map(|(_, hit)| hit).collect();
+        assert!(hits.contains(&&Hit::Resolve(enso_fs::ops::Resolve::KeepBoth)));
+        assert!(hits.contains(&&Hit::ForAll));
+        assert!(
+            !hits.iter().any(|hit| matches!(hit, Hit::Row(_))),
+            "only the question answers"
+        );
+
+        files.asked = None;
+        files.confirm_delete = Some(vec!["/home/me/dev/enso/target".into()]);
+        snapshot(&render(&mut files, (900, 420)), "enso-files-delete");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::DeleteForGood));
     }
 
     #[test]

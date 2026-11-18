@@ -28,7 +28,7 @@ impl Files {
             cx.redraw();
             return;
         }
-        if self.confirm_key(&key, cx) || self.menu_key(&key, cx) {
+        if self.ops_key(&key, cx) || self.confirm_key(&key, cx) || self.menu_key(&key, cx) {
             return;
         }
         if self.location_key(key, cx)
@@ -148,6 +148,25 @@ impl Files {
                     self.loader.load(request, proxy);
                 }
             }
+            Action::Rename => {
+                if let Some(row) = self.pane.cursor() {
+                    self.begin_rename(self.pane.path(row));
+                }
+            }
+            Action::NewFolder => self.new_folder(cx),
+            Action::Copy => self.copy_files(false, cx),
+            Action::Cut => self.copy_files(true, cx),
+            Action::Paste => self.ask_paste(cx),
+            Action::Duplicate => {
+                if let Some(row) = self.pane.cursor() {
+                    let path = self.pane.path(row);
+                    self.start_op(crate::jobs::Op::Duplicate(path), cx);
+                }
+            }
+            Action::Trash => self.trash_targets(cx),
+            Action::Delete => self.ask_delete(cx),
+            Action::Terminal => self.terminal_here(cx),
+            Action::Undo => self.undo_last(cx),
         }
         self.follow_cursor(now);
         cx.redraw();
@@ -181,12 +200,50 @@ impl Files {
                     Some(Action::Toggle(path.clone())),
                 );
             }
+            let managing = self.picker.is_none();
+            add(Item::new("Rename").keys("F2"), Some(Action::Rename));
+            if managing {
+                add(Item::new("Copy").keys("Ctrl+C"), Some(Action::Copy));
+                add(Item::new("Cut").keys("Ctrl+X"), Some(Action::Cut));
+                add(
+                    Item::new("Duplicate").keys("Ctrl+Shift+D"),
+                    Some(Action::Duplicate),
+                );
+            }
             add(
                 Item::new("Copy path").keys("Ctrl+Shift+C"),
                 Some(Action::CopyPath(path)),
             );
+            if managing {
+                add(
+                    Item::new("Move to the trash").keys("Delete"),
+                    Some(Action::Trash),
+                );
+                add(
+                    Item::new("Delete for good…").keys("Shift+Delete"),
+                    Some(Action::Delete),
+                );
+            }
             add(Item::Separator, None);
         }
+        add(
+            Item::new("New folder").keys("Ctrl+Shift+N"),
+            Some(Action::NewFolder),
+        );
+        if self.picker.is_none() {
+            add(Item::new("Paste").keys("Ctrl+V"), Some(Action::Paste));
+            add(
+                Item::new("Terminal here").keys("F4"),
+                Some(Action::Terminal),
+            );
+            add(
+                Item::new("Undo")
+                    .keys("Ctrl+Z")
+                    .enabled(!self.undo.is_empty()),
+                Some(Action::Undo),
+            );
+        }
+        add(Item::Separator, None);
         let multiple = self
             .picker
             .as_ref()
@@ -590,6 +647,54 @@ impl Files {
                 self.context_menu(row, self.list.x + 48.0, y);
                 false
             }
+            Key::F(2) => {
+                self.act(super::Action::Rename, cx);
+                return;
+            }
+            Key::Char('n' | 'N') if mods.ctrl && mods.shift => {
+                self.new_folder(cx);
+                return;
+            }
+            Key::Delete if mods.shift && !picking => {
+                self.ask_delete(cx);
+                return;
+            }
+            Key::Delete if !picking => {
+                self.trash_targets(cx);
+                return;
+            }
+            Key::Char('c') if mods.ctrl && !mods.shift && !picking => {
+                self.copy_files(false, cx);
+                return;
+            }
+            Key::Char('x') if mods.ctrl && !picking => {
+                self.copy_files(true, cx);
+                return;
+            }
+            Key::Char('v') if mods.ctrl && !picking => {
+                self.ask_paste(cx);
+                return;
+            }
+            Key::Char('d' | 'D') if mods.ctrl && mods.shift && !picking => {
+                self.act(super::Action::Duplicate, cx);
+                return;
+            }
+            Key::Char('z' | 'Z') if mods.ctrl && mods.shift && !picking => {
+                self.redo_last(cx);
+                return;
+            }
+            Key::Char('y') if mods.ctrl && !picking => {
+                self.redo_last(cx);
+                return;
+            }
+            Key::Char('z') if mods.ctrl && !picking => {
+                self.undo_last(cx);
+                return;
+            }
+            Key::F(4) => {
+                self.terminal_here(cx);
+                return;
+            }
             Key::Char('q' | 'w') if mods.ctrl => {
                 self.cancel(cx);
                 return;
@@ -676,7 +781,12 @@ impl Files {
                         | Hit::Accept
                         | Hit::Cancel
                         | Hit::Replace
-                        | Hit::KeepFile,
+                        | Hit::KeepFile
+                        | Hit::StopOp
+                        | Hit::Resolve(_)
+                        | Hit::ForAll
+                        | Hit::DeleteForGood
+                        | Hit::KeepFiles,
                     ) => Cursor::Pointer,
                     _ => Cursor::Default,
                 });
@@ -722,6 +832,13 @@ impl Files {
             return;
         }
         let hit = self.hit(x, y);
+        if self.ops_press(hit.as_ref(), cx) {
+            return;
+        }
+        // A click away from the name being edited leaves it as it was.
+        if self.renaming.is_some() {
+            self.renaming = None;
+        }
         // Clicking anywhere but the location puts it away.
         if self.location.is_some() && !matches!(hit, Some(Hit::Location(_))) {
             self.location = None;
@@ -885,7 +1002,16 @@ impl Files {
                     cx.begin_move();
                 }
             }
-            Some(Hit::Replace | Hit::KeepFile) | None => {}
+            Some(
+                Hit::Replace
+                | Hit::KeepFile
+                | Hit::StopOp
+                | Hit::Resolve(_)
+                | Hit::ForAll
+                | Hit::DeleteForGood
+                | Hit::KeepFiles,
+            )
+            | None => {}
         }
     }
 

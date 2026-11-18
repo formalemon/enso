@@ -10,6 +10,7 @@
 
 mod draw;
 mod input;
+mod ops;
 
 use std::{
     path::{Path, PathBuf},
@@ -65,6 +66,15 @@ enum Hit {
     Chip(PathBuf),
     /// Its ✕: unchoose it.
     Unchoose(PathBuf),
+    /// Stop the operation under way.
+    StopOp,
+    /// An answer to "this name is taken".
+    Resolve(enso_fs::ops::Resolve),
+    /// "Do the same for the rest."
+    ForAll,
+    /// The answers to "delete for good?".
+    DeleteForGood,
+    KeepFiles,
     /// The name being saved as, whose text starts at this `x`.
     Name(f32),
     FilterMenu,
@@ -89,6 +99,16 @@ enum Action {
     FoldersFirst,
     Hidden,
     Reload,
+    Rename,
+    NewFolder,
+    Copy,
+    Cut,
+    Paste,
+    Duplicate,
+    Trash,
+    Delete,
+    Terminal,
+    Undo,
 }
 
 /// What an open menu is for.
@@ -149,6 +169,16 @@ pub struct Files {
     help: bool,
     /// Following the folder shown, so it updates as it changes.
     watch: Option<enso_fs::watch::Watch>,
+    running: Option<ops::Running>,
+    asked: Option<ops::Asked>,
+    /// Deleting for good, once it's confirmed.
+    confirm_delete: Option<Vec<PathBuf>>,
+    renaming: Option<ops::Renaming>,
+    /// A new folder to name as soon as it's listed.
+    rename_after: Option<PathBuf>,
+    undo: Vec<enso_fs::ops::Done>,
+    redo: Vec<enso_fs::ops::Done>,
+    toast: Option<(String, Instant)>,
 }
 
 impl Files {
@@ -185,6 +215,14 @@ impl Files {
             location_missing: false,
             help: false,
             watch: None,
+            running: None,
+            asked: None,
+            confirm_delete: None,
+            renaming: None,
+            rename_after: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            toast: None,
         }
     }
 
@@ -536,6 +574,7 @@ impl App for Files {
             Event::Message(Message::Listed { generation, result }) => {
                 if self.pane.set_listing(generation, result) {
                     self.follow(generation);
+                    self.listed();
                     // Landing on a remembered row: be there, don't glide.
                     if let Some(row) = self.pane.cursor() {
                         let top = row as f32 * self.row_height();
@@ -573,6 +612,14 @@ impl App for Files {
                     }
                 }
             }
+            Event::Message(Message::Progress(progress)) => self.op_progress(progress, cx),
+            Event::Message(Message::Conflict {
+                source,
+                target,
+                reply,
+            }) => self.ask(source, target, reply, cx),
+            Event::Message(Message::Finished { op, report }) => self.op_finished(op, report, cx),
+            Event::Wake => self.wake(cx),
             Event::Message(Message::ThemeChanged) => {
                 if self.ctx.reload_theme() {
                     cx.redraw();
@@ -580,7 +627,23 @@ impl App for Files {
             }
             Event::Key(key) => self.key(key, cx, now),
             Event::Pointer(pointer) => self.pointer(pointer, cx, now),
-            Event::Paste { data, .. } => self.paste(&String::from_utf8_lossy(&data), now, cx),
+            Event::Paste { mime, data } => {
+                let text = String::from_utf8_lossy(&data).into_owned();
+                let typing = self.location.is_some()
+                    || self.filter.is_some()
+                    || self
+                        .picker
+                        .as_ref()
+                        .is_some_and(|picker| picker.typing_name);
+                if let Some(renaming) = &mut self.renaming {
+                    renaming.field.insert(&text);
+                    cx.redraw();
+                } else if typing {
+                    self.paste(&text, now, cx);
+                } else if self.picker.is_none() && !self.paste_files(&mime, &data, cx) {
+                    self.toast("Nothing to paste here: the clipboard holds no files", cx);
+                }
+            }
             Event::Resized { width, height } => {
                 self.size = (width as f32, height as f32);
                 cx.redraw();

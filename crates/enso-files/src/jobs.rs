@@ -6,15 +6,20 @@
 //! of the second pass is left.
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread,
+    time::{Duration, Instant},
 };
 
-use enso_fs::list::{self, Listing, Meta};
+use enso_fs::{
+    list::{self, Listing, Meta},
+    ops::{self, Progress, Report, Resolve},
+};
 use enso_ui::Proxy;
 
 use crate::pane::{Request, describe};
@@ -36,6 +41,106 @@ pub enum Message {
     Changed { generation: u64, gone: bool },
     /// The active theme changed.
     ThemeChanged,
+    /// An operation got further.
+    Progress(Progress),
+    /// An operation found a name taken, and waits for `reply`.
+    Conflict {
+        source: PathBuf,
+        target: PathBuf,
+        reply: mpsc::Sender<(Resolve, bool)>,
+    },
+    /// An operation finished (or stopped).
+    Finished { op: Op, report: Report },
+}
+
+/// Something done to files on a worker thread.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Op {
+    Copy {
+        sources: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Move {
+        sources: Vec<PathBuf>,
+        into: PathBuf,
+    },
+    Duplicate(PathBuf),
+    Delete(Vec<PathBuf>),
+}
+
+impl Op {
+    /// What it's doing, for the status line: "Copying 3 items".
+    pub fn describe(&self) -> String {
+        let count = |n: usize| enso_fs::format::count(n, "item", "items");
+        match self {
+            Self::Copy { sources, .. } => format!("Copying {}", count(sources.len())),
+            Self::Move { sources, .. } => format!("Moving {}", count(sources.len())),
+            Self::Duplicate(_) => "Duplicating".to_owned(),
+            Self::Delete(paths) => format!("Deleting {}", count(paths.len())),
+        }
+    }
+}
+
+/// Start `op` on its own thread. Setting the returned flag stops it.
+pub fn start(op: Op, proxy: &Proxy<Message>) -> Arc<AtomicBool> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut watcher = Reporter {
+        proxy: proxy.clone(),
+        stop: stop.clone(),
+        last: None,
+    };
+    let finished = proxy.clone();
+    let spawned = thread::Builder::new()
+        .name("enso-files-op".to_owned())
+        .spawn(move || {
+            let report = match &op {
+                Op::Copy { sources, into } => ops::copy(sources, into, &mut watcher),
+                Op::Move { sources, into } => ops::move_into(sources, into, &mut watcher),
+                Op::Duplicate(path) => ops::duplicate(path, &mut watcher),
+                Op::Delete(paths) => ops::delete(paths, &mut watcher),
+            };
+            finished.send(Message::Finished { op, report });
+        });
+    if let Err(err) = spawned {
+        eprintln!("enso-files: cannot start: {err}");
+    }
+    stop
+}
+
+/// An operation's side of the window: progress at most every 50 ms, and
+/// questions asked and waited for.
+struct Reporter {
+    proxy: Proxy<Message>,
+    stop: Arc<AtomicBool>,
+    last: Option<Instant>,
+}
+
+impl ops::Watcher for Reporter {
+    fn progress(&mut self, progress: &Progress) {
+        let now = Instant::now();
+        if self
+            .last
+            .is_none_or(|last| now - last >= Duration::from_millis(50))
+        {
+            self.last = Some(now);
+            self.proxy.send(Message::Progress(progress.clone()));
+        }
+    }
+
+    fn conflict(&mut self, source: &Path, target: &Path) -> (Resolve, bool) {
+        let (reply, answer) = mpsc::channel();
+        self.proxy.send(Message::Conflict {
+            source: source.to_owned(),
+            target: target.to_owned(),
+            reply,
+        });
+        // No answer (the window went): stop.
+        answer.recv().unwrap_or((Resolve::Cancel, true))
+    }
+
+    fn stop(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
 }
 
 /// Lists folders in the background, one at a time.
