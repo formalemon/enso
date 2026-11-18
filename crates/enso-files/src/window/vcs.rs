@@ -86,7 +86,7 @@ impl Files {
     /// Learn the repository's state on a worker, for the folder just listed.
     pub(super) fn refresh_git(&mut self, generation: u64) {
         self.repo = None;
-        if !self.git_on() {
+        if !self.git_on() || *self.pane.source() == crate::pane::Source::Recent {
             return;
         }
         let Some(root) = git::root(self.pane.location()) else {

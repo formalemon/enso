@@ -22,7 +22,7 @@ use enso_fs::{
 };
 use enso_ui::Proxy;
 
-use crate::pane::{Request, describe};
+use crate::pane::{Request, Source, describe};
 
 #[derive(Debug)]
 pub enum Message {
@@ -30,6 +30,9 @@ pub enum Message {
     Listed {
         generation: u64,
         result: Result<Listing, String>,
+        /// What each entry has to say beside its name (a search's matching
+        /// line), by index; empty for a folder.
+        notes: Vec<String>,
     },
     /// Metadata for entries `start..` of that listing.
     Stats {
@@ -342,7 +345,7 @@ impl Loader {
         let proxy = proxy.clone();
         let spawned = thread::Builder::new()
             .name("enso-files-list".to_owned())
-            .spawn(move || run(request.path, request.generation, &cancel, &proxy));
+            .spawn(move || run(request, &cancel, &proxy));
         if let Err(err) = spawned {
             eprintln!("enso-files: cannot start listing: {err}");
         }
@@ -362,13 +365,27 @@ impl Drop for Loader {
     }
 }
 
-fn run(path: PathBuf, generation: u64, cancel: &AtomicBool, proxy: &Proxy<Message>) {
-    let listing = match Listing::read(&path) {
-        Ok(listing) => listing,
-        Err(err) => {
+fn run(request: Request, cancel: &AtomicBool, proxy: &Proxy<Message>) {
+    let (path, generation) = (request.path, request.generation);
+    let gathered = match &request.source {
+        Source::Folder => Listing::read(&path)
+            .map(|listing| crate::gather::Gathered {
+                listing,
+                notes: Vec::new(),
+            })
+            .map_err(|err| describe(&err)),
+        Source::Recent => Ok(crate::gather::recent()),
+        Source::Search { query, content } => {
+            crate::gather::search(&path, request.hidden, query, *content, cancel)
+        }
+    };
+    let (listing, notes) = match gathered {
+        Ok(gathered) => (gathered.listing, gathered.notes),
+        Err(why) => {
             proxy.send(Message::Listed {
                 generation,
-                result: Err(describe(&err)),
+                result: Err(why),
+                notes: Vec::new(),
             });
             return;
         }
@@ -379,6 +396,7 @@ fn run(path: PathBuf, generation: u64, cancel: &AtomicBool, proxy: &Proxy<Messag
     if !proxy.send(Message::Listed {
         generation,
         result: Ok(listing),
+        notes,
     }) || cancel.load(Ordering::Relaxed)
     {
         return;

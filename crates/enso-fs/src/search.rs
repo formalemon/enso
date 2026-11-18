@@ -242,6 +242,14 @@ impl FileIndex {
         Self { text }
     }
 
+    /// Every path, and whether it's a directory.
+    pub fn paths(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.text.lines().map(|line| match line.strip_suffix('/') {
+            Some(dir) if !dir.is_empty() => (dir, true),
+            _ => (line, false),
+        })
+    }
+
     /// Number of indexed files and directories.
     pub fn len(&self) -> usize {
         self.text.bytes().filter(|byte| *byte == b'\n').count()

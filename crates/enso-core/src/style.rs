@@ -146,6 +146,10 @@ pub enum Figure {
     /// A disk: a drive, a partition, a USB stick.
     Drive,
     Eject,
+    /// Time: what was used lately.
+    Clock,
+    /// A ribbon: a folder kept at hand.
+    Bookmark,
 }
 
 /// An icon: the figure drawn, and a few letters standing in for it where
@@ -209,4 +213,6 @@ pub mod icon {
     pub const TRASH: Icon = Icon::new(Figure::Trash, "del");
     pub const DRIVE: Icon = Icon::new(Figure::Drive, "disk");
     pub const EJECT: Icon = Icon::new(Figure::Eject, "^");
+    pub const CLOCK: Icon = Icon::new(Figure::Clock, "@");
+    pub const BOOKMARK: Icon = Icon::new(Figure::Bookmark, "*");
 }

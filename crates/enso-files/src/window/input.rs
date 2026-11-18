@@ -138,8 +138,11 @@ impl Files {
             MenuFor::OpenWith(path, choices) => match choices.get(index) {
                 Some(choice) => {
                     let db = enso_fs::open::Database::from_env();
-                    if let Err(err) = db.open_with(&choice.id, &path, "alacritty") {
-                        self.toast(format!("Can't open it with {}: {err}", choice.name), cx);
+                    match db.open_with(&choice.id, &path, "alacritty") {
+                        Ok(()) => super::used(vec![path.clone()]),
+                        Err(err) => {
+                            self.toast(format!("Can't open it with {}: {err}", choice.name), cx);
+                        }
                     }
                 }
                 // Past the line: "Always use…".
@@ -263,6 +266,10 @@ impl Files {
                 }
             }
             Action::EmptyTrash => self.ask_empty(cx),
+            Action::Reveal(path) => self.reveal(&path),
+            Action::NewTab(path) => self.open_tab(path, false, cx),
+            Action::Bookmark(path) => self.toggle_bookmark(&path, cx),
+            Action::ShiftBookmark(path, step) => self.shift_bookmark(&path, step, cx),
             Action::Settings => {
                 self.learn_git();
                 self.settings = Some(0);
@@ -297,6 +304,28 @@ impl Files {
                 if super::is_program(&path) {
                     add(Item::new("Run"), Some(Action::Run(path.clone())));
                 }
+            }
+            if is_dir && self.picker.is_none() {
+                add(
+                    Item::new("Open in a new tab").keys("Ctrl+Enter"),
+                    Some(Action::NewTab(path.clone())),
+                );
+                let marked = self.bookmarks.iter().any(|mark| mark.path == path);
+                add(
+                    Item::new(if marked {
+                        "Remove the bookmark"
+                    } else {
+                        "Bookmark"
+                    }),
+                    Some(Action::Bookmark(path.clone())),
+                );
+            }
+            // In a gathered list, where it really is.
+            if !self.pane.source().is_folder() {
+                add(
+                    Item::new("Show in its folder"),
+                    Some(Action::Reveal(path.clone())),
+                );
             }
             if self.pane.entry(row).kind.is_link() {
                 add(
@@ -349,9 +378,10 @@ impl Files {
             }
             add(Item::Separator, None);
         }
+        let folder = self.pane.source().is_folder();
         if self.picker.is_none() && self.in_trash() {
             add(Item::new("Empty the trash…"), Some(Action::EmptyTrash));
-        } else {
+        } else if folder {
             add(
                 Item::new("New folder").keys("Ctrl+Shift+N"),
                 Some(Action::NewFolder),
@@ -363,7 +393,20 @@ impl Files {
                 Some(Action::InitRepo),
             );
         }
-        if self.picker.is_none() {
+        if self.picker.is_none() && folder && row.is_none() {
+            let here = self.pane.location().to_owned();
+            let marked = self.bookmarks.iter().any(|mark| mark.path == here);
+            add(
+                Item::new(if marked {
+                    "Remove the bookmark"
+                } else {
+                    "Bookmark this folder"
+                })
+                .keys("Ctrl+D"),
+                Some(Action::Bookmark(here)),
+            );
+        }
+        if self.picker.is_none() && folder {
             add(Item::new("Paste").keys("Ctrl+V"), Some(Action::Paste));
             add(
                 Item::new("Terminal here").keys("F4"),
@@ -448,18 +491,35 @@ impl Files {
             cx.redraw();
             return true;
         }
+        let seeking = self.seek.is_some();
         match field.key(&key) {
             field::Response::Ignored => return false,
+            field::Response::Cancel if seeking => self.close_search(),
             field::Response::Cancel => {
                 self.filter = None;
                 self.pane.set_filter("");
                 self.follow_cursor(now);
+            }
+            field::Response::Submit if seeking => {
+                // Run it now, whichever kind; the field goes, the results
+                // stay.
+                self.seek_due = None;
+                self.run_search();
+                self.close_search();
             }
             field::Response::Submit => {
                 // Leave the field; the folder stays filtered until Esc or
                 // a new folder.
                 self.filter = None;
                 self.open(cx);
+            }
+            field::Response::Changed if seeking => self.search_typed(now, cx),
+            // `//`: the filter becomes a search below.
+            field::Response::Changed if field.text() == "/" => {
+                self.open_search(super::seek::Seek::Names, cx);
+                if let Some(field) = &mut self.filter {
+                    field.set_text("");
+                }
             }
             field::Response::Changed => {
                 let text = field.text().to_owned();
@@ -687,6 +747,13 @@ impl Files {
                 }
                 false
             }
+            Key::Char('d') if mods.ctrl && !mods.shift && self.picker.is_none() => {
+                if self.pane.source().is_folder() {
+                    let here = self.pane.location().to_owned();
+                    self.toggle_bookmark(&here, cx);
+                }
+                false
+            }
             Key::Char('t') if mods.ctrl => {
                 let here = self.pane.location().to_owned();
                 self.open_tab(here, true, cx);
@@ -793,8 +860,13 @@ impl Files {
                 self.open_filter(cx);
                 return;
             }
-            Key::Char('f') if mods.ctrl => {
-                self.open_filter(cx);
+            Key::Char('f' | 'F') if mods.ctrl => {
+                let seek = if mods.shift {
+                    super::seek::Seek::Contents
+                } else {
+                    super::seek::Seek::Names
+                };
+                self.open_search(seek, cx);
                 return;
             }
             Key::Char('l') if mods.ctrl => {
@@ -842,6 +914,12 @@ impl Files {
             }
             Key::Escape if !self.selection.is_empty() => {
                 self.selection.clear();
+                false
+            }
+            // From results, back to the folder searched.
+            Key::Escape if matches!(self.pane.source(), crate::pane::Source::Search { .. }) => {
+                let folder = self.pane.location().to_owned();
+                self.navigate(folder);
                 false
             }
             Key::Escape if picking => {
@@ -1046,6 +1124,8 @@ impl Files {
                         | Hit::Side(..)
                         | Hit::Eject(_)
                         | Hit::TrashPlace
+                        | Hit::Recent
+                        | Hit::Tabs(_)
                         | Hit::EmptyTrash
                         | Hit::GitYes
                         | Hit::GitNo
@@ -1194,6 +1274,9 @@ impl Files {
                     self.context_menu(Some(row), x, y);
                 }
                 Some(Hit::Empty) => self.context_menu(None, x, y),
+                Some(Hit::Place(path)) if self.bookmarks.iter().any(|mark| mark.path == path) => {
+                    self.bookmark_menu(path, x, y);
+                }
                 _ => {}
             }
             return;
@@ -1338,6 +1421,7 @@ impl Files {
             Some(Hit::Volume(index)) => self.open_volume(index, cx),
             Some(Hit::Eject(index)) => self.eject(index, cx),
             Some(Hit::TrashPlace) => self.open_trash(),
+            Some(Hit::Recent) => self.open_recent(),
             Some(Hit::EmptyTrash) => self.ask_empty(cx),
             Some(Hit::Branch) => {
                 if let Some(rect) = self.hit_rect(&Hit::Branch) {

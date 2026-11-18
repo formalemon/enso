@@ -150,7 +150,9 @@ impl Files {
                     canvas.fill(tile, radius::CARD, colors.highlight_low);
                 }
                 let executable = entry.meta.is_some_and(|meta| meta.mode & 0o111 != 0);
-                let name = self.pane.name(index);
+                let full = self.pane.name(index);
+                // A gathered list's names are paths: the tile shows its own.
+                let name = full.rsplit('/').next().unwrap_or(&full).to_owned();
                 let kind = Kind::of(&name, entry.kind.is_dir(), executable);
                 let picture = Rect::new(x + (cell_w - zoom) / 2.0, y + space::SM, zoom, zoom);
                 match self.thumbs.get(&path) {

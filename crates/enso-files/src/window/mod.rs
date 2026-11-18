@@ -15,6 +15,7 @@ mod grid;
 mod input;
 mod ops;
 mod preview;
+mod seek;
 mod settings;
 mod sidebar;
 mod tabs;
@@ -97,6 +98,8 @@ enum Hit {
     Eject(usize),
     TrashPlace,
     EmptyTrash,
+    /// The sidebar's Recent.
+    Recent,
     /// An entry of a side column: go to it, or (`true`) show it chosen.
     Side(PathBuf, bool),
     /// A line of the settings panel, and its sort choices.
@@ -150,6 +153,13 @@ enum Action {
     Run(PathBuf),
     /// Go to where a link leads.
     RealPath(PathBuf),
+    /// Go to a file's folder, with the cursor on it.
+    Reveal(PathBuf),
+    NewTab(PathBuf),
+    /// Bookmark a folder, or stop.
+    Bookmark(PathBuf),
+    /// Move a bookmark up or down the list.
+    ShiftBookmark(PathBuf, isize),
 }
 
 /// What an open menu is for.
@@ -271,6 +281,12 @@ pub struct Files {
     /// The tab on the split's other side, and where it was drawn.
     split: Option<usize>,
     split_rect: Rect,
+    /// The field searching instead of filtering, and when the search
+    /// typed is due to run.
+    seek: Option<seek::Seek>,
+    seek_due: Option<Instant>,
+    /// The bookmarked folders, as GTK's file has them.
+    bookmarks: Vec<enso_fs::bookmarks::Bookmark>,
     /// Drawing the split's other side.
     behind: bool,
 }
@@ -347,6 +363,9 @@ impl Files {
             active: 0,
             split: None,
             split_rect: Rect::default(),
+            seek: None,
+            seek_due: None,
+            bookmarks: enso_fs::bookmarks::Bookmarks::load(&enso_fs::bookmarks::file()).folders(),
             behind: false,
         }
     }
@@ -417,9 +436,9 @@ impl Files {
         // The pane starts the new folder unfiltered; so does the field.
         self.filter = None;
         // Into a folder below: from the right; out to one above: from the
-        // left; elsewhere, or reloading: no slide.
+        // left; elsewhere, or reloading, or a gathered list: no slide.
         let from = self.pane.location();
-        self.sliding = if request.path == from {
+        self.sliding = if request.path == from || !request.source.is_folder() {
             0.0
         } else if request.path.starts_with(from) {
             1.0
@@ -486,7 +505,11 @@ impl Files {
         match (self.pane.open(), self.picker.is_some()) {
             (Some(Open::Dir(path)), _) => self.navigate(path),
             (Some(Open::File(path)), false) => {
-                if let Err(err) = enso_fs::open::open(&path, "alacritty") {
+                let opened = enso_fs::open::open(&path, "alacritty");
+                if opened.is_ok() {
+                    used(vec![path.clone()]);
+                }
+                if let Err(err) = opened {
                     let name = path
                         .file_name()
                         .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
@@ -548,6 +571,7 @@ impl Files {
     fn finish(&mut self, paths: Vec<PathBuf>, cx: &mut Cx<'_>) {
         let Some(picker) = &self.picker else { return };
         let app = picker.request.app_id.clone();
+        used(paths.clone());
         picker.answer(paths);
         if !app.is_empty() {
             let file = self.ctx.paths.state_dir.join(recall::FILE);
@@ -709,8 +733,12 @@ impl Files {
 
     /// Watch the folder just listed, so it updates as it changes.
     fn follow(&mut self, generation: u64) {
-        // The old watch stops as it's replaced.
+        // The old watch stops as it's replaced. A gathered list isn't
+        // followed: a change would run the search again under the cursor.
         self.watch = None;
+        if !self.pane.source().is_folder() {
+            return;
+        }
         let Some(proxy) = self.proxy.clone() else {
             return;
         };
@@ -719,6 +747,29 @@ impl Files {
         })
         .ok();
     }
+}
+
+/// Note that these files were just used, in the list every program shares
+/// (Recent), off the drawing thread.
+pub(super) fn used(paths: Vec<PathBuf>) {
+    let _ = std::thread::Builder::new()
+        .name("enso-files-recent".to_owned())
+        .spawn(move || {
+            let mime = enso_fs::mime::MimeDb::load();
+            let file = enso_fs::recent::file();
+            for path in paths {
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                let kind = name
+                    .as_deref()
+                    .and_then(|name| mime.by_name(name))
+                    .unwrap_or("application/octet-stream");
+                if let Err(err) = enso_fs::recent::add(&file, &path, kind) {
+                    eprintln!("enso-files: cannot note {} as used: {err}", path.display());
+                }
+            }
+        });
 }
 
 /// Whether `path` is a file that can be run: executable by someone, and
@@ -800,10 +851,19 @@ impl App for Files {
         let now = Instant::now();
         let location = self.pane.location().to_owned();
         match event {
-            Event::Message(Message::Listed { generation, result }) => {
+            Event::Message(Message::Listed {
+                generation,
+                result,
+                notes,
+            }) => {
                 // Whichever tab asked for it, in front or not.
                 if let Some(tab) = self.tab_of(generation)
-                    && self.with_tab(tab, |files| files.listed_now(generation, result, now))
+                    && self.with_tab(tab, |files| {
+                        if files.pane.generation() == generation {
+                            files.pane.set_notes(notes);
+                        }
+                        files.listed_now(generation, result, now)
+                    })
                 {
                     cx.redraw();
                 }
@@ -836,10 +896,15 @@ impl App for Files {
                 cx.redraw();
             }
             Event::Message(Message::Thumb { path, thumb }) => {
-                let tabs = path
+                let mut tabs = path
                     .parent()
                     .map(|folder| self.tabs_at(folder))
                     .unwrap_or_default();
+                // A gathered list's thumbnails are from all over: the tab
+                // in front asked for them.
+                if tabs.is_empty() && !self.pane.source().is_folder() {
+                    tabs.push(self.active);
+                }
                 for tab in tabs {
                     let (path, thumb) = (path.clone(), thumb.clone());
                     self.with_tab(tab, |files| files.thumbs.arrived(path, thumb));

@@ -93,6 +93,9 @@ impl Files {
 
     /// Drop the toast once its time is up.
     pub(super) fn wake(&mut self, cx: &mut Cx<'_>) {
+        if self.search_if_due(Instant::now()) {
+            cx.redraw();
+        }
         if self
             .toast
             .as_ref()
@@ -288,7 +291,22 @@ impl Files {
         cx.redraw();
     }
 
+    /// Whether there's a folder in front to put things in; if not, say so.
+    pub(super) fn in_a_folder(&mut self, cx: &mut Cx<'_>) -> bool {
+        let folder = self.pane.source().is_folder();
+        if !folder {
+            self.toast(
+                "This is a list, not a folder: go to one to put things in",
+                cx,
+            );
+        }
+        folder
+    }
+
     pub(super) fn new_folder(&mut self, cx: &mut Cx<'_>) {
+        if !self.in_a_folder(cx) {
+            return;
+        }
         match ops::new_folder(self.pane.location(), "New folder") {
             Ok(path) => {
                 self.remember(Done::Created(vec![path.clone()]));
@@ -399,6 +417,9 @@ impl Files {
     }
 
     pub(super) fn ask_paste(&mut self, cx: &mut Cx<'_>) {
+        if !self.in_a_folder(cx) {
+            return;
+        }
         let mut mimes = vec![COPIED_FILES, URI_LIST];
         mimes.extend(TEXT_TYPES);
         cx.paste(&mimes);

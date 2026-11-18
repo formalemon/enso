@@ -11,15 +11,21 @@
 //! The trash is a place like the others: in it, Delete deletes for good,
 //! the menu puts things back, and the status line offers to empty it.
 
-use std::{path::PathBuf, thread};
+use std::{
+    path::{Path, PathBuf},
+    thread,
+};
 
 use enso_core::style::{icon, opacity, radius, space, stroke, type_scale};
-use enso_fs::{format, places, trash};
+use enso_fs::{
+    bookmarks::{self, Bookmarks},
+    format, places, trash,
+};
 use enso_sys::udisks::{self, Volume};
 use enso_ui::{Align, Canvas, Cx, Rect, Text, widget::controls};
 
 use super::{Files, Hit};
-use crate::jobs::Message;
+use crate::{jobs::Message, pane::Source};
 
 const PLACE_HEIGHT: f32 = 32.0;
 
@@ -223,12 +229,13 @@ impl Files {
         );
 
         let location = self.pane.location().to_owned();
+        let in_folder = self.pane.source().is_folder();
         let mut y = area.y + space::SM;
-        for place in self.places.clone() {
+        for (index, place) in self.places.clone().into_iter().enumerate() {
             if y + PLACE_HEIGHT > area.bottom() {
                 return;
             }
-            let here = place.path == location;
+            let here = in_folder && place.path == location;
             self.place_row(
                 canvas,
                 area,
@@ -239,6 +246,47 @@ impl Files {
                 Hit::Place(place.path.clone()),
                 false,
             );
+            // Recent, after Home.
+            if index == 0 {
+                let here = *self.pane.source() == Source::Recent;
+                self.place_row(
+                    canvas,
+                    area,
+                    &mut y,
+                    "Recent",
+                    icon::CLOCK,
+                    here,
+                    Hit::Recent,
+                    false,
+                );
+            }
+        }
+
+        // Bookmarks, when there are any.
+        if !self.bookmarks.is_empty() {
+            y += space::SM;
+            canvas.text(
+                &Text::new("Bookmarks", small, colors.muted).medium(),
+                area.x + space::LG,
+                y,
+            );
+            y += 24.0;
+            for mark in self.bookmarks.clone() {
+                if y + PLACE_HEIGHT > area.bottom() - 3.0 * PLACE_HEIGHT {
+                    break;
+                }
+                let here = in_folder && mark.path == location;
+                self.place_row(
+                    canvas,
+                    area,
+                    &mut y,
+                    &mark.name(),
+                    icon::BOOKMARK,
+                    here,
+                    Hit::Place(mark.path.clone()),
+                    false,
+                );
+            }
         }
 
         // Drives.
@@ -318,6 +366,70 @@ impl Files {
             false,
         );
         self.hits.push((edge, Hit::SidebarEdge));
+    }
+
+    /// The files used lately, here and in other programs.
+    pub(super) fn open_recent(&mut self) {
+        let request = self.pane.show(PathBuf::from("/"), Source::Recent);
+        self.load(request);
+    }
+
+    fn save_bookmarks(&mut self, marks: &Bookmarks, cx: &mut Cx<'_>) {
+        if let Err(err) = marks.save(&bookmarks::file()) {
+            self.toast(format!("Can't keep the bookmarks: {err}"), cx);
+        }
+        self.bookmarks = marks.folders();
+    }
+
+    /// Bookmark `path`, or take its bookmark away.
+    pub(super) fn toggle_bookmark(&mut self, path: &Path, cx: &mut Cx<'_>) {
+        let mut marks = Bookmarks::load(&bookmarks::file());
+        let name = path.file_name().map_or_else(
+            || "/".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let text = if marks.remove(path) {
+            format!("{name} is no longer bookmarked")
+        } else {
+            marks.add(path);
+            format!("Bookmarked {name}")
+        };
+        self.save_bookmarks(&marks, cx);
+        self.toast(text, cx);
+    }
+
+    pub(super) fn shift_bookmark(&mut self, path: &Path, step: isize, cx: &mut Cx<'_>) {
+        let mut marks = Bookmarks::load(&bookmarks::file());
+        if marks.shift(path, step) {
+            self.save_bookmarks(&marks, cx);
+        }
+    }
+
+    /// The menu for a right-click on a bookmark.
+    pub(super) fn bookmark_menu(&mut self, path: PathBuf, x: f32, y: f32) {
+        use enso_ui::widget::{Item, Menu};
+
+        use super::{Action, MenuFor};
+        let at = self.bookmarks.iter().position(|mark| mark.path == path);
+        let last = self.bookmarks.len().saturating_sub(1);
+        let entries = [
+            (Item::new("Open in a new tab"), Action::NewTab(path.clone())),
+            (
+                Item::new("Move up").enabled(at.is_some_and(|at| at > 0)),
+                Action::ShiftBookmark(path.clone(), -1),
+            ),
+            (
+                Item::new("Move down").enabled(at.is_some_and(|at| at < last)),
+                Action::ShiftBookmark(path.clone(), 1),
+            ),
+            (Item::new("Remove the bookmark"), Action::Bookmark(path)),
+        ];
+        let (items, actions): (Vec<Item>, Vec<Option<Action>>) = entries
+            .into_iter()
+            .map(|(item, action)| (item, Some(action)))
+            .unzip();
+        self.menu_at = (x, y);
+        self.menu = Some((Menu::new(items, x, y), MenuFor::Context(actions)));
     }
 
     /// One row of the sidebar at `y`, which moves on past it: highlighted

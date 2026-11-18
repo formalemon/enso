@@ -10,6 +10,7 @@
 
 mod bench;
 mod config;
+mod gather;
 mod jobs;
 mod kind;
 mod location;
@@ -17,6 +18,7 @@ mod pane;
 mod pick;
 mod picker;
 mod portal;
+mod query;
 mod recall;
 mod selection;
 mod service;

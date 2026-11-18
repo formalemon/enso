@@ -40,6 +40,8 @@ png = "0.18"
 # WebP and GIF thumbnails, pure Rust.
 image-webp = "0.2"
 gif = { version = "0.14", default-features = false, features = ["std"] }
+# Content search and bulk rename, pure Rust.
+regex = { version = "1", default-features = false, features = ["std", "perf", "unicode"] }
 cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
 
 # System interfaces.

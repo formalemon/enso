@@ -36,6 +36,7 @@
 
 mod app_index;
 pub mod apps;
+pub mod bookmarks;
 pub mod format;
 pub mod fuzzy;
 pub mod git;
@@ -45,6 +46,7 @@ pub mod mime;
 pub mod open;
 pub mod ops;
 pub mod places;
+pub mod recent;
 pub mod search;
 pub mod sort;
 pub mod thumbs;

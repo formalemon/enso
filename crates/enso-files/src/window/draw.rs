@@ -17,6 +17,7 @@ use enso_ui::{
 };
 
 use super::{Files, Hit, preview, tabs};
+use crate::pane::Source;
 use crate::{pane::Load, pick::Choice, picker::Under};
 
 pub(super) const TITLE_HEIGHT: f32 = 52.0;
@@ -156,7 +157,20 @@ impl Files {
 
         // The path, as crumbs: home is "~", and what's above the last few
         // folders is folded away when there isn't room.
-        let crumbs = crumbs(self.pane.location(), &self.home);
+        // A gathered list says what it is: Recent, or the folder searched
+        // and what for.
+        let mut crumbs = match self.pane.source() {
+            Source::Recent => vec![("Recent".to_owned(), PathBuf::from("/"))],
+            _ => crumbs(self.pane.location(), &self.home),
+        };
+        if let Source::Search { query, content } = self.pane.source() {
+            let label = if *content {
+                format!("“{query}” in files")
+            } else {
+                format!("“{query}”")
+            };
+            crumbs.push((label, self.pane.location().to_owned()));
+        }
         let size = self.font(type_scale::BODY);
         let separator = Text::new("›", size, colors.muted);
         let gap = canvas.measure(&separator).w + space::SM * 2.0;
@@ -261,7 +275,10 @@ impl Files {
             ("Shift+↑ ↓", "choose a run"),
             ("Ctrl+A  ·  *", "choose all · turn round"),
             ("Esc", "clear filter, then choice"),
-            ("/  Ctrl+F", "filter as you type"),
+            ("/", "filter as you type"),
+            ("Ctrl+F  ·  //", "search below here"),
+            ("Ctrl+Shift+F", "search inside files"),
+            ("Ctrl+D", "bookmark this folder"),
             ("Ctrl+L", "type a location"),
             ("i  ·  Shift+Space", "preview · quick look"),
             ("Ctrl+1 · 2 · 3", "list · grid · columns"),
@@ -323,7 +340,9 @@ impl Files {
         let size = self.font(type_scale::BODY);
         let height = 32.0;
         let open = self.filter.is_some() || !self.pane.filter().is_empty();
-        let width = if open {
+        let width = if self.seek.is_some() {
+            (area.w * 0.42).clamp(200.0, 400.0)
+        } else if open {
             (area.w * 0.32).clamp(160.0, 280.0)
         } else {
             height
@@ -359,10 +378,11 @@ impl Files {
             rect.h,
         );
         if open {
+            let hint = self.search_hint();
             let style = field::Style {
                 size,
                 color: colors.text,
-                placeholder: "Filter",
+                placeholder: &hint,
                 placeholder_color: colors.muted,
                 caret: accent,
                 selection: accent.alpha(opacity::TINT * 2.0),
@@ -432,7 +452,14 @@ impl Files {
         self.hits.push((list, Hit::Empty));
 
         match self.pane.load().clone() {
-            Load::Loading if self.pane.is_empty() => return false,
+            Load::Loading if self.pane.is_empty() => {
+                // A search can take a moment; a folder rarely does.
+                if !self.pane.source().is_folder() {
+                    let text = Text::new("Looking…", body, colors.muted);
+                    canvas.text_in(&text, list, Align::Center);
+                }
+                return false;
+            }
             Load::Failed(why) => {
                 let text = Text::new(&why, body, colors.subtle)
                     .max_width(list.w * 0.6)
@@ -441,7 +468,11 @@ impl Files {
                 return false;
             }
             _ if self.pane.is_empty() => {
-                let message = if !self.pane.filter().is_empty() {
+                let message = if let Source::Search { query, .. } = self.pane.source() {
+                    format!("Nothing below here matches “{query}” — Esc goes back")
+                } else if *self.pane.source() == Source::Recent {
+                    "Nothing used lately".to_owned()
+                } else if !self.pane.filter().is_empty() {
                     format!(
                         "Nothing here matches “{}” — Esc shows everything",
                         self.pane.filter()
@@ -537,7 +568,14 @@ impl Files {
                     }
                 };
                 let executable = entry.meta.is_some_and(|meta| meta.mode & 0o111 != 0);
-                let kind = crate::kind::Kind::of(&self.pane.name(row), dir, executable);
+                let full = self.pane.name(row);
+                // In a gathered list a name is a path from the root: the
+                // file's own name leads, its folder follows, dimmer.
+                let (folder, own) = match full.rsplit_once('/') {
+                    Some((folder, own)) => (Some(folder.to_owned()), own.to_owned()),
+                    None => (None, full.into_owned()),
+                };
+                let kind = crate::kind::Kind::of(&own, dir, executable);
                 let (icon, icon_color) = if selected {
                     (icon::CHECK, chosen)
                 } else if dir {
@@ -549,12 +587,36 @@ impl Files {
                 if renaming.as_ref() == Some(&path) {
                     rename_at = Some(columns.name);
                 } else {
-                    let name = self.pane.name(row);
-                    canvas.text_in(
-                        &Text::new(&name, body, faded(colors.text)),
+                    let size = canvas.text_in(
+                        &Text::new(&own, body, faded(colors.text)).max_width(columns.name.w),
                         columns.name,
                         Align::Start,
                     );
+                    // After the name: a search's matching line, or the
+                    // folder it's in.
+                    let after = Rect::new(
+                        columns.name.x + size.w + space::MD,
+                        columns.name.y,
+                        (columns.name.w - size.w - space::MD).max(0.0),
+                        columns.name.h,
+                    );
+                    if after.w > 24.0 {
+                        if let Some(note) = self.pane.note(row) {
+                            let text = Text::new(note, small, colors.subtle)
+                                .font(enso_ui::Font::Mono)
+                                .max_width(after.w);
+                            canvas.text_in(&text, after, Align::Start);
+                        } else if let Some(folder) = &folder {
+                            let shown = match self.pane.source() {
+                                crate::pane::Source::Recent => {
+                                    super::tabs::short(&Path::new("/").join(folder), &self.home)
+                                }
+                                _ => folder.clone(),
+                            };
+                            let text = Text::new(&shown, small, colors.muted).max_width(after.w);
+                            canvas.text_in(&text, after, Align::Start);
+                        }
+                    }
                 }
                 if let Some(meta) = entry.meta
                     && columns.size.w > 0.0
@@ -871,7 +933,18 @@ impl Files {
                 left += &format!(" in {folders} folders");
             }
         }
-        canvas.text_in(&Text::new(&left, small, colors.subtle), inner, Align::Start);
+        // In a gathered list: where the one under the cursor is.
+        if !self.pane.source().is_folder()
+            && let Some(row) = self.pane.cursor()
+            && let Some(folder) = self.pane.path(row).parent()
+        {
+            left += &format!(" · in {}", super::tabs::short(folder, &self.home));
+        }
+        canvas.text_in(
+            &Text::new(&left, small, colors.subtle).max_width(inner.w * 0.7),
+            inner,
+            Align::Start,
+        );
         let right = if self.repo.is_some() {
             self.draw_branch(canvas, inner)
         } else {
@@ -1687,6 +1760,56 @@ mod tests {
         assert_eq!((files.tabs.len(), files.active, files.split), (1, 0, None));
         assert_eq!(files.pane.location(), root.join("photos"));
         assert!(!files.close_tab(0), "the last tab is the window");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renders_search_results() {
+        use crate::pane::Source;
+        let root = std::env::temp_dir().join(format!("enso-files-found-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src/window")).unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() {\n    let sky = \"blue\";\n}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/window/draw.rs"), "// the sky, drawn\n").unwrap();
+        std::fs::write(root.join("notes.md"), "# Notes\nLook at the sky tonight.\n").unwrap();
+        let now = Instant::now();
+        let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+        files.asked_git = true;
+        files.bookmarks = vec![enso_fs::bookmarks::Bookmark {
+            path: root.join("src"),
+            label: None,
+        }];
+        let first = files.pending.take().unwrap();
+        files.listed_now(first.generation, Ok(Listing::read(&root).unwrap()), now);
+
+        let source = Source::Search {
+            query: "sky".into(),
+            content: true,
+        };
+        let request = files.pane.show(root.clone(), source).unwrap();
+        let none = std::sync::atomic::AtomicBool::new(false);
+        let found = crate::gather::search(&root, false, "sky", true, &none).unwrap();
+        files.pane.set_notes(found.notes);
+        assert!(files.listed_now(request.generation, Ok(found.listing), now));
+        assert_eq!(files.pane.len(), 3);
+        assert!(files.pane.note(0).is_some_and(|note| note.contains("sky")));
+        snapshot(&render(&mut files, (1000, 440)), "enso-files-search");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::Recent));
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| *hit == Hit::Place(root.join("src")))
+        );
+
+        // Up from the results is the folder searched.
+        let request = files.pane.parent().unwrap();
+        assert_eq!(request.source, Source::Folder);
+        assert_eq!(request.path, root);
         std::fs::remove_dir_all(root).unwrap();
     }
 

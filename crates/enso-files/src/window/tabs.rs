@@ -463,7 +463,7 @@ impl Files {
 }
 
 /// A path as it's said: from `~` when it's under home.
-fn short(path: &Path, home: &Path) -> String {
+pub(super) fn short(path: &Path, home: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
         Ok(rest) => format!("~/{}", rest.display()),

@@ -606,6 +606,23 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
                 s.circle((16.6, 12.0), 1.4);
             });
         }
+        Figure::Clock => p.stroke(true, |s| {
+            s.circle((12.0, 12.0), 8.4);
+            s.soft(&[(12.0, 7.2), (12.0, 12.0), (15.4, 14.2)], 0.8, false);
+        }),
+        Figure::Bookmark => p.stroke(true, |s| {
+            s.soft(
+                &[
+                    (6.6, 20.4),
+                    (6.6, 4.0),
+                    (17.4, 4.0),
+                    (17.4, 20.4),
+                    (12.0, 16.2),
+                ],
+                1.8,
+                true,
+            );
+        }),
         Figure::Eject => p.stroke(true, |s| {
             s.soft(&[(12.0, 4.6), (19.0, 13.0), (5.0, 13.0)], 1.4, true);
             s.line((5.0, 18.4), (19.0, 18.4));
@@ -821,7 +838,7 @@ fn moon(p: &mut Pen<'_, '_>) {
 
 /// Every figure, and each state of those with states: for tests and
 /// contact sheets.
-pub const ALL: [Figure; 40] = [
+pub const ALL: [Figure; 42] = [
     Figure::Search,
     Figure::Apps,
     Figure::Folder,
@@ -862,6 +879,8 @@ pub const ALL: [Figure; 40] = [
     Figure::Trash,
     Figure::Drive,
     Figure::Eject,
+    Figure::Clock,
+    Figure::Bookmark,
 ];
 
 #[cfg(test)]

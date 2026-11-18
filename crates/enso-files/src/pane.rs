@@ -59,11 +59,32 @@ impl fmt::Debug for Keep {
     }
 }
 
-/// A folder to load: the request a navigation makes.
+/// What a pane shows: a folder, or files gathered from many folders.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Source {
+    #[default]
+    Folder,
+    /// Files opened lately, here and in other programs, newest first.
+    Recent,
+    /// What a search below the location found, best first: by name, or
+    /// (`content`) by what's inside.
+    Search { query: String, content: bool },
+}
+
+impl Source {
+    pub fn is_folder(&self) -> bool {
+        *self == Self::Folder
+    }
+}
+
+/// What to load: the request a navigation makes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub path: PathBuf,
     pub generation: u64,
+    pub source: Source,
+    /// Whether dotfiles are wanted (a search leaves them out otherwise).
+    pub hidden: bool,
 }
 
 #[derive(Debug)]
@@ -80,6 +101,8 @@ pub struct Pane {
     /// What the folder is being filtered by, as typed and as prepared.
     filter: String,
     pattern: Pattern,
+    /// The filter's query words (`type:image`…), beside its name part.
+    words: crate::query::Query,
     keep: Option<Keep>,
     /// How many entries would show without the filter.
     unfiltered: usize,
@@ -89,8 +112,12 @@ pub struct Pane {
     statted: usize,
     /// The name to put the cursor on when the listing arrives.
     want: Option<Vec<u8>>,
-    back: Vec<PathBuf>,
-    forward: Vec<PathBuf>,
+    source: Source,
+    /// What each entry has to say beside its name (a search's matching
+    /// line), by listing index; empty when nothing.
+    notes: Vec<String>,
+    back: Vec<(PathBuf, Source)>,
+    forward: Vec<(PathBuf, Source)>,
     /// Where the cursor was in each folder left, to put it back on return.
     remembered: HashMap<PathBuf, Vec<u8>>,
 }
@@ -116,22 +143,44 @@ impl Pane {
             hidden,
             filter: String::new(),
             pattern: Pattern::default(),
+            words: crate::query::Query::default(),
             keep: None,
             unfiltered: 0,
             load: Load::Loading,
             generation: 0,
             statted: 0,
             want: None,
+            source: Source::Folder,
+            notes: Vec::new(),
             back: Vec::new(),
             forward: Vec::new(),
             remembered: HashMap::new(),
         };
-        let request = pane.go(location);
+        let request = pane.go(location, Source::Folder);
         (pane, request)
     }
 
     pub fn location(&self) -> &Path {
         &self.location
+    }
+
+    /// What the pane shows.
+    pub fn source(&self) -> &Source {
+        &self.source
+    }
+
+    /// What `row` has to say beside its name, if anything.
+    pub fn note(&self, row: usize) -> Option<&str> {
+        self.notes
+            .get(self.index(row))
+            .map(String::as_str)
+            .filter(|note| !note.is_empty())
+    }
+
+    /// A search's notes, by listing index; they go with the listing that
+    /// follows.
+    pub fn set_notes(&mut self, notes: Vec<String>) {
+        self.notes = notes;
     }
 
     /// Which listing is current: messages about older ones are stale.
@@ -210,21 +259,33 @@ impl Pane {
 
     /// Go to `path`, remembering where we were for Back.
     pub fn navigate(&mut self, path: PathBuf) -> Option<Request> {
-        if path == self.location {
+        self.show(path, Source::Folder)
+    }
+
+    /// Show `source` at `path`, remembering where we were for Back.
+    pub fn show(&mut self, path: PathBuf, source: Source) -> Option<Request> {
+        if path == self.location && source == self.source {
             return None;
         }
-        let from = self.location.clone();
-        let request = self.go(path);
-        if !from.as_os_str().is_empty() {
+        let from = (self.location.clone(), self.source.clone());
+        let request = self.go(path, source);
+        if !from.0.as_os_str().is_empty() {
             self.back.push(from);
         }
         self.forward.clear();
         Some(request)
     }
 
+    /// Show `source` here instead of what's shown, with no history: a
+    /// search being typed.
+    pub fn replace(&mut self, source: Source) -> Request {
+        let path = self.location.clone();
+        self.go(path, source)
+    }
+
     /// Go to `path` with the cursor on the entry called `name`.
     pub fn navigate_to(&mut self, path: PathBuf, name: &[u8]) -> Option<Request> {
-        let request = if path == self.location {
+        let request = if path == self.location && self.source.is_folder() {
             self.reload()
         } else {
             self.navigate(path)?
@@ -233,8 +294,15 @@ impl Pane {
         Some(request)
     }
 
-    /// Go up a folder, with the cursor on the one we came out of.
+    /// Go up a folder, with the cursor on the one we came out of. From a
+    /// search, up is the folder searched.
     pub fn parent(&mut self) -> Option<Request> {
+        if let Source::Search { .. } = self.source {
+            return self.navigate(self.location.clone());
+        }
+        if self.source == Source::Recent {
+            return None;
+        }
         let parent = self.location.parent()?.to_owned();
         let child = self.location.file_name()?.as_encoded_bytes().to_vec();
         let request = self.navigate(parent)?;
@@ -243,17 +311,17 @@ impl Pane {
     }
 
     pub fn back(&mut self) -> Option<Request> {
-        let path = self.back.pop()?;
-        let from = self.location.clone();
-        let request = self.go(path);
+        let (path, source) = self.back.pop()?;
+        let from = (self.location.clone(), self.source.clone());
+        let request = self.go(path, source);
         self.forward.push(from);
         Some(request)
     }
 
     pub fn forward(&mut self) -> Option<Request> {
-        let path = self.forward.pop()?;
-        let from = self.location.clone();
-        let request = self.go(path);
+        let (path, source) = self.forward.pop()?;
+        let from = (self.location.clone(), self.source.clone());
+        let request = self.go(path, source);
         self.back.push(from);
         Some(request)
     }
@@ -263,21 +331,37 @@ impl Pane {
         self.want = self.cursor_name();
         self.generation = next_generation();
         self.statted = 0;
+        self.request()
+    }
+
+    fn request(&self) -> Request {
         Request {
             path: self.location.clone(),
             generation: self.generation,
+            source: self.source.clone(),
+            hidden: self.hidden,
         }
     }
 
-    /// Leave the current folder for `path`, with no history.
-    fn go(&mut self, path: PathBuf) -> Request {
-        if let Some(name) = self.cursor_name() {
+    /// Leave what's shown for `source` at `path`, with no history.
+    fn go(&mut self, path: PathBuf, source: Source) -> Request {
+        // Folders remember their cursor; gathered lists start at the top.
+        if self.source.is_folder()
+            && let Some(name) = self.cursor_name()
+        {
             self.remembered.insert(self.location.clone(), name);
         }
-        self.want = self.remembered.get(&path).cloned();
+        self.want = if source.is_folder() {
+            self.remembered.get(&path).cloned()
+        } else {
+            None
+        };
         self.location = path;
+        self.source = source;
+        self.notes.clear();
         self.filter.clear();
         self.pattern = Pattern::default();
+        self.words = crate::query::Query::default();
         self.listing = Listing::default();
         self.keys = Keys::default();
         self.shown.clear();
@@ -285,10 +369,7 @@ impl Pane {
         self.load = Load::Loading;
         self.generation = next_generation();
         self.statted = 0;
-        Request {
-            path: self.location.clone(),
-            generation: self.generation,
-        }
+        self.request()
     }
 
     // Arrivals.
@@ -330,9 +411,11 @@ impl Pane {
         }
         self.listing.apply(start, metas);
         self.statted += metas.len();
+        // Everything's in: put right what depended on it — an order by
+        // size or date, or a filter asking for a size or an age.
         if self.statted >= self.listing.len()
-            && self.sort.by != By::Name
-            && self.sort.by != By::Extension
+            && ((self.sort.by != By::Name && self.sort.by != By::Extension)
+                || self.words.needs_meta())
         {
             self.refresh(self.cursor_name());
         }
@@ -356,9 +439,10 @@ impl Pane {
         }
         let keep = self.cursor_name();
         self.filter = filter.to_owned();
-        self.pattern = Pattern::new(filter);
+        self.words = crate::query::Query::parse(filter);
+        self.pattern = Pattern::new(&self.words.text);
         self.refresh(keep);
-        if !filter.is_empty() {
+        if !self.words.text.is_empty() {
             let best = (0..self.shown.len()).max_by_key(|&row| {
                 // Earlier rows win ties: `max_by_key` keeps the last of equals.
                 let score = self.pattern.score(&self.name(row)).unwrap_or(i32::MIN);
@@ -399,7 +483,12 @@ impl Pane {
     /// it was as can be.
     fn refresh(&mut self, keep: Option<Vec<u8>>) {
         let previous = self.cursor;
-        let mut shown = sort::order(&self.listing, &self.keys, self.sort);
+        // A folder in the order asked for; a gathered list as it came.
+        let mut shown = if self.source.is_folder() {
+            sort::order(&self.listing, &self.keys, self.sort)
+        } else {
+            (0..self.listing.len() as u32).collect()
+        };
         if !self.hidden {
             shown.retain(|&index| !self.listing.is_hidden(index as usize));
         }
@@ -413,11 +502,22 @@ impl Pane {
             });
         }
         self.unfiltered = shown.len();
-        if !self.filter.is_empty() {
+        if !self.words.text.is_empty() {
             shown.retain(|&index| {
                 self.pattern
                     .score(&self.listing.display_name(index as usize))
                     .is_some()
+            });
+        }
+        if self.words.narrows() {
+            let now = jiff::Timestamp::now().as_nanosecond() as i64;
+            shown.retain(|&index| {
+                let index = index as usize;
+                let entry = self.listing.entry(index);
+                let name = self.listing.display_name(index);
+                let own = name.rsplit('/').next().unwrap_or(&name);
+                self.words
+                    .admits(own, entry.kind.is_dir(), entry.meta.as_ref(), now)
             });
         }
         self.shown = shown;
