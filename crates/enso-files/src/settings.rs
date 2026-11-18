@@ -13,7 +13,7 @@ use std::{fs, io, path::Path};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Density, FilesConfig, SortBy};
+use crate::config::{Density, FilesConfig, SortBy, View};
 
 /// File name inside the state directory.
 pub const FILE: &str = "files.toml";
@@ -31,6 +31,8 @@ pub struct Overrides {
     pub folders_first: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub density: Option<Density>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<View>,
     /// Version control: on, off, or not asked yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git: Option<bool>,
@@ -68,6 +70,7 @@ impl Overrides {
             descending: self.descending.unwrap_or(config.descending),
             folders_first: self.folders_first.unwrap_or(config.folders_first),
             density: self.density.unwrap_or(config.density),
+            view: self.view.unwrap_or(config.view),
         }
     }
 

@@ -585,8 +585,14 @@ impl Files {
         let rows = self.visible_rows();
         let picking = self.picker.is_some();
         // Shift with a movement extends the selection from where it started.
+        let grid = self.config.view == crate::config::View::Grid;
+        let across = if grid { self.columns() as isize } else { 1 };
         let movement = match key.key {
-            _ if key.nav(true).is_some() => key.nav(true).map(step),
+            // In the grid, up and down go a row of tiles; left and right
+            // (and h, l) a tile.
+            Key::Left | Key::Char('h') if grid && !mods.alt && !mods.ctrl => Some(-1),
+            Key::Right | Key::Char('l') if grid && !mods.alt && !mods.ctrl => Some(1),
+            _ if key.nav(true).is_some() => key.nav(true).map(|nav| step(nav) * across),
             Key::PageUp => Some(-rows),
             Key::PageDown => Some(rows),
             Key::Home => Some(isize::MIN / 2),
@@ -701,6 +707,28 @@ impl Files {
             Key::Char('l') if mods.ctrl => {
                 self.open_location(cx);
                 return;
+            }
+            Key::Char(digit @ ('1' | '2')) if mods.ctrl => {
+                let view = if digit == '1' {
+                    crate::config::View::List
+                } else {
+                    crate::config::View::Grid
+                };
+                self.overrides.view = Some(view);
+                self.save_overrides(cx);
+                true
+            }
+            Key::Char('=' | '+') if mods.ctrl => {
+                self.zoom_by(1);
+                true
+            }
+            Key::Char('-') if mods.ctrl => {
+                self.zoom_by(-1);
+                true
+            }
+            Key::Char('0') if mods.ctrl => {
+                self.zoom = super::grid::ZOOM;
+                true
             }
             Key::Char('?') | Key::F(1) => {
                 self.help = true;
@@ -955,7 +983,21 @@ impl Files {
                 if !self.list.contains(x, y) {
                     return;
                 }
-                let step = WHEEL_ROWS * self.row_height();
+                // Ctrl and the wheel: the grid's tiles grow and shrink.
+                if cx.mods().ctrl {
+                    if self.config.view == crate::config::View::Grid && dy.abs() > 0.0 {
+                        self.zoom_by(if dy < 0.0 { 1 } else { -1 });
+                        self.follow_cursor(now);
+                        cx.redraw();
+                    }
+                    return;
+                }
+                let (_, height) = self.span_of(0);
+                let step = if self.config.view == crate::config::View::Grid {
+                    height
+                } else {
+                    WHEEL_ROWS * height
+                };
                 self.scroll
                     .scroll(dy, wheel, step, self.transition(Transition::SELECT), now);
                 cx.redraw();

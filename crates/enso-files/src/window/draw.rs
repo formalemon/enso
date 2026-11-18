@@ -334,28 +334,42 @@ impl Files {
         let row_height = self.row_height();
         let body = self.font(type_scale::BODY);
         let small = self.font(type_scale::SMALL);
+        let grid = self.config.view == crate::config::View::Grid;
 
-        // Column headings.
-        let header = Rect::new(area.x, area.y, area.w, HEADER_HEIGHT);
+        // Column headings (a grid has none).
+        let header = Rect::new(
+            area.x,
+            area.y,
+            area.w,
+            if grid { 0.0 } else { HEADER_HEIGHT },
+        );
         let columns = Columns::new(header.inset_xy(space::LG, 0.0));
         let heading = |label| Text::new(label, small, colors.muted).medium();
-        canvas.text_in(&heading("Name"), columns.name, Align::Start);
-        if columns.size.w > 0.0 {
+        if !grid {
+            canvas.text_in(&heading("Name"), columns.name, Align::Start);
+        }
+        if columns.size.w > 0.0 && !grid {
             canvas.text_in(&heading("Size"), columns.size, Align::End);
             canvas.text_in(&heading("Modified"), columns.date, Align::Start);
         }
-        canvas.fill(
-            Rect::new(
-                area.x + space::LG,
-                header.bottom() - 1.0,
-                area.w - 2.0 * space::LG,
-                stroke::HAIRLINE,
-            ),
-            0.0,
-            colors.highlight_med,
-        );
+        if !grid {
+            canvas.fill(
+                Rect::new(
+                    area.x + space::LG,
+                    if grid {
+                        area.y - 10.0
+                    } else {
+                        header.bottom() - 1.0
+                    },
+                    area.w - 2.0 * space::LG,
+                    stroke::HAIRLINE,
+                ),
+                0.0,
+                colors.highlight_med,
+            );
+        }
 
-        let list = Rect::new(area.x, header.bottom(), area.w, area.h - HEADER_HEIGHT);
+        let list = Rect::new(area.x, header.bottom(), area.w, area.h - header.h);
         self.list = list;
         self.scroll
             .set_extent(self.pane.len() as f32 * row_height, list.h);
@@ -394,6 +408,9 @@ impl Files {
                 return false;
             }
             _ => {}
+        }
+        if grid {
+            return self.draw_grid(canvas, list, now);
         }
 
         let scroll = self.scroll.get(now);
@@ -453,12 +470,14 @@ impl Files {
                         color
                     }
                 };
+                let executable = entry.meta.is_some_and(|meta| meta.mode & 0o111 != 0);
+                let kind = crate::kind::Kind::of(&self.pane.name(row), dir, executable);
                 let (icon, icon_color) = if selected {
                     (icon::CHECK, chosen)
                 } else if dir {
                     (icon::FOLDER, accent)
                 } else {
-                    (icon::FILE, colors.subtle)
+                    (icon::FILE, kind.color(&colors, accent))
                 };
                 canvas.icon(icon, 18.0, faded(icon_color), columns.icon, Align::Center);
                 if renaming.as_ref() == Some(&path) {
@@ -1387,6 +1406,38 @@ mod tests {
         assert!(!hits.contains(&&Hit::Eject(1)), "an unmounted one doesn't");
         assert!(hits.contains(&&Hit::TrashPlace));
         assert!(hits.contains(&&Hit::Place("/".into())));
+    }
+
+    #[test]
+    fn renders_a_grid_with_thumbnails() {
+        let mut files = files();
+        files.config.view = crate::config::View::Grid;
+        let (w, h) = (160u32, 100u32);
+        let rgba: Vec<u8> = (0..w * h)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                [(x * 255 / w) as u8, (y * 255 / h) as u8, 200, 255]
+            })
+            .collect();
+        files.thumbs.arrived(
+            "/home/me/dev/enso/photo.png".into(),
+            Some(enso_fs::thumbs::Thumb {
+                width: w,
+                height: h,
+                rgba,
+            }),
+        );
+        files.selection.insert("/home/me/dev/enso/README.md".into());
+        files.pane.set_cursor(2);
+        let frame = render(&mut files, (900, 520));
+        snapshot(&frame, "enso-files-grid");
+        let tiles = files
+            .hits
+            .iter()
+            .filter(|(_, hit)| matches!(hit, Hit::Row(_)))
+            .count();
+        assert_eq!(tiles, 9, "every tile answers the pointer");
+        assert!(files.columns() >= 4);
     }
 
     #[test]

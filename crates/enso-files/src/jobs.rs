@@ -53,6 +53,11 @@ pub enum Message {
     Mounted(Result<PathBuf, String>),
     /// A drive was ejected (what to say), or why not.
     Ejected(Result<String, String>),
+    /// A thumbnail, or that there's none to be had.
+    Thumb {
+        path: PathBuf,
+        thumb: Option<enso_fs::thumbs::Thumb>,
+    },
     /// An operation got further.
     Progress(Progress),
     /// An operation found a name taken, and waits for `reply`.
@@ -63,6 +68,70 @@ pub enum Message {
     },
     /// An operation finished (or stopped).
     Finished { op: Op, report: Report },
+}
+
+/// Makes thumbnails on a few threads, newest request first: what was asked
+/// for last is what's on screen now.
+#[derive(Debug)]
+pub struct Thumbnailer {
+    queue: Queue,
+}
+
+/// Thumbnails asked for, and the signal that wakes a worker.
+type Queue = Arc<(
+    std::sync::Mutex<Vec<(PathBuf, enso_fs::thumbs::Size)>>,
+    std::sync::Condvar,
+)>;
+
+impl Thumbnailer {
+    /// Start the workers; they sleep until asked.
+    pub fn start(proxy: &Proxy<Message>) -> Self {
+        let queue: Queue = Arc::default();
+        let threads =
+            thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(2).clamp(1, 4));
+        for _ in 0..threads {
+            let (queue, proxy) = (queue.clone(), proxy.clone());
+            let _ = thread::Builder::new()
+                .name("enso-files-thumbs".to_owned())
+                .spawn(move || {
+                    loop {
+                        let (path, size) = {
+                            let (lock, ready) = &*queue;
+                            let Ok(mut waiting) = lock.lock() else { return };
+                            loop {
+                                if let Some(next) = waiting.pop() {
+                                    break next;
+                                }
+                                let Ok(woken) = ready.wait(waiting) else {
+                                    return;
+                                };
+                                waiting = woken;
+                            }
+                        };
+                        let thumb = enso_fs::thumbs::thumbnail(&path, size);
+                        if !proxy.send(Message::Thumb { path, thumb }) {
+                            return;
+                        }
+                    }
+                });
+        }
+        Self { queue }
+    }
+
+    pub fn request(&self, path: PathBuf, size: enso_fs::thumbs::Size) {
+        let (lock, ready) = &*self.queue;
+        if let Ok(mut waiting) = lock.lock() {
+            waiting.push((path, size));
+            ready.notify_one();
+        }
+    }
+
+    /// Forget what was asked for and not yet started: a folder left.
+    pub fn clear(&self) {
+        if let Ok(mut waiting) = self.queue.0.lock() {
+            waiting.clear();
+        }
+    }
 }
 
 /// Something done to files on a worker thread.

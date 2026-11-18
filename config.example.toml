@@ -91,6 +91,8 @@ descending = false
 folders_first = true
 # Row height: "comfortable" or "compact".
 density = "comfortable"
+# "list", or "grid" for thumbnails. Ctrl+1 and Ctrl+2 switch.
+view = "list"
 
 [notify]
 width = 360

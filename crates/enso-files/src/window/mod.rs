@@ -9,6 +9,7 @@
 //! everything out again.
 
 mod draw;
+mod grid;
 mod input;
 mod ops;
 mod settings;
@@ -231,6 +232,10 @@ pub struct Files {
     mounting: Option<String>,
     /// Where the last menu was, for one that follows it.
     menu_at: (f32, f32),
+    /// The grid's tile size, as an index into its sizes.
+    zoom: usize,
+    thumbs: grid::Thumbs,
+    thumbnailer: Option<crate::jobs::Thumbnailer>,
 }
 
 impl Files {
@@ -288,6 +293,9 @@ impl Files {
             volumes: Vec::new(),
             mounting: None,
             menu_at: (0.0, 0.0),
+            zoom: grid::ZOOM,
+            thumbs: grid::Thumbs::default(),
+            thumbnailer: None,
         }
     }
 
@@ -356,6 +364,11 @@ impl Files {
         self.anchor = None;
         // The pane starts the new folder unfiltered; so does the field.
         self.filter = None;
+        // Thumbnails are for what's shown.
+        self.thumbs.keep_only(&request.path);
+        if let Some(thumbnailer) = &self.thumbnailer {
+            thumbnailer.clear();
+        }
         match &self.proxy {
             Some(proxy) => self.loader.load(request, proxy),
             None => self.pending = Some(request),
@@ -492,16 +505,21 @@ impl Files {
         let Some(row) = self.pane.cursor() else {
             return;
         };
-        let row_height = self.row_height();
-        let top = row as f32 * row_height;
+        let (top, height) = self.span_of(row);
         self.highlight
             .set(top, self.transition(Transition::SELECT), now);
         self.scroll
-            .reveal(top, row_height, self.transition(Transition::SELECT), now);
+            .reveal(top, height, self.transition(Transition::SELECT), now);
     }
 
+    /// How many entries a page down moves: rows of the list, or of the grid.
     fn visible_rows(&self) -> isize {
-        ((self.list.h / self.row_height()).floor() as isize).max(1)
+        let (_, height) = self.span_of(0);
+        let rows = ((self.list.h / height).floor() as isize).max(1);
+        match self.config.view {
+            crate::config::View::List => rows,
+            crate::config::View::Grid => rows * self.columns() as isize,
+        }
     }
 
     /// Choose `row`, or unchoose it. A picker that takes one thing chooses
@@ -655,6 +673,7 @@ impl App for Files {
         }) {
             eprintln!("enso-files: live theme switching unavailable: {err}");
         }
+        self.thumbnailer = Some(crate::jobs::Thumbnailer::start(&proxy));
         self.proxy = Some(proxy);
         self.watch_drives();
     }
@@ -671,12 +690,11 @@ impl App for Files {
                     self.maybe_ask_git();
                     // Landing on a remembered row: be there, don't glide.
                     if let Some(row) = self.pane.cursor() {
-                        let top = row as f32 * self.row_height();
+                        let (top, height) = self.span_of(row);
                         self.highlight.jump(top);
-                        self.scroll
-                            .set_extent(self.pane.len() as f32 * self.row_height(), self.list.h);
-                        self.scroll
-                            .reveal(top, self.row_height(), Transition::INSTANT, now);
+                        let (_, last) = self.span_of(self.pane.len().saturating_sub(1));
+                        self.scroll.set_extent(last + height, self.list.h);
+                        self.scroll.reveal(top, height, Transition::INSTANT, now);
                     }
                     cx.redraw();
                 }
@@ -708,6 +726,12 @@ impl App for Files {
             }
             Event::Message(Message::Git { generation, status }) => {
                 self.git_arrived(generation, status, cx);
+            }
+            Event::Message(Message::Thumb { path, thumb }) => {
+                if path.parent() == Some(self.pane.location()) {
+                    self.thumbs.arrived(path, thumb);
+                    cx.redraw();
+                }
             }
             Event::Message(Message::Volumes(volumes)) => {
                 self.volumes = volumes;

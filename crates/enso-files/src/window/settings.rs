@@ -12,7 +12,7 @@ use enso_ui::{
 
 use super::{Files, Hit};
 use crate::{
-    config::{Density, SortBy},
+    config::{Density, SortBy, View},
     settings,
 };
 
@@ -21,6 +21,7 @@ use crate::{
 pub(super) enum Row {
     Hidden,
     FoldersFirst,
+    Grid,
     Compact,
     Reversed,
     Sort,
@@ -44,6 +45,7 @@ impl Files {
         let mut rows = vec![
             Row::Hidden,
             Row::FoldersFirst,
+            Row::Grid,
             Row::Compact,
             Row::Reversed,
             Row::Sort,
@@ -82,6 +84,12 @@ impl Files {
         match row {
             Row::Hidden => self.overrides.hidden = Some(!config.hidden),
             Row::FoldersFirst => self.overrides.folders_first = Some(!config.folders_first),
+            Row::Grid => {
+                self.overrides.view = Some(match config.view {
+                    View::Grid => View::List,
+                    View::List => View::Grid,
+                });
+            }
             Row::Compact => {
                 self.overrides.density = Some(match config.density {
                     Density::Compact => Density::Comfortable,
@@ -230,6 +238,7 @@ impl Files {
             let (label, note): (&str, Option<String>) = match row {
                 Row::Hidden => ("Show dotfiles", None),
                 Row::FoldersFirst => ("Folders before files", None),
+                Row::Grid => ("Show as a grid (Ctrl+1, Ctrl+2)", None),
                 Row::Compact => ("Compact rows", None),
                 Row::Reversed => ("Reverse the order", None),
                 Row::Sort => ("Sort by", None),
@@ -273,6 +282,7 @@ impl Files {
             let on = match row {
                 Row::Hidden => Some(config.hidden),
                 Row::FoldersFirst => Some(config.folders_first),
+                Row::Grid => Some(config.view == View::Grid),
                 Row::Compact => Some(config.density == Density::Compact),
                 Row::Reversed => Some(config.descending),
                 Row::Git => Some(self.git_on()),

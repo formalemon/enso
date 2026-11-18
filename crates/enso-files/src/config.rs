@@ -15,6 +15,8 @@ pub struct FilesConfig {
     pub folders_first: bool,
     /// Row height.
     pub density: Density,
+    /// Rows, or a grid of thumbnails.
+    pub view: View,
 }
 
 impl Default for FilesConfig {
@@ -25,6 +27,7 @@ impl Default for FilesConfig {
             descending: false,
             folders_first: true,
             density: Density::Comfortable,
+            view: View::List,
         }
     }
 }
@@ -72,6 +75,13 @@ impl From<SortBy> for By {
             SortBy::Extension => Self::Extension,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum View {
+    List,
+    Grid,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]

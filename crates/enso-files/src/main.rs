@@ -11,6 +11,7 @@
 mod bench;
 mod config;
 mod jobs;
+mod kind;
 mod location;
 mod pane;
 mod pick;
