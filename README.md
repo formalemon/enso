@@ -15,6 +15,7 @@ and one way of moving.
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
+| `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, bulk rename, the trash, drives — keyboard and mouse alike; see [the plan](docs/plans/enso-files.md) | working |
 
 This is the initial scaffold: the architecture, shared libraries, and a thin
@@ -537,6 +538,31 @@ its key, and the folders you go to most.
   folder, `Ctrl+C`/`X`/`V` copy, cut, and paste (with other file managers
   too), `Delete` trashes, `Ctrl+Z` undoes, `Ctrl+D` bookmarks, `F4` opens
   a terminal here.
+
+**`enso-keyring`** — where programs keep passwords and tokens: the Secret
+Service (`org.freedesktop.secrets`), which gh, git (with
+`credential.helper = /usr/lib/git-core/git-credential-libsecret`), VS Code,
+Chromium, and anything built on libsecret use. `enso-keyring enable` makes
+it the session's keyring, started by the session bus the first time a
+program wants a secret.
+
+It opens with your login password. The password is checked against the
+system's own record (`unix_chkpwd`, as `enso-lock` checks it) and never
+kept: it unlocks, for the session, a random master key that is stored
+sealed by a key made from it (Argon2id, 64 MiB, three passes;
+XChaCha20-Poly1305), and the master key seals everything else — labels,
+attributes, secrets — in `~/.local/share/enso/keyring.toml`, readable by you
+alone. Attributes are also kept hashed, as gnome-keyring keeps them, so a
+program can find its secret while the keyring is locked and ask for it to
+be opened. The card says which program is asking.
+
+When the login password changes the keyring keeps up: changed while it's
+open (`passwd` in a terminal), it notices the system's record change and
+asks for the new password once; changed while it's locked, the next unlock
+takes the new password — the system agrees it's yours — and asks once for
+the one before. Doing that with no question at all would mean adding to
+`/etc/pam.d`, which enso doesn't touch. `enso-keyring lock` locks it;
+`enso-keyring status` says how it stands.
 
 ## Theming
 

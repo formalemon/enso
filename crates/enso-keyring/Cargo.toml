@@ -1,0 +1,28 @@
+[package]
+name = "enso-keyring"
+description = "The desktop's keyring (Secret Service): passwords and tokens kept encrypted, unlocked with your login password"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-ui.workspace = true
+# Checking the login password against the system's own record.
+enso-sys.workspace = true
+serde.workspace = true
+toml.workspace = true
+zbus.workspace = true
+rustix.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true
