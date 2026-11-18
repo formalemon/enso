@@ -19,6 +19,7 @@ mod portal;
 mod recall;
 mod selection;
 mod service;
+mod settings;
 mod window;
 
 use std::{

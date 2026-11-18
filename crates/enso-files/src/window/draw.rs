@@ -65,6 +65,8 @@ impl Files {
         }
         self.draw_confirm(canvas, bounds);
         self.draw_questions(canvas, bounds);
+        self.draw_vcs(canvas, bounds);
+        self.draw_settings(canvas, bounds, now);
         if self.help {
             self.draw_help(canvas, bounds);
         }
@@ -857,6 +859,12 @@ impl Files {
             }
         }
         canvas.text_in(&Text::new(&left, small, colors.subtle), inner, Align::Start);
+        let right = if self.repo.is_some() {
+            self.draw_branch(canvas, inner)
+        } else {
+            inner.right()
+        };
+        let inner = Rect::new(inner.x, inner.y, right - inner.x, inner.h);
         if self.draw_running(canvas, inner) {
             // The job in hand says more than the free space.
         } else if let Ok(space) = places::space(self.pane.location()) {
@@ -1342,6 +1350,55 @@ mod tests {
         files.confirm_delete = Some(vec!["/home/me/dev/enso/target".into()]);
         snapshot(&render(&mut files, (900, 420)), "enso-files-delete");
         assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::DeleteForGood));
+    }
+
+    #[test]
+    fn renders_settings_and_version_control() {
+        let mut files = files();
+        files.repo = Some((
+            "/home/me/dev/enso".into(),
+            enso_fs::git::Status {
+                branch: Some("enso-files".into()),
+                ahead: 2,
+                tracking: true,
+                ..Default::default()
+            },
+        ));
+        files.overrides.git = Some(true);
+        files.git_facts = super::super::vcs::GitFacts {
+            available: true,
+            global: enso_fs::git::Identity {
+                name: Some("Anshul".into()),
+                email: Some("me@example.com".into()),
+            },
+            own: None,
+        };
+        files.settings = Some(4);
+        snapshot(&render(&mut files, (900, 640)), "enso-files-settings");
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::SortPill(_)))
+        );
+        files.settings = None;
+        snapshot(&render(&mut files, (900, 420)), "enso-files-branch");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::Branch));
+
+        files.vcs = Some(super::super::vcs::Vcs::Ask);
+        snapshot(&render(&mut files, (900, 420)), "enso-files-ask-git");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::GitYes));
+        files.vcs = Some(super::super::vcs::Vcs::Identity(
+            super::super::vcs::IdentityEdit {
+                scope: enso_fs::git::Scope::Global,
+                name: TextField::new("Anshul"),
+                email: TextField::new("me@example.com"),
+                focus: 1,
+                error: None,
+            },
+        ));
+        snapshot(&render(&mut files, (900, 420)), "enso-files-identity");
+        assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::FormField(1)));
     }
 
     #[test]

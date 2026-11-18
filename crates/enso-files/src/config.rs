@@ -1,7 +1,7 @@
 //! The `[files]` table of `config.toml`.
 
 use enso_fs::sort::{By, Sort};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -40,7 +40,7 @@ impl FilesConfig {
 }
 
 /// [`By`], as configuration spells it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SortBy {
     Name,
@@ -48,6 +48,18 @@ pub enum SortBy {
     Modified,
     Created,
     Extension,
+}
+
+impl From<By> for SortBy {
+    fn from(by: By) -> Self {
+        match by {
+            By::Name => Self::Name,
+            By::Size => Self::Size,
+            By::Modified => Self::Modified,
+            By::Created => Self::Created,
+            By::Extension => Self::Extension,
+        }
+    }
 }
 
 impl From<SortBy> for By {
@@ -62,7 +74,7 @@ impl From<SortBy> for By {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Density {
     Comfortable,

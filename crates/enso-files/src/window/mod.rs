@@ -11,6 +11,8 @@
 mod draw;
 mod input;
 mod ops;
+mod settings;
+mod vcs;
 
 use std::{
     path::{Path, PathBuf},
@@ -75,6 +77,18 @@ enum Hit {
     /// The answers to "delete for good?".
     DeleteForGood,
     KeepFiles,
+    /// The branch pill.
+    Branch,
+    /// "Use version control?": yes, or not now.
+    GitYes,
+    GitNo,
+    /// A form's field (by index), and its buttons.
+    FormField(usize),
+    FormSave,
+    FormCancel,
+    /// A line of the settings panel, and its sort choices.
+    Setting(usize),
+    SortPill(crate::config::SortBy),
     /// The name being saved as, whose text starts at this `x`.
     Name(f32),
     FilterMenu,
@@ -109,6 +123,8 @@ enum Action {
     Delete,
     Terminal,
     Undo,
+    InitRepo,
+    Settings,
 }
 
 /// What an open menu is for.
@@ -118,6 +134,8 @@ enum MenuFor {
     Context(Vec<Option<Action>>),
     Filters,
     Choice(usize),
+    /// The branch menu: these branches, then "New branch…" and "Commit as…".
+    Branches(Vec<String>),
 }
 
 /// A place in the sidebar.
@@ -132,7 +150,19 @@ const SIDEBAR: f32 = 200.0;
 
 pub struct Files {
     ctx: Context,
+    /// The settings in effect: `base_config` with `overrides` over it.
     config: FilesConfig,
+    /// `config.toml`'s `[files]`.
+    base_config: FilesConfig,
+    overrides: crate::settings::Overrides,
+    /// The settings panel, and which line has the keyboard.
+    settings: Option<usize>,
+    /// The repository the folder is in, and how it stands.
+    repo: Option<(PathBuf, enso_fs::git::Status)>,
+    vcs: Option<vcs::Vcs>,
+    /// Whether "use version control?" was considered this session.
+    asked_git: bool,
+    git_facts: vcs::GitFacts,
     pane: Pane,
     /// The first folder's request, until there is a proxy to load it with.
     pending: Option<Request>,
@@ -183,12 +213,22 @@ pub struct Files {
 
 impl Files {
     /// The file manager, opened on `location`.
-    pub fn new(ctx: Context, config: FilesConfig, location: PathBuf) -> Self {
+    pub fn new(ctx: Context, base_config: FilesConfig, location: PathBuf) -> Self {
+        let overrides =
+            crate::settings::Overrides::load(&ctx.paths.state_dir.join(crate::settings::FILE));
+        let config = overrides.over(&base_config);
         let (pane, request) = Pane::new(location, config.sort(), config.hidden);
         let home = places::home();
         Self {
             ctx,
             config,
+            base_config,
+            overrides,
+            settings: None,
+            repo: None,
+            vcs: None,
+            asked_git: false,
+            git_facts: vcs::GitFacts::default(),
             pane,
             pending: Some(request),
             loader: Loader::default(),
@@ -575,6 +615,8 @@ impl App for Files {
                 if self.pane.set_listing(generation, result) {
                     self.follow(generation);
                     self.listed();
+                    self.refresh_git(generation);
+                    self.maybe_ask_git();
                     // Landing on a remembered row: be there, don't glide.
                     if let Some(row) = self.pane.cursor() {
                         let top = row as f32 * self.row_height();
@@ -612,6 +654,9 @@ impl App for Files {
                     }
                 }
             }
+            Event::Message(Message::Git { generation, status }) => {
+                self.git_arrived(generation, status, cx);
+            }
             Event::Message(Message::Progress(progress)) => self.op_progress(progress, cx),
             Event::Message(Message::Conflict {
                 source,
@@ -621,6 +666,16 @@ impl App for Files {
             Event::Message(Message::Finished { op, report }) => self.op_finished(op, report, cx),
             Event::Wake => self.wake(cx),
             Event::Message(Message::ThemeChanged) => {
+                // The state directory changed: the theme, or the settings
+                // (from another window).
+                let overrides = crate::settings::Overrides::load(
+                    &self.ctx.paths.state_dir.join(crate::settings::FILE),
+                );
+                if overrides != self.overrides {
+                    self.overrides = overrides;
+                    self.apply_config();
+                    cx.redraw();
+                }
                 if self.ctx.reload_theme() {
                     cx.redraw();
                 }
@@ -635,7 +690,9 @@ impl App for Files {
                         .picker
                         .as_ref()
                         .is_some_and(|picker| picker.typing_name);
-                if let Some(renaming) = &mut self.renaming {
+                if self.vcs_paste(&text) {
+                    cx.redraw();
+                } else if let Some(renaming) = &mut self.renaming {
                     renaming.field.insert(&text);
                     cx.redraw();
                 } else if typing {

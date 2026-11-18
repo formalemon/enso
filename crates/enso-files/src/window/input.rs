@@ -28,7 +28,12 @@ impl Files {
             cx.redraw();
             return;
         }
-        if self.ops_key(&key, cx) || self.confirm_key(&key, cx) || self.menu_key(&key, cx) {
+        if self.settings_key(&key, cx)
+            || self.vcs_key(&key, cx)
+            || self.ops_key(&key, cx)
+            || self.confirm_key(&key, cx)
+            || self.menu_key(&key, cx)
+        {
             return;
         }
         if self.location_key(key, cx)
@@ -97,6 +102,7 @@ impl Files {
                     self.pane.set_keep(keep);
                 }
             }
+            MenuFor::Branches(branches) => self.branch_chosen(branches, index, cx),
             MenuFor::Choice(which) => {
                 if let Some(picker) = &mut self.picker
                     && let Some(Choice::Options { options, .. }) = picker.choices.get(which)
@@ -167,6 +173,11 @@ impl Files {
             Action::Delete => self.ask_delete(cx),
             Action::Terminal => self.terminal_here(cx),
             Action::Undo => self.undo_last(cx),
+            Action::InitRepo => self.init_repository(cx),
+            Action::Settings => {
+                self.learn_git();
+                self.settings = Some(0);
+            }
         }
         self.follow_cursor(now);
         cx.redraw();
@@ -230,6 +241,12 @@ impl Files {
             Item::new("New folder").keys("Ctrl+Shift+N"),
             Some(Action::NewFolder),
         );
+        if self.git_on() && enso_fs::git::root(self.pane.location()).is_none() {
+            add(
+                Item::new("Start a Git repository here"),
+                Some(Action::InitRepo),
+            );
+        }
         if self.picker.is_none() {
             add(Item::new("Paste").keys("Ctrl+V"), Some(Action::Paste));
             add(
@@ -291,6 +308,12 @@ impl Files {
             Some(Action::Hidden),
         );
         add(Item::new("Reload").keys("Ctrl+R"), Some(Action::Reload));
+        if self.picker.is_none() {
+            add(
+                Item::new("Settings…").keys("Ctrl+,"),
+                Some(Action::Settings),
+            );
+        }
         self.menu = Some((Menu::new(items, x, y), MenuFor::Context(actions)));
     }
 
@@ -691,6 +714,12 @@ impl Files {
                 self.undo_last(cx);
                 return;
             }
+            Key::Char(',') if mods.ctrl => {
+                self.learn_git();
+                self.settings = Some(0);
+                cx.redraw();
+                return;
+            }
             Key::F(4) => {
                 self.terminal_here(cx);
                 return;
@@ -786,8 +815,16 @@ impl Files {
                         | Hit::Resolve(_)
                         | Hit::ForAll
                         | Hit::DeleteForGood
-                        | Hit::KeepFiles,
+                        | Hit::KeepFiles
+                        | Hit::Branch
+                        | Hit::GitYes
+                        | Hit::GitNo
+                        | Hit::FormSave
+                        | Hit::FormCancel
+                        | Hit::Setting(_)
+                        | Hit::SortPill(_),
                     ) => Cursor::Pointer,
+                    Some(Hit::FormField(_)) => Cursor::Text,
                     _ => Cursor::Default,
                 });
                 if hover != self.hover {
@@ -832,7 +869,10 @@ impl Files {
             return;
         }
         let hit = self.hit(x, y);
-        if self.ops_press(hit.as_ref(), cx) {
+        if self.settings_press(hit.as_ref(), cx)
+            || self.vcs_press(hit.as_ref(), cx)
+            || self.ops_press(hit.as_ref(), cx)
+        {
             return;
         }
         // A click away from the name being edited leaves it as it was.
@@ -1002,6 +1042,11 @@ impl Files {
                     cx.begin_move();
                 }
             }
+            Some(Hit::Branch) => {
+                if let Some(rect) = self.hit_rect(&Hit::Branch) {
+                    self.branch_menu(rect);
+                }
+            }
             Some(
                 Hit::Replace
                 | Hit::KeepFile
@@ -1009,7 +1054,14 @@ impl Files {
                 | Hit::Resolve(_)
                 | Hit::ForAll
                 | Hit::DeleteForGood
-                | Hit::KeepFiles,
+                | Hit::KeepFiles
+                | Hit::GitYes
+                | Hit::GitNo
+                | Hit::FormField(_)
+                | Hit::FormSave
+                | Hit::FormCancel
+                | Hit::Setting(_)
+                | Hit::SortPill(_),
             )
             | None => {}
         }

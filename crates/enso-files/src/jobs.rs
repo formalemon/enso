@@ -41,6 +41,12 @@ pub enum Message {
     Changed { generation: u64, gone: bool },
     /// The active theme changed.
     ThemeChanged,
+    /// The repository the folder is in, and how it stands (`None`: not
+    /// in one).
+    Git {
+        generation: u64,
+        status: Option<(PathBuf, enso_fs::git::Status)>,
+    },
     /// An operation got further.
     Progress(Progress),
     /// An operation found a name taken, and waits for `reply`.
