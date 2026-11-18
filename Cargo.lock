@@ -260,7 +260,9 @@ name = "enso-fs"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "png",
  "rustix",
+ "zune-jpeg",
 ]
 
 [[package]]

@@ -11,6 +11,8 @@
 //!   conflicts, and undo.
 //! - [`places`] — home, the XDG user folders, and free space.
 //! - [`watch`] — following a folder as it changes, stopped by dropping.
+//! - [`thumbs`] — thumbnails through the freedesktop cache, PNG and JPEG
+//!   made here.
 //! - [`trash`] — the freedesktop trash: trashing, listing, restoring,
 //!   emptying, on the home filesystem and others.
 //! - [`uri`] — `file://` URIs, URI lists, and the portal's byte paths.
@@ -45,6 +47,7 @@ pub mod ops;
 pub mod places;
 pub mod search;
 pub mod sort;
+pub mod thumbs;
 pub mod trash;
 pub mod uri;
 pub mod watch;
