@@ -11,7 +11,8 @@
 //! - [`input`] — keyboard and pointer events, including the suite-wide
 //!   navigation keys.
 //! - [`watch`] — inotify-based change notification for live theme switching.
-//! - [`widget`] — controls: the text field, so far.
+//! - [`widget`] — controls: text fields, menus, buttons, toggles, dialogs,
+//!   tooltips, scrolling, splitters.
 //!
 //! Everything is pure Rust: the Wayland protocol (no libwayland), keyboard
 //! layouts (kbvm, no libxkbcommon), rasterisation (tiny-skia), and text
@@ -42,7 +43,7 @@ pub use picture::Picture;
 pub use presence::Presence;
 pub use screens::{Role, Screen, Screens, run_screens};
 pub use shell::{
-    Anchor, App, Cursor, Cx, Error, Event, Keyboard, Layer, Margin, Paint, Proxy, SurfaceSpec,
-    WindowSpec, run,
+    Anchor, App, Clip, Cursor, Cx, Error, Event, Keyboard, Layer, Margin, Paint, Proxy,
+    SurfaceSpec, TEXT_TYPES, WindowSpec, run,
 };
 pub use text::{Font, Text, TextEngine, Weight};

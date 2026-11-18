@@ -30,6 +30,12 @@ use smithay_client_toolkit::reexports::protocols::xdg::foreign::zv2::client::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
+    data_device_manager::{
+        DataDeviceManagerState, WritePipe,
+        data_device::{DataDevice, DataDeviceHandler},
+        data_offer::{DataOfferHandler, DragOffer},
+        data_source::{CopyPasteSource, DataSourceHandler},
+    },
     delegate_dispatch2, delegate_registry,
     dispatch2::Dispatch2,
     output::{OutputHandler, OutputState},
@@ -39,6 +45,9 @@ use smithay_client_toolkit::{
             Connection, Proxy as _, QueueHandle, WEnum,
             globals::registry_queue_init,
             protocol::{
+                wl_data_device::WlDataDevice,
+                wl_data_device_manager::DndAction,
+                wl_data_source::WlDataSource,
                 wl_keyboard::{self, KeyState, KeymapFormat, WlKeyboard},
                 wl_output::{self, WlOutput},
                 wl_pointer::AxisSource,
@@ -260,6 +269,12 @@ pub enum Event<M> {
     },
     /// The surface is now shown on the output with this connector name.
     Output(String),
+    /// What the clipboard held, as asked for with [`Cx::paste`]: the
+    /// first of the asked-for types it offered, and the bytes.
+    Paste {
+        mime: String,
+        data: Vec<u8>,
+    },
     /// A window was asked to close (its close binding, or the compositor
     /// going away). It stays open unless the app calls [`Cx::exit`].
     Close,
@@ -334,6 +349,46 @@ impl Paint {
     }
 }
 
+/// Something to put on the clipboard: the same thing in one or more
+/// formats, each a MIME type and its bytes. A pasting program takes the
+/// format it understands best.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Clip {
+    pub formats: Vec<(String, Vec<u8>)>,
+}
+
+impl Clip {
+    /// Plain text, under every name programs look for it by.
+    pub fn text(text: &str) -> Self {
+        let mut clip = Self::default();
+        for mime in TEXT_TYPES {
+            clip = clip.with(mime, text.as_bytes().to_vec());
+        }
+        clip
+    }
+
+    /// Add a format.
+    #[must_use]
+    pub fn with(mut self, mime: &str, data: Vec<u8>) -> Self {
+        self.formats.push((mime.to_owned(), data));
+        self
+    }
+}
+
+/// The names plain text goes by on a clipboard, best first.
+pub const TEXT_TYPES: [&str; 5] = [
+    "text/plain;charset=utf-8",
+    "text/plain",
+    "UTF8_STRING",
+    "STRING",
+    "TEXT",
+];
+
+/// Work the runtime gets back from its own threads.
+enum Internal {
+    Paste { mime: String, data: Vec<u8> },
+}
+
 /// What an app asked for while handling an event.
 #[derive(Debug, Default)]
 pub(crate) struct Requests {
@@ -348,6 +403,8 @@ pub(crate) struct Requests {
     title: Option<String>,
     begin_move: bool,
     toggle_maximized: bool,
+    copy: Option<Clip>,
+    paste: Option<Vec<String>>,
 }
 
 /// Handed to an app while it handles an event: lets it measure text and ask
@@ -434,6 +491,20 @@ impl<'a> Cx<'a> {
     /// tiled ones are the compositor's to place.
     pub fn begin_move(&mut self) {
         self.requests.begin_move = true;
+    }
+
+    /// Put `clip` on the clipboard, for this and every other program.
+    /// Call while handling the key or click that asked for it: the
+    /// compositor only lets input that just happened change the clipboard.
+    pub fn copy(&mut self, clip: Clip) {
+        self.requests.copy = Some(clip);
+    }
+
+    /// Ask for the clipboard, in the first of `mimes` it offers; it arrives
+    /// as [`Event::Paste`], unless the clipboard is empty or has none of
+    /// them.
+    pub fn paste(&mut self, mimes: &[&str]) {
+        self.requests.paste = Some(mimes.iter().map(|mime| (*mime).to_owned()).collect());
     }
 
     /// Maximise a window, or give it back its own size.
@@ -566,6 +637,17 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         }
     };
 
+    let (internal, internals) = channel::channel();
+    handle
+        .insert_source(internals, |event, (), runtime: &mut Runtime<A>| {
+            if let channel::Event::Msg(Internal::Paste { mime, data }) = event {
+                runtime.deliver(Event::Paste { mime, data });
+            }
+        })
+        .map_err(|err| Error::new("event loop", err))?;
+    // Without one there is no clipboard, and nothing else is lost.
+    let data_devices = DataDeviceManagerState::bind(&globals, &qh).ok();
+
     let (sender, messages) = channel::channel();
     handle
         .insert_source(messages, |event, (), runtime: &mut Runtime<A>| {
@@ -604,6 +686,11 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         pointer: None,
         seat: None,
         press_serial: None,
+        input_serial: None,
+        data_devices,
+        data_device: None,
+        copied: None,
+        internal,
         cursor: Cursor::Default,
         maximized: false,
         spec,
@@ -659,6 +746,14 @@ struct Runtime<A: App> {
     /// what a window move has to show the compositor.
     seat: Option<WlSeat>,
     press_serial: Option<u32>,
+    /// The serial of the latest key or button press: what changing the
+    /// clipboard has to show.
+    input_serial: Option<u32>,
+    data_devices: Option<DataDeviceManagerState>,
+    data_device: Option<DataDevice>,
+    /// What this program has on the clipboard, while it has it.
+    copied: Option<(CopyPasteSource, Clip)>,
+    internal: Sender<Internal>,
     cursor: Cursor,
     maximized: bool,
 }
@@ -756,6 +851,12 @@ impl<A: App> Runtime<A> {
             self.cursor = cursor;
             self.show_cursor();
         }
+        if let Some(clip) = requests.copy {
+            self.copy(clip);
+        }
+        if let Some(mimes) = requests.paste {
+            self.paste(&mimes);
+        }
         if let Some(window) = self.surface.window() {
             if let Some(title) = requests.title {
                 window.set_title(title);
@@ -778,6 +879,47 @@ impl<A: App> Runtime<A> {
         {
             self.set_visible(visible);
         }
+    }
+
+    fn copy(&mut self, clip: Clip) {
+        let (Some(devices), Some(device), Some(serial)) =
+            (&self.data_devices, &self.data_device, self.input_serial)
+        else {
+            return;
+        };
+        let source = devices
+            .create_copy_paste_source(&self.qh, clip.formats.iter().map(|(mime, _)| mime.as_str()));
+        source.set_selection(device, serial);
+        self.copied = Some((source, clip));
+    }
+
+    fn paste(&mut self, mimes: &[String]) {
+        let Some(offer) = self
+            .data_device
+            .as_ref()
+            .and_then(|device| device.data().selection_offer())
+        else {
+            return;
+        };
+        let Some(mime) = offer
+            .with_mime_types(|offered| mimes.iter().find(|mime| offered.contains(mime)).cloned())
+        else {
+            return;
+        };
+        let Ok(mut pipe) = offer.receive(mime.clone()) else {
+            return;
+        };
+        // On a thread: the program writing it may be this one, which can't
+        // write while it waits here to read.
+        let internal = self.internal.clone();
+        let _ = std::thread::Builder::new()
+            .name("enso-paste".to_owned())
+            .spawn(move || {
+                let mut data = Vec::new();
+                if std::io::Read::read_to_end(&mut pipe, &mut data).is_ok() {
+                    let _ = internal.send(Internal::Paste { mime, data });
+                }
+            });
     }
 
     /// Queue the current input region on the surface (applied on commit).
@@ -997,10 +1139,12 @@ impl<A: App> Dispatch2<WlKeyboard, Runtime<A>> for KeyboardData {
             }
             wl_keyboard::Event::Key {
                 key,
+                serial,
                 state: WEnum::Value(state),
                 ..
             } => match state {
                 KeyState::Pressed => {
+                    runtime.input_serial = Some(serial);
                     runtime.start_repeat(key);
                     runtime.press(key, false);
                 }
@@ -1192,6 +1336,101 @@ impl<A: App> Dispatch2<ZxdgImportedV2, Runtime<A>> for ForeignData {
     }
 }
 
+impl<A: App> DataSourceHandler for Runtime<A> {
+    fn accept_mime(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataSource,
+        _: Option<String>,
+    ) {
+    }
+
+    fn send_request(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        source: &WlDataSource,
+        mime: String,
+        mut pipe: WritePipe,
+    ) {
+        let Some(data) = self
+            .copied
+            .as_ref()
+            .filter(|(copied, _)| copied.inner() == source)
+            .and_then(|(_, clip)| clip.formats.iter().find(|(offered, _)| *offered == mime))
+            .map(|(_, data)| data.clone())
+        else {
+            return;
+        };
+        // On a thread, so a slow reader can't stall the window.
+        let _ = std::thread::Builder::new()
+            .name("enso-copy".to_owned())
+            .spawn(move || {
+                let _ = std::io::Write::write_all(&mut pipe, &data);
+            });
+    }
+
+    fn cancelled(&mut self, _: &Connection, _: &QueueHandle<Self>, source: &WlDataSource) {
+        // Something else took the clipboard.
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(copied, _)| copied.inner() == source)
+        {
+            self.copied = None;
+        }
+    }
+
+    fn dnd_dropped(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+
+    fn dnd_finished(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource) {}
+
+    fn action(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataSource, _: DndAction) {}
+}
+
+// Drag and drop comes later; the clipboard needs these to exist.
+impl<A: App> DataDeviceHandler for Runtime<A> {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &WlDataDevice,
+        _: f64,
+        _: f64,
+        _: &WlSurface,
+    ) {
+    }
+
+    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+
+    fn motion(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice, _: f64, _: f64) {}
+
+    fn selection(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+
+    fn drop_performed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlDataDevice) {}
+}
+
+impl<A: App> DataOfferHandler for Runtime<A> {
+    fn source_actions(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
+
+    fn selected_action(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &mut DragOffer,
+        _: DndAction,
+    ) {
+    }
+}
+
 impl<A: App> SeatHandler for Runtime<A> {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
@@ -1209,6 +1448,12 @@ impl<A: App> SeatHandler for Runtime<A> {
         match capability {
             Capability::Keyboard if self.keyboard.is_none() => {
                 self.keyboard = Some(seat.get_keyboard(qh, KeyboardData));
+                if self.data_device.is_none() {
+                    self.data_device = self
+                        .data_devices
+                        .as_ref()
+                        .map(|devices| devices.get_data_device(qh, &seat));
+                }
             }
             Capability::Pointer if self.pointer.is_none() => {
                 self.seat = Some(seat.clone());
@@ -1286,6 +1531,7 @@ impl<A: App> PointerHandler for Runtime<A> {
                     ..
                 } => {
                     self.press_serial = Some(*serial);
+                    self.input_serial = Some(*serial);
                     PointerEvent::Press {
                         x,
                         y,

@@ -17,8 +17,8 @@ use enso_core::{
 };
 use enso_fs::{format, places};
 use enso_ui::{
-    Align, App, BUTTON_BACK, BUTTON_FORWARD, Button, Canvas, Clicks, Cursor, Cx, Event, Key,
-    KeyEvent, Nav, Paint, PointerEvent, Proxy, Rect, SurfaceSpec, Text, WindowSpec,
+    Align, App, BUTTON_BACK, BUTTON_FORWARD, Button, Canvas, Clicks, Clip, Cursor, Cx, Event, Key,
+    KeyEvent, Nav, Paint, PointerEvent, Proxy, Rect, SurfaceSpec, TEXT_TYPES, Text, WindowSpec,
     watch::watch_dir,
     widget::{TextField, field},
 };
@@ -226,11 +226,15 @@ impl Files {
                 self.pane.set_filter(&text);
                 self.follow_cursor(now);
             }
-            // The clipboard arrives with the next step of the plan.
-            field::Response::Moved
-            | field::Response::Copy(_)
-            | field::Response::Cut(_)
-            | field::Response::Paste => {}
+            field::Response::Copy(text) => cx.copy(Clip::text(&text)),
+            field::Response::Cut(text) => {
+                cx.copy(Clip::text(&text));
+                let text = field.text().to_owned();
+                self.pane.set_filter(&text);
+                self.follow_cursor(now);
+            }
+            field::Response::Paste => cx.paste(&TEXT_TYPES),
+            field::Response::Moved => {}
         }
         cx.redraw();
         true
@@ -327,6 +331,14 @@ impl Files {
                         self.loader.load(request, proxy);
                     }
                     false
+                }
+                // Ctrl+Shift+C: the path under the cursor, as text.
+                Key::Char('c' | 'C') if mods.ctrl && mods.shift => {
+                    if let Some(row) = self.pane.cursor() {
+                        let path = self.pane.path(row);
+                        cx.copy(Clip::text(&path.to_string_lossy()));
+                    }
+                    return;
                 }
                 Key::Char('q' | 'w') if mods.ctrl => {
                     cx.exit();
@@ -898,6 +910,15 @@ impl App for Files {
                 self.maximized = maximized;
                 cx.redraw();
             }
+            Event::Paste { data, .. } => {
+                if let Some(field) = &mut self.filter {
+                    field.insert(&String::from_utf8_lossy(&data));
+                    let text = field.text().to_owned();
+                    self.pane.set_filter(&text);
+                    self.follow_cursor(now);
+                    cx.redraw();
+                }
+            }
             Event::Close => cx.exit(),
             _ => {}
         }
@@ -1042,7 +1063,12 @@ mod tests {
         let frame = render(&mut files, (900, 300));
         snapshot(&frame, "enso-files-filter");
         assert_eq!(files.pane.len(), 2);
-        assert!(files.hits.iter().any(|(_, hit)| matches!(hit, Hit::Filter(_))));
+        assert!(
+            files
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Filter(_)))
+        );
     }
 
     #[test]

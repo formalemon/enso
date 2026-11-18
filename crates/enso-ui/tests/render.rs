@@ -149,3 +149,142 @@ fn every_figure_draws_at_every_size() {
         let _ = name;
     }
 }
+
+/// Every widget at rest and in use, in a dark and a light theme: a page to
+/// eyeball when the widgets change.
+#[test]
+fn widgets_draw_in_both_themes() {
+    use std::time::{Duration, Instant};
+
+    use enso_core::motion::Transition;
+    use enso_ui::widget::{
+        Button, Interaction, Item, Kind, Look, Menu, Scroll, TextField, Toggle, controls, field,
+    };
+
+    for theme in ["rose-pine-moon", "rose-pine-dawn"] {
+        let mut ctx = Context::load_from(Paths::rooted("/nonexistent/enso-test"));
+        ctx.theme = ctx.themes.resolve(theme).0.clone();
+        let colors = ctx.theme.colors.clone();
+        let look = Look::new(&colors, ctx.accent(), 14.0);
+        let mut text = TextEngine::new(&ctx.config.appearance);
+        let now = Instant::now();
+        let later = now + Duration::from_secs(1);
+        let mut on = Toggle::new(false);
+        on.set(true, Transition::TOGGLE, now);
+        let mut field = TextField::new("holiday photos.zip");
+        field.select_stem();
+        let mut menu = Menu::new(
+            vec![
+                Item::new("Open").icon(icon::FOLDER).keys("Enter"),
+                Item::new("Open with…").enabled(false),
+                Item::Separator,
+                Item::new("Copy").keys("Ctrl+C"),
+                Item::new("Show hidden files").checked(true).keys("Ctrl+H"),
+            ],
+            420.0,
+            30.0,
+        )
+        .with_selected(3);
+        let mut scroll = Scroll::default();
+        scroll.set_extent(1200.0, 180.0);
+        scroll.to(300.0, None, now);
+
+        let frame = Offscreen::render(&mut text, (680, 400), 2, |canvas| {
+            canvas.clear(colors.base);
+            let mut x = 24.0;
+            for (button, state) in [
+                (
+                    Button::new("Upload 3 files", Kind::Primary),
+                    Interaction::default(),
+                ),
+                (
+                    Button::new("Cancel", Kind::Secondary),
+                    Interaction {
+                        hovered: true,
+                        ..Interaction::default()
+                    },
+                ),
+                (
+                    Button::new("Delete", Kind::Danger),
+                    Interaction {
+                        focused: true,
+                        ..Interaction::default()
+                    },
+                ),
+                (
+                    Button::new("", Kind::Quiet).icon(icon::SEARCH),
+                    Interaction {
+                        hovered: true,
+                        ..Interaction::default()
+                    },
+                ),
+            ] {
+                let width = button.width(canvas, &look);
+                button.draw(
+                    canvas,
+                    Rect::new(x, 24.0, width, controls::HEIGHT),
+                    &look,
+                    state,
+                );
+                x += width + space::MD;
+            }
+            Toggle::new(false).draw(
+                canvas,
+                Rect::new(24.0, 80.0, 40.0, 22.0),
+                &look,
+                Interaction::default(),
+                later,
+            );
+            on.draw(
+                canvas,
+                Rect::new(80.0, 80.0, 40.0, 22.0),
+                &look,
+                Interaction::default(),
+                later,
+            );
+            let field_rect = Rect::new(24.0, 124.0, 300.0, 34.0);
+            canvas.fill(field_rect, radius::pill(34.0), colors.surface);
+            canvas.stroke(field_rect, radius::pill(34.0), 1.0, look.accent);
+            field.draw(
+                canvas,
+                field_rect.inset_xy(space::LG, 0.0),
+                &field::Style {
+                    size: 14.0,
+                    color: colors.text,
+                    placeholder: "Name",
+                    placeholder_color: colors.muted,
+                    caret: look.accent,
+                    selection: look.accent.alpha(0.32),
+                },
+                true,
+            );
+            let list = Rect::new(24.0, 180.0, 300.0, 180.0);
+            canvas.fill(list, radius::PANEL, colors.surface);
+            scroll.draw_bar(canvas, list, colors.subtle, true, now);
+            controls::tooltip(
+                canvas,
+                "a name too long for its column.txt",
+                Rect::new(40.0, 200.0, 120.0, 20.0),
+                canvas.bounds(),
+                &look,
+            );
+            menu.draw(canvas, canvas.bounds(), &look.menu());
+            let bounds = Rect::new(360.0, 220.0, 300.0, 160.0);
+            let inner = controls::dialog(canvas, bounds, 260.0, 120.0, &look, 1.0);
+            canvas.text(
+                &Text::new("Turn on version control?", 15.0, colors.text).medium(),
+                inner.x,
+                inner.y,
+            );
+        });
+        #[cfg(feature = "png")]
+        frame
+            .save_png(format!(
+                "{}/../../target/snapshots/widgets-{theme}.png",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .expect("write snapshot");
+        // The primary button is filled with the accent.
+        assert_ne!(frame.pixel(60, 60), frame.pixel(4, 4));
+    }
+}
