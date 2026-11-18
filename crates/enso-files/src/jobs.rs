@@ -32,6 +32,8 @@ pub enum Message {
         start: usize,
         metas: Vec<Option<Meta>>,
     },
+    /// The folder being shown changed on disk (or, with `gone`, went).
+    Changed { generation: u64, gone: bool },
     /// The active theme changed.
     ThemeChanged,
 }

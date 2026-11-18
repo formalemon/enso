@@ -147,6 +147,8 @@ pub struct Files {
     location_missing: bool,
     /// The keys, shown over everything (`?`, `F1`).
     help: bool,
+    /// Following the folder shown, so it updates as it changes.
+    watch: Option<enso_fs::watch::Watch>,
 }
 
 impl Files {
@@ -182,6 +184,7 @@ impl Files {
             location: None,
             location_missing: false,
             help: false,
+            watch: None,
         }
     }
 
@@ -442,6 +445,21 @@ impl Files {
     }
 }
 
+impl Files {
+    /// Watch the folder just listed, so it updates as it changes.
+    fn follow(&mut self, generation: u64) {
+        // The old watch stops as it's replaced.
+        self.watch = None;
+        let Some(proxy) = self.proxy.clone() else {
+            return;
+        };
+        self.watch = enso_fs::watch::Watch::start(self.pane.location(), move |gone| {
+            proxy.send(Message::Changed { generation, gone });
+        })
+        .ok();
+    }
+}
+
 /// The sidebar's places: home, the user folders that exist, the root.
 fn places_for(home: &Path, dirs: &UserDirs) -> Vec<Place> {
     let mut places = vec![Place {
@@ -517,6 +535,7 @@ impl App for Files {
         match event {
             Event::Message(Message::Listed { generation, result }) => {
                 if self.pane.set_listing(generation, result) {
+                    self.follow(generation);
                     // Landing on a remembered row: be there, don't glide.
                     if let Some(row) = self.pane.cursor() {
                         let top = row as f32 * self.row_height();
@@ -536,6 +555,22 @@ impl App for Files {
             }) => {
                 if self.pane.apply_stats(generation, start, &metas) {
                     cx.redraw();
+                }
+            }
+            Event::Message(Message::Changed { generation, gone }) => {
+                if generation == self.pane.generation() {
+                    if gone {
+                        self.watch = None;
+                        // Up to the nearest folder that's still there.
+                        let mut up = self.pane.location().to_owned();
+                        while !up.is_dir() && up.pop() {}
+                        self.navigate(up);
+                    } else {
+                        let request = self.pane.reload();
+                        if let Some(proxy) = &self.proxy {
+                            self.loader.load(request, proxy);
+                        }
+                    }
                 }
             }
             Event::Message(Message::ThemeChanged) => {

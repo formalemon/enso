@@ -42,7 +42,7 @@ zbus = { version = "6", default-features = false, features = ["default-rt", "ser
 # PulseAudio wire protocol in pure Rust; PipeWire serves it (pipewire-pulse).
 pulseaudio = "0.3"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "process", "event"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -126,6 +126,11 @@ impl Pane {
         &self.location
     }
 
+    /// Which listing is current: messages about older ones are stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn load(&self) -> &Load {
         &self.load
     }

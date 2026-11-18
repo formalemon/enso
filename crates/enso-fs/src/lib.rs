@@ -6,6 +6,7 @@
 //!   extension.
 //! - [`format`] — sizes and dates the way a person reads them.
 //! - [`places`] — home, the XDG user folders, and free space.
+//! - [`watch`] — following a folder as it changes, stopped by dropping.
 //! - [`uri`] — `file://` URIs, URI lists, and the portal's byte paths.
 //! - [`apps`] — installed applications, from freedesktop desktop entries,
 //!   and launching them.
@@ -36,6 +37,7 @@ pub mod places;
 pub mod search;
 pub mod sort;
 pub mod uri;
+pub mod watch;
 
 /// Say something went wrong in the background, where there is no caller to
 /// return it to, prefixed with the running program's name.
