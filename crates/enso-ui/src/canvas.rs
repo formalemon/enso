@@ -243,8 +243,18 @@ impl<'a> Canvas<'a> {
         self.fill(Rect::new(cx - r, cy - r, r * 2.0, r * 2.0), r, color);
     }
 
+    /// A floating card: its shadow, its fill, and a hairline edge — the
+    /// launcher, the panels, toasts, menus, and dialogs.
+    pub fn card(&mut self, rect: Rect, fill: Rgba, edge: Rgba) {
+        use enso_core::style::{radius, stroke};
+        self.shadow(rect, radius::CARD, Shadow::FLOATING);
+        self.fill(rect, radius::CARD, fill);
+        self.stroke(rect, radius::CARD, stroke::HAIRLINE, edge);
+    }
+
     /// Soft drop shadow for a rounded rectangle. Draw it before the shape.
-    pub fn shadow(&mut self, rect: Rect, radius: f32, shadow: Shadow, color: Rgba) {
+    pub fn shadow(&mut self, rect: Rect, radius: f32, shadow: Shadow) {
+        let color = shadow.color;
         // Stacked, progressively larger translucent shapes approximate a blur
         // closely enough at these sizes and cost far less than a real one.
         const LAYERS: usize = 8;

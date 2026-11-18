@@ -14,7 +14,7 @@ use std::{
 
 use enso_core::{
     Context, Easing, Rgba, Transition, Tween,
-    style::{Shadow, opacity, radius, space, stroke, type_scale},
+    style::{opacity, radius, space, type_scale},
 };
 use enso_ui::{
     Align, App, Button, Canvas, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent, Presence,
@@ -347,9 +347,7 @@ impl App for Menu {
         self.card = card;
 
         canvas.set_opacity(presence);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, colors.surface);
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, colors.highlight_med);
+        canvas.card(card, colors.surface, colors.highlight_med);
 
         let tile = |index: f32| {
             Rect::new(

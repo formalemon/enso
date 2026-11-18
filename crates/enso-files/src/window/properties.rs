@@ -20,7 +20,7 @@ use enso_core::style::{icon, radius, space, stroke, type_scale};
 use enso_fs::{format, tally::Tally};
 use enso_ui::{
     Align, Canvas, Cx, Rect, Text,
-    widget::{Button, Interaction, Kind as ButtonKind, controls},
+    widget::{Button, Interaction, Kind as ButtonKind, controls, form},
 };
 
 use super::{Files, Hit};
@@ -398,7 +398,7 @@ impl Files {
             Rect::new(inner.x, inner.y, 30.0, 40.0),
             Align::Start,
         );
-        let heading = Text::new(&title, self.font(type_scale::HEADING), colors.text)
+        let heading = Text::new(&title, form::title_size(&look), colors.text)
             .medium()
             .max_width(inner.w - 44.0);
         canvas.text_in(

@@ -13,7 +13,12 @@ use enso_core::{
     style::{opacity, radius, space, type_scale},
 };
 
-use super::{Button, Interaction, Kind, Look, controls, field, secret::Note};
+use super::{
+    Button, Interaction, Kind, Look, Toggle,
+    controls::{self, TOGGLE},
+    field,
+    secret::Note,
+};
 use crate::{Align, Canvas, Font, Rect, Text};
 
 /// A dialog's usual width.
@@ -44,6 +49,9 @@ pub enum Part<'a> {
     },
     /// A number or a code to read off, large.
     Code(&'a str),
+    /// A switch with what it does beside it. Its place is the whole row,
+    /// to hit-test.
+    Toggle { label: &'a str, on: bool },
     /// Room for the owner's own drawing.
     Space(f32),
 }
@@ -148,7 +156,7 @@ impl<'a> Form<'a> {
     }
 
     fn sizes(look: &Look) -> (f32, f32, f32) {
-        let title = (look.size * type_scale::TITLE).round();
+        let title = title_size(look);
         let small = (look.size * type_scale::SMALL).round();
         let code = (look.size * type_scale::HEADING * 1.6).round();
         (title, small, code)
@@ -186,6 +194,7 @@ impl<'a> Form<'a> {
             Part::Field { .. } => field::HEIGHT,
             Part::Choices { .. } => CHOICES,
             Part::Code(_) => code * 1.4,
+            Part::Toggle { .. } => TOGGLE.1,
             Part::Space(height) => *height,
         }
     }
@@ -295,23 +304,12 @@ impl<'a> Form<'a> {
                         x += width + space::SM;
                     }
                     for (option, name) in options.iter().enumerate() {
-                        let picked = option == chosen;
-                        let ink = if picked { look.base } else { look.subtle };
-                        let text = Text::new(name, small, ink);
-                        let width = canvas.measure(&text).w + 2.0 * space::MD;
-                        if x + width > inner.right() {
+                        if x + pill_width(canvas, name, small) > inner.right() {
                             break;
                         }
-                        let pill = Rect::new(x, y + (height - CHOICE) / 2.0, width, CHOICE);
-                        let fill = if picked {
-                            look.accent
-                        } else if enabled && hovered == Some(option) {
-                            look.highlight_med
-                        } else {
-                            look.overlay
-                        };
-                        canvas.fill(pill, radius::pill(CHOICE), fill);
-                        canvas.text_in(&text, pill, Align::Center);
+                        let hovered = enabled && hovered == Some(option);
+                        let at = (x, y + (height - CHOICE) / 2.0);
+                        let pill = pill(canvas, at, name, option == chosen, hovered, look);
                         if enabled {
                             placed.choices.push((index, option, pill));
                         }
@@ -323,6 +321,21 @@ impl<'a> Form<'a> {
                     let text = Text::new(code, code_size, look.text).font(Font::Mono);
                     canvas.text_in(&text, rect, Align::Center);
                     rect
+                }
+                Part::Toggle { label, on } => {
+                    let switch = Rect::new(inner.x, y, TOGGLE.0, TOGGLE.1);
+                    Toggle::new(on).draw(
+                        canvas,
+                        switch,
+                        look,
+                        Interaction::default(),
+                        std::time::Instant::now(),
+                    );
+                    let words = Text::new(label, small, look.subtle);
+                    let width = canvas.measure(&words).w;
+                    let words_at = Rect::new(switch.right() + space::SM, y, width + 1.0, height);
+                    canvas.text_in(&words, words_at, Align::Start);
+                    Rect::new(inner.x, y, words_at.right() - inner.x, height)
                 }
                 Part::Space(_) => rect,
             };
@@ -353,4 +366,44 @@ impl<'a> Form<'a> {
         placed.buttons = rects;
         placed
     }
+}
+
+/// A dialog's title size, for `look`: every dialog's, and the cards that
+/// lay themselves out (Properties, Settings) take it too.
+pub fn title_size(look: &Look) -> f32 {
+    (look.size * type_scale::TITLE).round()
+}
+
+/// How wide a choice's pill is for `label` in small type of `size`.
+pub fn pill_width(canvas: &mut Canvas<'_>, label: &str, size: f32) -> f32 {
+    canvas
+        .measure(&Text::new(label, size, Rgba::rgb(0, 0, 0)))
+        .w
+        + 2.0 * space::MD
+}
+
+/// A choice's pill at `(x, y)`: lit with the accent when `on`. Returns
+/// where it went, to hit-test.
+pub fn pill(
+    canvas: &mut Canvas<'_>,
+    (x, y): (f32, f32),
+    label: &str,
+    on: bool,
+    hovered: bool,
+    look: &Look,
+) -> Rect {
+    let size = (look.size * type_scale::SMALL).round();
+    let ink = if on { look.base } else { look.subtle };
+    let text = Text::new(label, size, ink);
+    let rect = Rect::new(x, y, canvas.measure(&text).w + 2.0 * space::MD, CHOICE);
+    let fill = if on {
+        look.accent
+    } else if hovered {
+        look.highlight_med
+    } else {
+        look.overlay
+    };
+    canvas.fill(rect, radius::pill(CHOICE), fill);
+    canvas.text_in(&text, rect, Align::Center);
+    rect
 }

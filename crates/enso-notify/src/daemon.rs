@@ -14,7 +14,7 @@ use std::{
 
 use enso_core::{
     Context, Notices, Rgba, ipc,
-    style::{Shadow, edge, radius, space, stroke, type_scale},
+    style::{edge, radius, space, type_scale},
 };
 use enso_ui::{
     Align, Anchor, App, Button, Canvas, Cx, Event, Key, Keyboard, Layer, Paint, PointerEvent,
@@ -479,13 +479,11 @@ impl Daemon {
         );
 
         canvas.set_opacity(presence);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, colors.surface);
         let outline = match toast.note.urgency {
             Urgency::Critical => colors.love,
             Urgency::Low | Urgency::Normal => colors.highlight_med,
         };
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, outline);
+        canvas.card(card, colors.surface, outline);
 
         let note = &toast.note;
         let top = card.y + PAD;

@@ -6,11 +6,11 @@
 
 use std::{path::PathBuf, thread};
 
-use enso_core::style::{opacity, radius, space, stroke, type_scale};
+use enso_core::style::{opacity, radius, space, type_scale};
 use enso_fs::git::{self, Identity, Scope, Status};
 use enso_ui::{
     Align, Canvas, Clip, Cx, Key, KeyEvent, Rect, TEXT_TYPES, Text,
-    widget::{Button, Interaction, Item, Kind, Menu, TextField, controls, field},
+    widget::{Form, Interaction, Item, Kind, Menu, Note, Part, TextField, field, field::Frame},
 };
 
 use super::{Files, Hit, MenuFor};
@@ -811,11 +811,7 @@ impl Files {
     pub(super) fn draw_vcs(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
         let Some(vcs) = &self.vcs else { return };
         let look = self.look();
-        let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
-        let title_size = self.font(type_scale::TITLE);
         let small = self.font(type_scale::SMALL);
-        self.hits.clear();
         let (title, detail, fields, buttons): (String, String, usize, [(&str, Kind, Hit); 2]) = match vcs {
             Vcs::Ask => (
                 "Use version control?".to_owned(),
@@ -896,176 +892,129 @@ impl Files {
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Clone", Kind::Primary, Hit::FormSave)],
             ),
         };
-        let height = 150.0 + fields as f32 * 56.0;
-        let inner = controls::dialog(canvas, bounds, 480.0, height, &look, 1.0);
-        canvas.text(
-            &Text::new(&title, title_size, colors.text)
-                .medium()
-                .max_width(inner.w),
-            inner.x,
-            inner.y,
-        );
-        canvas.text(
-            &Text::new(&detail, small, colors.subtle)
-                .max_width(inner.w)
-                .max_lines(2),
-            inner.x,
-            inner.y + 30.0,
-        );
-
-        let style = |placeholder| field::Style {
-            size: look.size,
-            color: colors.text,
-            placeholder,
-            placeholder_color: colors.muted,
-            caret: accent,
-            selection: accent.alpha(opacity::TINT * 2.0),
-        };
-        let mut y = inner.y + 78.0;
-        let mut error = None;
-        let mut field_rects = Vec::new();
         // A one-field form's example.
-        let single_placeholder = match self.vcs {
-            Some(Vcs::Clone(..)) => "https://github.com/owner/repository",
-            Some(Vcs::ClientId(..)) => "Ov23li…",
-            Some(Vcs::Publish(..)) => "repository-name",
+        let single_placeholder = match vcs {
+            Vcs::Clone(..) => "https://github.com/owner/repository",
+            Vcs::ClientId(..) => "Ov23li…",
+            Vcs::Publish(..) => "repository-name",
             _ => "feature/quiet-mode",
+        };
+        let error = match vcs {
+            Vcs::Identity(edit) => edit.error.clone(),
+            Vcs::Device { error, .. }
+            | Vcs::NewBranch(_, error)
+            | Vcs::Clone(_, error)
+            | Vcs::ClientId(_, error)
+            | Vcs::Publish(_, _, error) => error.clone(),
+            Vcs::Ask | Vcs::Disconnect => None,
+        };
+        let code = match vcs {
+            Vcs::Device { code, .. } if code.is_empty() => Some("· · · ·".to_owned()),
+            Vcs::Device { code, .. } => Some(code.clone()),
+            _ => None,
+        };
+        // Signed in: your repositories under the field, the picked one lit.
+        let shown: Vec<(String, bool)> = if matches!(vcs, Vcs::Clone(..)) {
+            self.repos_shown()
+                .iter()
+                .map(|repo| (repo.name.clone(), repo.private))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        const REPO_ROW: f32 = 32.0;
+
+        let mut form = Form::new(&title).width(480.0).about(&detail);
+        if fields == 2 {
+            form = form
+                .part(Part::Field {
+                    label: Some("Name"),
+                })
+                .part(Part::Field {
+                    label: Some("Email"),
+                });
+        } else if let Some(code) = &code {
+            form = form.part(Part::Code(code));
+        } else if fields > 0 {
+            form = form.field();
+        }
+        if !shown.is_empty() {
+            form = form.part(Part::Space(shown.len() as f32 * REPO_ROW));
+        }
+        if !matches!(vcs, Vcs::Ask | Vcs::Disconnect) {
+            form = form.note(error.as_deref().map_or(Note::Nothing, Note::Complains));
+        }
+        for (label, kind, hit) in &buttons {
+            form = form.button(
+                label,
+                *kind,
+                Interaction {
+                    hovered: self.hover.as_ref() == Some(hit),
+                    ..Interaction::default()
+                },
+            );
+        }
+        let placed = form.draw(canvas, bounds, &look, 1.0);
+
+        let mut hits = Vec::new();
+        let field = |canvas: &mut Canvas<'_>, place: Rect, field: &mut TextField, focused, hint| {
+            let frame = Frame {
+                focused,
+                filled: !field.is_empty(),
+                ..Frame::default()
+            };
+            let text = frame.draw(canvas, place, &look, look.base);
+            field.draw(canvas, text, &field::Style::new(&look, hint), focused);
         };
         match &mut self.vcs {
             Some(Vcs::Identity(edit)) => {
-                for (index, (label, placeholder)) in
-                    [("Name", "Your name"), ("Email", "you@example.com")]
-                        .into_iter()
-                        .enumerate()
-                {
-                    canvas.text_in(
-                        &Text::new(label, small, colors.subtle),
-                        Rect::new(inner.x, y, 64.0, controls::HEIGHT),
-                        Align::Start,
-                    );
-                    let rect = Rect::new(inner.x + 64.0, y, inner.w - 64.0, controls::HEIGHT);
-                    let focused = edit.focus == index;
-                    canvas.fill(rect, radius::pill(rect.h), colors.base);
-                    canvas.stroke(
-                        rect,
-                        radius::pill(rect.h),
-                        stroke::HAIRLINE,
-                        if focused {
-                            accent
-                        } else {
-                            colors.highlight_med
-                        },
-                    );
-                    let text = rect.inset_xy(space::LG, 0.0);
-                    let field = if index == 0 {
-                        &mut edit.name
-                    } else {
-                        &mut edit.email
-                    };
-                    field.draw(canvas, text, &style(placeholder), focused);
-                    field_rects.push((rect, Hit::FormField(index)));
-                    y += 48.0;
-                }
-                error = edit.error.clone();
-            }
-            Some(Vcs::Device {
-                code,
-                error: problem,
-                ..
-            }) => {
-                // The code, large, to read off and type at GitHub.
-                let rect = Rect::new(inner.x, y, inner.w, controls::HEIGHT);
-                let shown = if code.is_empty() {
-                    "· · · ·"
-                } else {
-                    code.as_str()
-                };
-                let text = Text::new(
-                    shown,
-                    self.ctx.config.appearance.font_size * type_scale::HEADING * 1.3,
-                    colors.text,
-                )
-                .font(enso_ui::Font::Mono);
-                canvas.text_in(&text, rect, Align::Center);
-                error = problem.clone();
+                let focus = edit.focus;
+                field(
+                    canvas,
+                    placed.parts[0],
+                    &mut edit.name,
+                    focus == 0,
+                    "Your name",
+                );
+                field(
+                    canvas,
+                    placed.parts[1],
+                    &mut edit.email,
+                    focus == 1,
+                    "you@example.com",
+                );
+                hits.push((placed.parts[0], Hit::FormField(0)));
+                hits.push((placed.parts[1], Hit::FormField(1)));
             }
             Some(
-                Vcs::NewBranch(field, problem)
-                | Vcs::Clone(field, problem)
-                | Vcs::ClientId(field, problem)
-                | Vcs::Publish(field, _, problem),
-            ) => {
-                let rect = Rect::new(inner.x, y, inner.w, controls::HEIGHT);
-                canvas.fill(rect, radius::pill(rect.h), colors.base);
-                canvas.stroke(rect, radius::pill(rect.h), stroke::HAIRLINE, accent);
-                field.draw(
-                    canvas,
-                    rect.inset_xy(space::LG, 0.0),
-                    &style(single_placeholder),
-                    true,
-                );
-                error = problem.clone();
-            }
+                Vcs::NewBranch(text, _)
+                | Vcs::Clone(text, _)
+                | Vcs::ClientId(text, _)
+                | Vcs::Publish(text, _, _),
+            ) => field(canvas, placed.parts[0], text, true, single_placeholder),
             _ => {}
         }
-        // Signed in: your repositories under the field, the picked one lit.
-        if matches!(self.vcs, Some(Vcs::Clone(..))) && !self.repos.is_empty() {
-            let shown: Vec<(String, bool)> = self
-                .repos_shown()
-                .iter()
-                .map(|repo| (repo.name.clone(), repo.private))
-                .collect();
-            let mut row_y = y + controls::HEIGHT + space::SM;
+        if let Some(list) = placed.parts.last().filter(|_| !shown.is_empty()) {
             for (index, (name, private)) in shown.iter().enumerate() {
-                let rect = Rect::new(inner.x, row_y, inner.w, 30.0);
+                let rect = Rect::new(list.x, list.y + index as f32 * REPO_ROW, list.w, 30.0);
                 if index == self.repo_pick {
-                    canvas.fill(rect, radius::CONTROL, accent.alpha(opacity::TINT));
+                    canvas.fill(rect, radius::CONTROL, look.accent.alpha(opacity::TINT));
                 }
-                let label = Rect::new(rect.x + space::MD, rect.y, rect.w - 2.0 * space::MD, rect.h);
+                let label = rect.inset_xy(space::MD, 0.0);
                 canvas.text_in(
-                    &Text::new(name, small, colors.text).max_width(label.w - 60.0),
+                    &Text::new(name, small, look.text).max_width(label.w - 60.0),
                     label,
                     Align::Start,
                 );
                 if *private {
-                    canvas.text_in(
-                        &Text::new("private", small, colors.muted),
-                        label,
-                        Align::End,
-                    );
+                    canvas.text_in(&Text::new("private", small, look.muted), label, Align::End);
                 }
-                row_y += 32.0;
             }
         }
-        self.hits.extend(field_rects);
-        if let Some(error) = error {
-            canvas.text(
-                &Text::new(&error, small, colors.love).max_width(inner.w),
-                inner.x,
-                inner.bottom() - controls::HEIGHT - 26.0,
-            );
-        }
-        let mut right = inner.right();
-        for (label, kind, hit) in buttons.into_iter().rev() {
-            let button = Button::new(label, kind);
-            let width = button.width(canvas, &look);
-            let rect = Rect::new(
-                right - width,
-                inner.bottom() - controls::HEIGHT,
-                width,
-                controls::HEIGHT,
-            );
-            button.draw(
-                canvas,
-                rect,
-                &look,
-                Interaction {
-                    hovered: self.hover.as_ref() == Some(&hit),
-                    ..Interaction::default()
-                },
-            );
-            self.hits.push((rect, hit));
-            right = rect.x - space::SM;
+        self.hits.clear();
+        self.hits.extend(hits);
+        for (rect, (_, _, hit)) in placed.buttons.iter().zip(buttons) {
+            self.hits.push((*rect, hit));
         }
     }
 }

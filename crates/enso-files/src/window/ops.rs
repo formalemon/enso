@@ -13,10 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use enso_core::{
-    Rgba,
-    style::{Shadow, opacity, radius, space, stroke, type_scale},
-};
+use enso_core::style::{Shadow, opacity, radius, space, stroke, type_scale};
 use enso_fs::{
     format,
     ops::{self, Done, Progress, Resolve},
@@ -24,7 +21,7 @@ use enso_fs::{
 };
 use enso_ui::{
     Align, Canvas, Clip, Cx, Key, KeyEvent, Rect, TEXT_TYPES, Text,
-    widget::{Button, Interaction, Kind, TextField, controls, field},
+    widget::{Form, Interaction, Kind, Part, TextField, field},
 };
 
 use super::{Files, Hit};
@@ -600,12 +597,7 @@ impl Files {
         let measured = canvas.measure(&label);
         let (w, h) = (measured.w + 2.0 * space::LG, measured.h + 2.0 * space::MD);
         let rect = Rect::new((bounds.w - w) / 2.0, above - h - space::LG, w, h);
-        canvas.shadow(
-            rect,
-            radius::pill(h.min(40.0)),
-            Shadow::FLOATING,
-            Rgba::rgb(0, 0, 0),
-        );
+        canvas.shadow(rect, radius::pill(h.min(40.0)), Shadow::FLOATING);
         canvas.fill(rect, radius::CONTROL.max(h.min(40.0) / 2.0), colors.overlay);
         canvas.text(&label, rect.x + space::LG, rect.y + space::MD);
     }
@@ -696,30 +688,19 @@ impl Files {
     /// The questions: a name taken, or deleting for good.
     pub(super) fn draw_questions(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
         let look = self.look();
-        let colors = self.ctx.theme.colors.clone();
-        let title_size = self.font(type_scale::TITLE);
-        let small = self.font(type_scale::SMALL);
         let name_of = |path: &Path| {
             path.file_name().map_or_else(
                 || path.to_string_lossy().into_owned(),
                 |name| name.to_string_lossy().into_owned(),
             )
         };
+        let hovered = |hit: Hit| Interaction {
+            hovered: self.hover == Some(hit),
+            ..Interaction::default()
+        };
         if let Some(asked) = &self.asked {
-            let source = asked.source.clone();
-            let target = asked.target.clone();
-            let all = asked.all;
-            self.hits.clear();
-            let inner = controls::dialog(canvas, bounds, 480.0, 200.0, &look, 1.0);
-            let folder = target.parent().map(&name_of).unwrap_or_default();
-            let title = format!("“{}” is already in {folder}", name_of(&target));
-            canvas.text(
-                &Text::new(&title, title_size, colors.text)
-                    .medium()
-                    .max_width(inner.w),
-                inner.x,
-                inner.y,
-            );
+            let folder = asked.target.parent().map(&name_of).unwrap_or_default();
+            let title = format!("“{}” is already in {folder}", name_of(&asked.target));
             let describe = |path: &Path| {
                 std::fs::metadata(path).map_or_else(
                     |_| String::new(),
@@ -740,128 +721,74 @@ impl Files {
                     },
                 )
             };
-            let (there, arriving) = (describe(&target), describe(&source));
-            if !there.is_empty() || !arriving.is_empty() {
-                let detail = format!("There: {there} · Arriving: {arriving}");
-                canvas.text(
-                    &Text::new(&detail, small, colors.subtle).max_width(inner.w),
-                    inner.x,
-                    inner.y + 32.0,
-                );
-            }
-            // "Do the same for the rest."
-            let toggle = Rect::new(
-                inner.x,
-                inner.y + 66.0,
-                controls::TOGGLE.0,
-                controls::TOGGLE.1,
-            );
-            enso_ui::widget::Toggle::new(all).draw(
-                canvas,
-                toggle,
-                &look,
-                Interaction::default(),
-                Instant::now(),
-            );
-            let label = Rect::new(toggle.right() + space::SM, toggle.y, 260.0, toggle.h);
-            canvas.text_in(
-                &Text::new("Do the same for the rest (A)", small, colors.subtle),
-                label,
-                Align::Start,
-            );
-            self.hits.push((
-                Rect::new(toggle.x, toggle.y, label.right() - toggle.x, toggle.h),
-                Hit::ForAll,
-            ));
-            let y = inner.bottom() - controls::HEIGHT;
-            let mut right = inner.right();
-            for (label, resolve, kind) in [
-                ("Replace (R)", Resolve::Replace, Kind::Danger),
-                ("Keep both (K)", Resolve::KeepBoth, Kind::Primary),
-                ("Skip (S)", Resolve::Skip, Kind::Secondary),
-            ] {
-                let button = Button::new(label, kind);
-                let width = button.width(canvas, &look);
-                let rect = Rect::new(right - width, y, width, controls::HEIGHT);
-                let hovered = self.hover == Some(Hit::Resolve(resolve));
-                button.draw(
-                    canvas,
-                    rect,
-                    &look,
-                    Interaction {
-                        hovered,
-                        ..Interaction::default()
-                    },
-                );
-                self.hits.push((rect, Hit::Resolve(resolve)));
-                right = rect.x - space::SM;
+            let (there, arriving) = (describe(&asked.target), describe(&asked.source));
+            let detail = if there.is_empty() && arriving.is_empty() {
+                String::new()
+            } else {
+                format!("There: {there} · Arriving: {arriving}")
+            };
+            let placed = Form::new(&title)
+                .width(480.0)
+                .about(&detail)
+                .part(Part::Toggle {
+                    label: "Do the same for the rest (A)",
+                    on: asked.all,
+                })
+                .button(
+                    "Skip (S)",
+                    Kind::Secondary,
+                    hovered(Hit::Resolve(Resolve::Skip)),
+                )
+                .button(
+                    "Keep both (K)",
+                    Kind::Primary,
+                    hovered(Hit::Resolve(Resolve::KeepBoth)),
+                )
+                .button(
+                    "Replace (R)",
+                    Kind::Danger,
+                    hovered(Hit::Resolve(Resolve::Replace)),
+                )
+                .draw(canvas, bounds, &look, 1.0);
+            self.hits.clear();
+            self.hits.push((placed.parts[0], Hit::ForAll));
+            for (rect, resolve) in
+                placed
+                    .buttons
+                    .iter()
+                    .zip([Resolve::Skip, Resolve::KeepBoth, Resolve::Replace])
+            {
+                self.hits.push((*rect, Hit::Resolve(resolve)));
             }
             return;
         }
         if let Some(paths) = &self.confirm_delete {
             let count = paths.len();
-            let first = name_of(&paths[0]);
-            self.hits.clear();
-            let inner = controls::dialog(canvas, bounds, 440.0, 168.0, &look, 1.0);
             let title = if count == 1 {
-                format!("Delete “{first}” for good?")
+                format!("Delete “{}” for good?", name_of(&paths[0]))
             } else {
                 format!("Delete {count} items for good?")
             };
-            canvas.text(
-                &Text::new(&title, title_size, colors.text)
-                    .medium()
-                    .max_width(inner.w),
-                inner.x,
-                inner.y,
-            );
-            canvas.text(
-                &Text::new(
-                    if self.in_trash() {
-                        "They're in the trash; this takes them out of it, for good."
-                    } else {
-                        "They won't go to the trash, and can't be brought back."
+            let about = if self.in_trash() {
+                "They're in the trash; this takes them out of it, for good."
+            } else {
+                "They won't go to the trash, and can't be brought back."
+            };
+            let placed = Form::new(&title)
+                .about(about)
+                .button("Cancel", Kind::Secondary, hovered(Hit::KeepFiles))
+                .button(
+                    "Delete",
+                    Kind::Danger,
+                    Interaction {
+                        focused: true,
+                        ..hovered(Hit::DeleteForGood)
                     },
-                    small,
-                    colors.subtle,
                 )
-                .max_width(inner.w),
-                inner.x,
-                inner.y + 32.0,
-            );
-            let y = inner.bottom() - controls::HEIGHT;
-            let delete = Button::new("Delete", Kind::Danger);
-            let width = delete.width(canvas, &look);
-            let delete_rect = Rect::new(inner.right() - width, y, width, controls::HEIGHT);
-            delete.draw(
-                canvas,
-                delete_rect,
-                &look,
-                Interaction {
-                    hovered: self.hover == Some(Hit::DeleteForGood),
-                    focused: true,
-                    ..Interaction::default()
-                },
-            );
-            let keep = Button::new("Cancel", Kind::Secondary);
-            let width = keep.width(canvas, &look);
-            let keep_rect = Rect::new(
-                delete_rect.x - space::SM - width,
-                y,
-                width,
-                controls::HEIGHT,
-            );
-            keep.draw(
-                canvas,
-                keep_rect,
-                &look,
-                Interaction {
-                    hovered: self.hover == Some(Hit::KeepFiles),
-                    ..Interaction::default()
-                },
-            );
-            self.hits.push((delete_rect, Hit::DeleteForGood));
-            self.hits.push((keep_rect, Hit::KeepFiles));
+                .draw(canvas, bounds, &look, 1.0);
+            self.hits.clear();
+            self.hits.push((placed.buttons[1], Hit::DeleteForGood));
+            self.hits.push((placed.buttons[0], Hit::KeepFiles));
         }
     }
 }

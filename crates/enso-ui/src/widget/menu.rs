@@ -8,7 +8,7 @@
 
 use enso_core::{
     Icon, Rgba,
-    style::{Shadow, opacity, radius, space, stroke},
+    style::{opacity, radius, space, stroke},
 };
 
 use crate::{Align, Canvas, Key, KeyEvent, Nav, PointerEvent, Rect, Text};
@@ -302,9 +302,7 @@ impl Menu {
         let rect = Rect::new(x, y, width, height);
         self.rect = rect;
 
-        canvas.shadow(rect, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(rect, radius::CARD, style.background);
-        canvas.stroke(rect, radius::CARD, stroke::HAIRLINE, style.border);
+        canvas.card(rect, style.background, style.border);
 
         self.rows.clear();
         let mut top = rect.y + space::XS;

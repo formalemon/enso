@@ -78,6 +78,8 @@ pub mod opacity {
 /// Soft drop shadow under floating surfaces.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shadow {
+    /// Black in every theme: light comes from above, whatever the colours.
+    pub color: crate::Rgba,
     /// How far the shadow spreads beyond the shape.
     pub blur: f32,
     /// Downward offset.
@@ -89,12 +91,14 @@ pub struct Shadow {
 impl Shadow {
     /// Cards, toasts, launcher.
     pub const FLOATING: Self = Self {
+        color: crate::Rgba::rgb(0, 0, 0),
         blur: 18.0,
         offset_y: 6.0,
         opacity: 0.28,
     };
     /// Small raised controls.
     pub const RAISED: Self = Self {
+        color: crate::Rgba::rgb(0, 0, 0),
         blur: 8.0,
         offset_y: 2.0,
         opacity: 0.18,

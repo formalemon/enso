@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use enso_core::{
     Easing, Motion, Palette, Rgba, Transition, Tween,
-    style::{Shadow, radius, space, stroke, type_scale},
+    style::{radius, space, type_scale},
 };
 use enso_ui::{Align, Canvas, Nav, Rect, Text};
 
@@ -486,9 +486,7 @@ impl Center {
         );
         self.card = card;
         canvas.set_opacity(presence);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, colors.surface);
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, colors.highlight_med);
+        canvas.card(card, colors.surface, colors.highlight_med);
 
         // Heading, and the way to empty the list.
         let header = Rect::new(card.x, card.y, card.w, HEADER).inset_xy(space::LG, 0.0);

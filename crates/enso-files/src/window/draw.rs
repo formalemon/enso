@@ -13,7 +13,7 @@ use enso_core::{
 use enso_fs::{format, places};
 use enso_ui::{
     Align, Canvas, Paint, Rect, Text,
-    widget::{Button, Interaction, Kind, controls, field},
+    widget::{Button, Form, Interaction, Kind, controls, field},
 };
 
 use super::{Files, Hit, preview, tabs};
@@ -1006,67 +1006,36 @@ impl Files {
             return;
         };
         let look = self.look();
-        let colors = self.ctx.theme.colors.clone();
-        // Everything under the question is out of reach.
-        self.hits.clear();
-        let inner = controls::dialog(canvas, bounds, 420.0, 168.0, &look, 1.0);
         let name = path
             .file_name()
             .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
         let title = format!("Replace “{name}”?");
-        canvas.text(
-            &Text::new(&title, self.font(type_scale::TITLE), colors.text)
-                .medium()
-                .max_width(inner.w),
-            inner.x,
-            inner.y,
-        );
         let folder = path
             .parent()
             .map(|folder| folder.to_string_lossy().into_owned())
             .unwrap_or_default();
         let detail =
             format!("A file with this name is already in {folder}. Saving replaces what's in it.");
-        canvas.text(
-            &Text::new(&detail, self.font(type_scale::SMALL), colors.subtle)
-                .max_width(inner.w)
-                .max_lines(2),
-            inner.x,
-            inner.y + 30.0,
-        );
-        let y = inner.bottom() - controls::HEIGHT;
-        let replace = Button::new("Replace", Kind::Danger);
-        let width = replace.width(canvas, &look);
-        let replace_rect = Rect::new(inner.right() - width, y, width, controls::HEIGHT);
-        replace.draw(
-            canvas,
-            replace_rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Replace),
-                focused: true,
-                ..Interaction::default()
-            },
-        );
-        let keep = Button::new("Cancel", Kind::Secondary);
-        let width = keep.width(canvas, &look);
-        let keep_rect = Rect::new(
-            replace_rect.x - space::SM - width,
-            y,
-            width,
-            controls::HEIGHT,
-        );
-        keep.draw(
-            canvas,
-            keep_rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::KeepFile),
-                ..Interaction::default()
-            },
-        );
-        self.hits.push((replace_rect, Hit::Replace));
-        self.hits.push((keep_rect, Hit::KeepFile));
+        let hovered = |hit: Hit| Interaction {
+            hovered: self.hover == Some(hit),
+            ..Interaction::default()
+        };
+        let placed = Form::new(&title)
+            .about(&detail)
+            .button("Cancel", Kind::Secondary, hovered(Hit::KeepFile))
+            .button(
+                "Replace",
+                Kind::Danger,
+                Interaction {
+                    focused: true,
+                    ..hovered(Hit::Replace)
+                },
+            )
+            .draw(canvas, bounds, &look, 1.0);
+        // Everything under the question is out of reach.
+        self.hits.clear();
+        self.hits.push((placed.buttons[1], Hit::Replace));
+        self.hits.push((placed.buttons[0], Hit::KeepFile));
     }
 }
 

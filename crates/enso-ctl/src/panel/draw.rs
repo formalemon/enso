@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use enso_core::{
     Icon, Palette, Rgba,
-    style::{Shadow, icon, opacity, radius, space, stroke, type_scale},
+    style::{icon, opacity, radius, space, type_scale},
 };
 use enso_sys::{
     bluetooth::Device,
@@ -161,14 +161,7 @@ impl Panel {
         self.hits.clear();
 
         canvas.set_opacity(presence);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, look.colors.surface);
-        canvas.stroke(
-            card,
-            radius::CARD,
-            stroke::HAIRLINE,
-            look.colors.highlight_med,
-        );
+        canvas.card(card, look.colors.surface, look.colors.highlight_med);
 
         // A newly opened page fades in while sliding the last little way.
         let slide = self.slide.get(now);

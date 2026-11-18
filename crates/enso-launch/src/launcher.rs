@@ -14,8 +14,8 @@ use std::{
 };
 
 use enso_core::{
-    Context, Rgba, Role, Transition, Tween,
-    style::{Shadow, icon, opacity, radius, space, stroke, type_scale},
+    Context, Role, Transition, Tween,
+    style::{icon, opacity, radius, space, stroke, type_scale},
 };
 use enso_ui::{
     Align, App as UiApp, Button, Canvas, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent,
@@ -582,9 +582,7 @@ impl UiApp for Launcher {
         self.card = card;
 
         canvas.set_opacity(presence);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, colors.surface);
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, colors.highlight_med);
+        canvas.card(card, colors.surface, colors.highlight_med);
 
         // Search field.
         let search = Rect::new(card.x, card.y, card.w, SEARCH_HEIGHT).inset_xy(space::LG, 0.0);
@@ -844,7 +842,7 @@ mod tests {
         // Draw once to start the reveal, then again at rest.
         Offscreen::render(&mut text, (800, 520), 2, |canvas| {
             assert_eq!(launcher.draw(canvas, Instant::now()), Paint::Animating);
-            canvas.clear(Rgba::TRANSPARENT);
+            canvas.clear(enso_core::Rgba::TRANSPARENT);
             assert_eq!(launcher.draw(canvas, later), Paint::Idle);
         })
     }

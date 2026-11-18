@@ -3,7 +3,7 @@
 
 use enso_core::{
     Context, Paths, Rgba,
-    style::{Shadow, icon, radius, space},
+    style::{icon, radius, space},
 };
 use enso_ui::{Align, Offscreen, Rect, Text, TextEngine};
 
@@ -16,9 +16,7 @@ fn canvas_draws_shapes_text_and_icons() {
     let frame = Offscreen::render(&mut text, (360, 200), 2, |canvas| {
         canvas.clear(colors.base);
         let card = Rect::new(20.0, 20.0, 320.0, 160.0);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, colors.surface);
-        canvas.stroke(card, radius::CARD, 1.0, colors.highlight_med);
+        canvas.card(card, colors.surface, colors.highlight_med);
 
         let inner = card.inset(space::LG);
         canvas.text(

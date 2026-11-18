@@ -6,10 +6,7 @@
 
 use std::path::PathBuf;
 
-use enso_core::{
-    Rgba,
-    style::{Shadow, icon, opacity, radius, space, stroke, type_scale},
-};
+use enso_core::style::{icon, opacity, radius, space, stroke, type_scale};
 use enso_fs::format;
 use enso_ui::{Align, Canvas, Font, Image, Rect, Text};
 
@@ -101,9 +98,7 @@ impl Files {
         let colors = self.ctx.theme.colors.clone();
         canvas.fill(bounds, 0.0, colors.base.alpha(opacity::SCRIM));
         let card = bounds.centered(bounds.w * 0.8, bounds.h * 0.84);
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, colors.surface);
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, colors.highlight_med);
+        canvas.card(card, colors.surface, colors.highlight_med);
         let inner = card.inset(space::XL);
         self.want_preview((inner.w.max(inner.h) * 2.0) as u32);
         let details_width = (inner.w * 0.3).clamp(200.0, 300.0);

@@ -7,7 +7,7 @@ use enso_core::style::{radius, space, stroke, type_scale};
 use enso_fs::git::{self, Scope};
 use enso_ui::{
     Align, Canvas, Cx, Key, KeyEvent, Nav, Rect, Text,
-    widget::{Button, Interaction, Kind, Toggle, controls},
+    widget::{Button, Interaction, Kind, Toggle, controls, form},
 };
 
 use super::{Files, Hit};
@@ -300,7 +300,7 @@ impl Files {
         let height = 64.0 + rows.len() as f32 * line + sections * 34.0 + controls::HEIGHT + 40.0;
         let inner = controls::dialog(canvas, bounds, 560.0, height, &look, 1.0);
         canvas.text(
-            &Text::new("Settings", self.font(type_scale::HEADING), colors.text).medium(),
+            &Text::new("Settings", form::title_size(&look), colors.text).medium(),
             inner.x,
             inner.y,
         );

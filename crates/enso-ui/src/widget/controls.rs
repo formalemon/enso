@@ -312,9 +312,7 @@ pub fn dialog(
         .centered(width, height)
         .translate(0.0, (1.0 - presence) * space::MD);
     canvas.with_opacity(presence, |canvas| {
-        canvas.shadow(card, radius::CARD, Shadow::FLOATING, Rgba::rgb(0, 0, 0));
-        canvas.fill(card, radius::CARD, look.surface);
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, look.highlight_med);
+        canvas.card(card, look.surface, look.highlight_med);
     });
     card.inset(space::XL)
 }
@@ -373,7 +371,7 @@ pub fn tooltip(canvas: &mut Canvas<'_>, text: &str, anchor: Rect, bounds: Rect, 
         below
     };
     let rect = Rect::new(x, y, w, h);
-    canvas.shadow(rect, radius::CONTROL, Shadow::RAISED, Rgba::rgb(0, 0, 0));
+    canvas.shadow(rect, radius::CONTROL, Shadow::RAISED);
     canvas.fill(rect, radius::CONTROL, look.overlay);
     canvas.text(&label, rect.x + space::MD, rect.y + space::SM);
 }

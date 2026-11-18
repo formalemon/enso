@@ -8,11 +8,13 @@
 
 use std::{path::PathBuf, thread};
 
-use enso_core::style::{opacity, radius, space, stroke, type_scale};
+use enso_core::style::{radius, space, type_scale};
 use enso_fs::ops;
 use enso_ui::{
     Align, Canvas, Cx, Key, KeyEvent, Rect, Text,
-    widget::{Button, Interaction, Kind, TextField, controls, field},
+    widget::{
+        Button, Form, Interaction, Kind, Note, Part, TextField, controls, field, field::Frame, form,
+    },
 };
 
 use super::{Files, Hit};
@@ -308,95 +310,117 @@ impl Files {
     }
 
     pub(super) fn draw_renamer(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        if self.renamer.is_none() {
-            return;
-        }
-        let look = self.look();
-        let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
-        let body = self.font(type_scale::BODY);
-        let small = self.font(type_scale::SMALL);
-        self.hits.clear();
-        let Some(renamer) = &mut self.renamer else {
+        let Some(renamer) = &self.renamer else {
             return;
         };
+        let look = self.look();
+        let small = self.font(type_scale::SMALL);
         let count = renamer.items.len();
         let rows = count.min(ROWS);
-        let height = 44.0
-            + 66.0
-            + 40.0
-            + 24.0
-            + rows as f32 * ROW
-            + space::LG
-            + controls::HEIGHT
-            + 2.0 * space::XL;
-        let inner = controls::dialog(canvas, bounds, 660.0, height, &look, 1.0);
         let title = format!("Rename {}", enso_fs::format::count(count, "item", "items"));
-        canvas.text(
-            &Text::new(
-                &title,
-                self.ctx.config.appearance.font_size * type_scale::HEADING,
-                colors.text,
+        let hint = if renamer.editing {
+            "Editing in a terminal: save and close the editor to come back"
+        } else if renamer.edited.is_some() {
+            "Names from the editor · change the rule to start again"
+        } else {
+            "{n} counts, {n:03} pads · {name} {ext} {date} {folder} · Pattern takes $1"
+        };
+        let (problems, changing, planned) = match renamer.shown() {
+            Err(_) => (1, 0, false),
+            Ok(planned) => (
+                planned.iter().filter(|item| item.problem.is_some()).count(),
+                planned.iter().filter(|item| item.changes()).count(),
+                true,
+            ),
+        };
+        // What it comes to.
+        let mut summary = format!("{changing} of {count} change");
+        if count > ROWS {
+            summary += &format!(" · first {ROWS} shown");
+        }
+        if problems > 0 && planned {
+            summary += &format!(
+                " · {}",
+                enso_fs::format::count(problems, "won't do", "won't do")
+            );
+        }
+        let ready = renamer.ready().is_some() && !renamer.editing;
+        let hovered = |hit: RenameHit| Interaction {
+            hovered: self.hover == Some(Hit::Rename(hit)),
+            ..Interaction::default()
+        };
+        let label_h = (small * 1.6).round();
+        let placed = Form::new(&title)
+            .width(660.0)
+            .about(hint)
+            .part(Part::Space(label_h + field::HEIGHT))
+            .part(Part::Space(controls::HEIGHT))
+            .part(Part::Space(rows as f32 * ROW))
+            .note(if problems > 0 {
+                Note::Complains(&summary)
+            } else {
+                Note::Says(&summary)
+            })
+            .button("Cancel", Kind::Secondary, hovered(RenameHit::Cancel))
+            .button(
+                "Rename",
+                Kind::Primary,
+                Interaction {
+                    disabled: !ready,
+                    ..hovered(RenameHit::Apply)
+                },
             )
-            .medium(),
-            inner.x,
-            inner.y,
-        );
-        let mut y = inner.y + 44.0;
+            .draw(canvas, bounds, &look, 1.0);
         let mut hits = Vec::new();
 
         // The two fields, side by side.
-        let half = (inner.w - space::MD) / 2.0;
-        for (index, label) in ["Find (empty: the whole name)", "Replace with"]
-            .into_iter()
-            .enumerate()
+        let place = placed.parts[0];
+        let half = (place.w - space::MD) / 2.0;
+        let editing = renamer.editing;
+        let focus = renamer.focus;
+        for (index, (label, placeholder)) in [
+            ("Find (empty: the whole name)", "IMG_"),
+            ("Replace with", "Holiday {n:02}"),
+        ]
+        .into_iter()
+        .enumerate()
         {
-            let x = inner.x + index as f32 * (half + space::MD);
-            canvas.text(&Text::new(label, small, colors.muted), x, y);
-            let rect = Rect::new(x, y + 22.0, half, 38.0);
-            let focused = renamer.focus == index && !renamer.editing;
-            canvas.fill(rect, radius::CONTROL, colors.base);
-            canvas.stroke(
-                rect,
-                radius::CONTROL,
-                if focused {
-                    stroke::FOCUS
-                } else {
-                    stroke::HAIRLINE
-                },
-                if focused {
-                    accent
-                } else {
-                    colors.highlight_med
-                },
-            );
-            let style = field::Style {
-                size: body,
-                color: colors.text,
-                placeholder: if index == 0 { "IMG_" } else { "Holiday {n:02}" },
-                placeholder_color: colors.muted,
-                caret: accent,
-                selection: accent.alpha(opacity::TINT * 2.0),
+            let x = place.x + index as f32 * (half + space::MD);
+            canvas.text(&Text::new(label, small, look.muted), x, place.y);
+            let rect = Rect::new(x, place.y + label_h, half, field::HEIGHT);
+            let focused = focus == index && !editing;
+            let frame = Frame {
+                focused,
+                filled: true,
+                ..Frame::default()
             };
-            renamer.fields[index].draw(canvas, rect.inset_xy(space::MD, 0.0), &style, focused);
+            let text = frame.draw(canvas, rect, &look, look.base);
+            if let Some(renamer) = &mut self.renamer {
+                renamer.fields[index].draw(
+                    canvas,
+                    text,
+                    &field::Style::new(&look, placeholder),
+                    focused,
+                );
+            }
             hits.push((rect, Hit::Rename(RenameHit::Field(index))));
         }
-        y += 66.0;
+        let Some(renamer) = &self.renamer else {
+            return;
+        };
 
         // Pattern, case, editor.
-        let pill = |canvas: &mut Canvas<'_>, x: f32, label: &str, on: bool| -> Rect {
-            let text = Text::new(label, small, if on { look.base } else { colors.subtle });
-            let w = canvas.measure(&text).w + 2.0 * space::MD;
-            let rect = Rect::new(x, y + 4.0, w, 28.0);
-            canvas.fill(
-                rect,
-                radius::pill(rect.h),
-                if on { accent } else { colors.overlay },
-            );
-            canvas.text_in(&text, rect, Align::Center);
-            rect
-        };
-        let rect = pill(canvas, inner.x, "Pattern", renamer.regex);
+        let row = placed.parts[1];
+        let y = row.y + (row.h - 26.0) / 2.0;
+        let lit = |hit: RenameHit| self.hover == Some(Hit::Rename(hit));
+        let rect = form::pill(
+            canvas,
+            (row.x, y),
+            "Pattern",
+            renamer.regex,
+            lit(RenameHit::Pattern),
+            &look,
+        );
         hits.push((rect, Hit::Rename(RenameHit::Pattern)));
         let mut x = rect.right() + space::LG;
         for (case, label) in [
@@ -405,69 +429,47 @@ impl Files {
             (Case::Upper, "UPPER"),
             (Case::Title, "Title"),
         ] {
-            let rect = pill(canvas, x, label, renamer.case == case);
+            let on = renamer.case == case;
+            let rect = form::pill(canvas, (x, y), label, on, lit(RenameHit::Case(case)), &look);
             hits.push((rect, Hit::Rename(RenameHit::Case(case))));
             x = rect.right() + space::XS;
         }
         let editor = Button::new("In $EDITOR…", Kind::Quiet);
         let w = editor.width(canvas, &look);
-        let rect = Rect::new(inner.right() - w, y + 2.0, w, 32.0);
-        editor.draw(
-            canvas,
-            rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Rename(RenameHit::Editor)),
-                ..Interaction::default()
-            },
-        );
+        let rect = Rect::new(row.right() - w, row.y, w, controls::HEIGHT);
+        editor.draw(canvas, rect, &look, hovered(RenameHit::Editor));
         hits.push((rect, Hit::Rename(RenameHit::Editor)));
-        y += 40.0;
-        let hint = if renamer.editing {
-            "Editing in a terminal: save and close the editor to come back".to_owned()
-        } else if renamer.edited.is_some() {
-            "Names from the editor · change the rule to start again".to_owned()
-        } else {
-            "{n} counts, {n:03} pads · {name} {ext} {date} {folder} · Pattern takes $1".to_owned()
-        };
-        canvas.text(
-            &Text::new(&hint, small, colors.muted).max_width(inner.w),
-            inner.x,
-            y,
-        );
-        y += 24.0;
 
         // Before and after.
-        let list = Rect::new(inner.x, y, inner.w, rows as f32 * ROW);
+        let list = placed.parts[2];
         canvas.fill(
             list.inset_xy(-space::SM, -space::XS),
             radius::CONTROL,
-            colors.base.alpha(0.5),
+            look.base.alpha(0.5),
         );
-        let (problems, changing) = match renamer.shown() {
+        match renamer.shown() {
             Err(why) => {
-                canvas.text_in(&Text::new(why, body, colors.love), list, Align::Center);
-                (1, 0)
+                canvas.text_in(&Text::new(why, look.size, look.danger), list, Align::Center);
             }
             Ok(planned) => {
-                let column = (inner.w - 28.0) / 2.0;
+                let column = (list.w - 28.0) / 2.0;
                 for (index, item) in planned.iter().take(ROWS).enumerate() {
-                    let row = Rect::new(inner.x, y + index as f32 * ROW, inner.w, ROW);
+                    let row = Rect::new(list.x, list.y + index as f32 * ROW, list.w, ROW);
                     let old_name = item.old_name();
-                    let old = Text::new(&old_name, small, colors.subtle).max_width(column);
+                    let old = Text::new(&old_name, small, look.subtle).max_width(column);
                     canvas.text_in(&old, Rect::new(row.x, row.y, column, row.h), Align::Start);
                     canvas.text_in(
-                        &Text::new("→", small, colors.muted),
+                        &Text::new("→", small, look.muted),
                         Rect::new(row.x + column, row.y, 28.0, row.h),
                         Align::Center,
                     );
                     let (name, ink) = match item.problem {
                         Some(problem) => (
                             format!("{} · {}", item.name, problem.describe()),
-                            colors.love,
+                            look.danger,
                         ),
-                        None if item.changes() => (item.name.clone(), colors.text),
-                        None => (item.name.clone(), colors.muted),
+                        None if item.changes() => (item.name.clone(), look.text),
+                        None => (item.name.clone(), look.muted),
                     };
                     let new = Text::new(&name, small, ink).max_width(column);
                     canvas.text_in(
@@ -476,66 +478,11 @@ impl Files {
                         Align::Start,
                     );
                 }
-                (
-                    planned.iter().filter(|item| item.problem.is_some()).count(),
-                    planned.iter().filter(|item| item.changes()).count(),
-                )
             }
-        };
-
-        // What it comes to, and the buttons.
-        let row_y = inner.bottom() - controls::HEIGHT;
-        let mut summary = format!("{changing} of {count} change");
-        if count > ROWS {
-            summary += &format!(" · first {ROWS} shown");
         }
-        if problems > 0 && renamer.shown().is_ok() {
-            summary += &format!(
-                " · {}",
-                enso_fs::format::count(problems, "won't do", "won't do")
-            );
-        }
-        canvas.text_in(
-            &Text::new(
-                &summary,
-                small,
-                if problems > 0 {
-                    colors.love
-                } else {
-                    colors.subtle
-                },
-            ),
-            Rect::new(inner.x, row_y, inner.w * 0.5, controls::HEIGHT),
-            Align::Start,
-        );
-        let ready = renamer.ready().is_some() && !renamer.editing;
-        let apply = Button::new("Rename", Kind::Primary);
-        let w = apply.width(canvas, &look);
-        let apply_rect = Rect::new(inner.right() - w, row_y, w, controls::HEIGHT);
-        apply.draw(
-            canvas,
-            apply_rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Rename(RenameHit::Apply)),
-                disabled: !ready,
-                ..Interaction::default()
-            },
-        );
-        hits.push((apply_rect, Hit::Rename(RenameHit::Apply)));
-        let cancel = Button::new("Cancel", Kind::Secondary);
-        let w = cancel.width(canvas, &look);
-        let rect = Rect::new(apply_rect.x - space::SM - w, row_y, w, controls::HEIGHT);
-        cancel.draw(
-            canvas,
-            rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Rename(RenameHit::Cancel)),
-                ..Interaction::default()
-            },
-        );
-        hits.push((rect, Hit::Rename(RenameHit::Cancel)));
+        hits.push((placed.buttons[0], Hit::Rename(RenameHit::Cancel)));
+        hits.push((placed.buttons[1], Hit::Rename(RenameHit::Apply)));
+        self.hits.clear();
         self.hits.extend(hits);
     }
 }

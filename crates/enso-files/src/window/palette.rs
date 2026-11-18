@@ -393,14 +393,7 @@ impl Files {
             width,
             height,
         );
-        canvas.shadow(
-            card,
-            radius::CARD,
-            enso_core::style::Shadow::FLOATING,
-            enso_core::Rgba::rgb(0, 0, 0),
-        );
-        canvas.fill(card, radius::CARD, colors.surface);
-        canvas.stroke(card, radius::CARD, stroke::HAIRLINE, colors.highlight_med);
+        canvas.card(card, colors.surface, colors.highlight_med);
 
         // The field.
         let row = Rect::new(card.x, card.y, card.w, field_h);

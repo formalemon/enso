@@ -9,11 +9,11 @@ use std::{
     thread,
 };
 
-use enso_core::style::{opacity, radius, space, stroke, type_scale};
+use enso_core::style::space;
 use enso_fs::archive::{self, Format};
 use enso_ui::{
     Align, Canvas, Cx, Key, KeyEvent, Rect, Text,
-    widget::{Button, Interaction, Kind, TextField, controls, field},
+    widget::{Form, Interaction, Kind, Note, Part, TextField, field, field::Frame},
 };
 
 use super::{Files, Hit};
@@ -228,117 +228,83 @@ impl Files {
     }
 
     pub(super) fn draw_packing(&mut self, canvas: &mut Canvas<'_>, bounds: Rect) {
-        if self.packing.is_none() {
+        let Some(packing) = &self.packing else {
             return;
-        }
+        };
         let look = self.look();
-        let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
-        let body = self.font(type_scale::BODY);
-        let small = self.font(type_scale::SMALL);
-        let heading = self.font(type_scale::HEADING);
-        self.hits.clear();
-        let hover = self.hover.clone();
-        let Some(packing) = &mut self.packing else {
-            return;
-        };
-        let height =
-            44.0 + 22.0 + 40.0 + space::LG + 32.0 + space::XL + controls::HEIGHT + 2.0 * space::XL;
-        let inner = controls::dialog(canvas, bounds, 480.0, height, &look, 1.0);
         let what = enso_fs::format::count(packing.sources.len(), "item", "items");
-        canvas.text(
-            &Text::new(&format!("Compress {what}"), heading, colors.text).medium(),
-            inner.x,
-            inner.y,
-        );
-        let mut y = inner.y + 44.0;
-        canvas.text(&Text::new("Name", small, colors.muted), inner.x, y);
-        y += 22.0;
+        let title = format!("Compress {what}");
         let (format, label) = MADE[packing.format];
-        let suffix = Text::new(format.suffix(), body, colors.subtle);
-        let suffix_w = canvas.measure(&suffix).w;
-        let rect = Rect::new(inner.x, y, inner.w, 40.0);
-        canvas.fill(rect, radius::CONTROL, colors.base);
-        canvas.stroke(rect, radius::CONTROL, stroke::FOCUS, accent);
-        let style = field::Style {
-            size: body,
-            color: colors.text,
-            placeholder: "Archive",
-            placeholder_color: colors.muted,
-            caret: accent,
-            selection: accent.alpha(opacity::TINT * 2.0),
+        let about = match label {
+            "zip" => "zip opens anywhere.",
+            "tar.gz" => "tar.gz is Linux's usual.",
+            _ => "tar.xz is the smallest, and the slowest to make.",
         };
-        let text = Rect::new(
-            rect.x + space::MD,
-            rect.y,
-            rect.w - 2.0 * space::MD - suffix_w - space::SM,
-            rect.h,
-        );
-        packing.name.draw(canvas, text, &style, true);
+        let names = MADE.map(|(_, name)| name);
+        let hovered = |hit: PackHit| Interaction {
+            hovered: self.hover == Some(Hit::Pack(hit)),
+            ..Interaction::default()
+        };
+        let placed = Form::new(&title)
+            .width(480.0)
+            .part(Part::Field {
+                label: Some("Name"),
+            })
+            .part(Part::Choices {
+                label: Some("As"),
+                options: &names,
+                chosen: packing.format,
+                hovered: match self.hover {
+                    Some(Hit::Pack(PackHit::Format(index))) => Some(index),
+                    _ => None,
+                },
+                enabled: true,
+            })
+            .note(Note::Says(about))
+            .button("Cancel", Kind::Secondary, hovered(PackHit::Cancel))
+            .button(
+                "Compress",
+                Kind::Primary,
+                Interaction {
+                    disabled: packing.name.text().trim().is_empty(),
+                    ..hovered(PackHit::Make)
+                },
+            )
+            .draw(canvas, bounds, &look, 1.0);
+
+        // The name, and the suffix it will have.
+        let place = placed.parts[0];
+        let frame = Frame {
+            focused: true,
+            filled: true,
+            ..Frame::default()
+        };
+        let text = frame.draw(canvas, place, &look, look.base);
+        let suffix = Text::new(format.suffix(), look.size, look.subtle);
+        let suffix_w = canvas.measure(&suffix).w;
+        let name = Rect::new(text.x, text.y, text.w - suffix_w - space::SM, text.h);
+        if let Some(packing) = &mut self.packing {
+            packing
+                .name
+                .draw(canvas, name, &field::Style::new(&look, "Archive"), true);
+        }
         canvas.text_in(
             &suffix,
-            Rect::new(text.right(), rect.y, suffix_w + space::SM, rect.h),
+            Rect::new(name.right(), text.y, suffix_w + space::SM, text.h),
             Align::End,
         );
-        let mut hits = vec![(rect, Hit::Pack(PackHit::Field))];
-        y += 40.0 + space::LG;
-        let mut x = inner.x;
-        for (index, (_, name)) in MADE.iter().enumerate() {
-            let on = index == packing.format;
-            let text = Text::new(name, small, if on { look.base } else { colors.subtle });
-            let w = canvas.measure(&text).w + 2.0 * space::MD;
-            let pill = Rect::new(x, y, w, 30.0);
-            canvas.fill(
-                pill,
-                radius::pill(pill.h),
-                if on { accent } else { colors.overlay },
-            );
-            canvas.text_in(&text, pill, Align::Center);
-            hits.push((pill, Hit::Pack(PackHit::Format(index))));
-            x = pill.right() + space::XS;
-        }
-        let note = match label {
-            "zip" => "opens anywhere",
-            "tar.gz" => "Linux's usual",
-            _ => "smallest, slowest",
-        };
-        canvas.text_in(
-            &Text::new(note, small, colors.muted),
-            Rect::new(x + space::SM, y, inner.right() - x, 30.0),
-            Align::Start,
-        );
 
-        let row_y = inner.bottom() - controls::HEIGHT;
-        let make = Button::new("Compress", Kind::Primary);
-        let w = make.width(canvas, &look);
-        let make_rect = Rect::new(inner.right() - w, row_y, w, controls::HEIGHT);
-        make.draw(
-            canvas,
-            make_rect,
-            &look,
-            Interaction {
-                hovered: hover == Some(Hit::Pack(PackHit::Make)),
-                disabled: packing.name.text().trim().is_empty(),
-                ..Interaction::default()
-            },
-        );
-        hits.push((make_rect, Hit::Pack(PackHit::Make)));
-        let cancel = Button::new("Cancel", Kind::Secondary);
-        let w = cancel.width(canvas, &look);
-        let rect = Rect::new(make_rect.x - space::SM - w, row_y, w, controls::HEIGHT);
-        cancel.draw(
-            canvas,
-            rect,
-            &look,
-            Interaction {
-                hovered: hover == Some(Hit::Pack(PackHit::Cancel)),
-                ..Interaction::default()
-            },
-        );
-        hits.push((rect, Hit::Pack(PackHit::Cancel)));
+        self.hits.clear();
         // The whole card answers, so a press on it doesn't put it away.
         self.hits
-            .push((inner.inset(-space::XL), Hit::Pack(PackHit::Field)));
-        self.hits.extend(hits);
+            .push((placed.inner.inset(-space::XL), Hit::Pack(PackHit::Field)));
+        self.hits.push((place, Hit::Pack(PackHit::Field)));
+        for &(_, index, pill) in &placed.choices {
+            self.hits.push((pill, Hit::Pack(PackHit::Format(index))));
+        }
+        self.hits
+            .push((placed.buttons[0], Hit::Pack(PackHit::Cancel)));
+        self.hits
+            .push((placed.buttons[1], Hit::Pack(PackHit::Make)));
     }
 }
