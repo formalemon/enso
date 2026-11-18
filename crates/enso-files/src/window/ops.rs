@@ -682,16 +682,15 @@ impl Files {
                     },
                 )
             };
-            let detail = format!(
-                "There: {} · Arriving: {}",
-                describe(&target),
-                describe(&source)
-            );
-            canvas.text(
-                &Text::new(&detail, small, colors.subtle).max_width(inner.w),
-                inner.x,
-                inner.y + 32.0,
-            );
+            let (there, arriving) = (describe(&target), describe(&source));
+            if !there.is_empty() || !arriving.is_empty() {
+                let detail = format!("There: {there} · Arriving: {arriving}");
+                canvas.text(
+                    &Text::new(&detail, small, colors.subtle).max_width(inner.w),
+                    inner.x,
+                    inner.y + 32.0,
+                );
+            }
             // "Do the same for the rest."
             let toggle = Rect::new(
                 inner.x,
