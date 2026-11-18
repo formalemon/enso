@@ -440,7 +440,14 @@ impl App for Files {
         };
         SurfaceSpec::window(
             WindowSpec {
-                app_id: "enso-files".to_owned(),
+                // Pickers are dialogs: their own id lets the compositor float
+                // them (sumi's niri config does).
+                app_id: if self.picker.is_some() {
+                    "enso-files-picker"
+                } else {
+                    "enso-files"
+                }
+                .to_owned(),
                 title,
                 min_size: (460, 320),
                 parent,

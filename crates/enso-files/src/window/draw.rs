@@ -116,7 +116,8 @@ impl Files {
                 } else {
                     text
                 };
-                canvas.measure(&text).w + space::SM * 2.0
+                // A pixel to spare, so rounding never turns a short name into "…".
+                canvas.measure(&text).w.ceil() + 1.0 + space::SM * 2.0
             })
             .collect();
         // Fold from the left until the rest fits.

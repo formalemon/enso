@@ -15,6 +15,7 @@ mod pane;
 mod pick;
 mod picker;
 mod selection;
+mod service;
 mod window;
 
 use std::{
@@ -31,11 +32,14 @@ enso-files — files, the enso way
 
 Usage: enso-files [FOLDER]
        enso-files pick [OPTIONS]
+       enso-files --service
        enso-files --bench list FOLDER
 
 Opens FOLDER (the current folder, or home when started from elsewhere).
 
 Options:
+      --service             Be the desktop portal's file chooser (started by
+                            D-Bus; see contrib/portal)
       --bench list FOLDER   Time listing FOLDER, both passes, and sorting it
   -h, --help                Print this help
   -V, --version             Print the version
@@ -95,6 +99,7 @@ Keys: as in the file manager, and
 
 enum Command {
     Open(Option<PathBuf>),
+    Service,
     Pick(Pick),
     Bench(PathBuf),
 }
@@ -119,6 +124,7 @@ fn main() -> ExitCode {
         Command::Bench(folder) => bench::list(&folder),
         Command::Open(folder) => open(folder),
         Command::Pick(pick) => run_pick(pick),
+        Command::Service => service::run(),
     }
 }
 
@@ -200,6 +206,7 @@ fn parse_args(mut parser: lexopt::Parser) -> Result<Option<Command>, String> {
                 println!("enso-files {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
+            Some(Long("service")) => return Ok(Some(Command::Service)),
             Some(Long("bench")) => {
                 let what = parser.value().map_err(|err| err.to_string())?;
                 if what != "list" {

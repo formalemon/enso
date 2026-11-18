@@ -600,39 +600,70 @@ is the desktop's. **P2**
 
 ### 6.18 Version control (Git)
 
-Basic, opt-in, and quiet: two things a person actually reaches for, and
-nothing that turns the file manager into a Git client. **P2**
+Opt-in, and quiet in the window: the branch where you are, and the few
+things a person reaches for — growing, later, into GitHub (first) and
+GitLab accounts with their remote repositories, so a folder like
+`~/dev/enso` or `~/dev/sumi` can be cloned, published, and kept in step
+from the file manager. **Basics P2; remotes and accounts P5.**
 
-- **Asked once.** The first time the file manager opens (never inside the
-  picker — a stranger's upload dialog is no place for questions), a small
-  card asks whether to turn on version control. **No** turns it off
-  completely: no `.git` is ever read, no branch is shown, no menu item
-  appears. The answer is kept in the settings layer, and Settings →
-  Version control turns it back on (or off) at any time.
-- **Yes → who you are.** If a global Git identity exists
-  (`user.name`/`user.email` in `~/.gitconfig` or
-  `$XDG_CONFIG_HOME/git/config`), it is shown and used by default. If
-  there is none, the card offers to set one — name and email fields,
-  written to the global config — or to skip and set identities per
-  repository instead.
-- **Per folder.** A repository can have its own identity (written to its
-  `.git/config` `[user]`), shown and edited in Settings → Version control
-  while inside it, and in the folder's properties. Default: inherit the
-  global one.
-- **See the branch.** Inside a repository, the status row shows the
-  current branch as a small pill (`⎇ main`), or the short commit when
-  detached; worktrees (`.git` as a file with `gitdir:`) work too.
-- **Make a repository.** "Initialise Git repository here" — in the
-  folder's context menu and the command palette — creates `.git` directly
-  (`HEAD`, `config`, `objects/`, `refs/heads`, `refs/tags`), on the branch
-  named by `init.defaultBranch` (else `main`), and offers the identity
-  step if this repository has none and there is no global one.
-- **Pure Rust, no `git` binary**: `HEAD` and refs are read as files, and
-  Git's config format (sections, subsections, quoting, escapes,
-  comments) is parsed and edited in place, touching only the `[user]`
-  keys it means to.
-- Deliberately not here: status badges on every file, staging,
-  committing, history. A terminal or a real Git client does those better.
+**How:** the `git` binary does the work, behind the scenes (`git -C
+<folder> …` with `--porcelain` and `-z` output, parsed; never a shell).
+This is the one deliberate exception to "no CLI wrappers": Git's own
+tool is the reference implementation of its formats and protocols, and
+reimplementing pushes and credential helpers would only be worse. If
+`git` isn't installed, version control says so in Settings and stays off.
+
+**Asked once.** The first time the file manager opens (never inside the
+picker — a stranger's upload dialog is no place for questions), a small
+card asks whether to turn on version control. **No** turns it off
+completely: `git` is never run, no branch is shown, no menu item appears.
+The answer is kept in the settings layer, and Settings → Version control
+turns it back on (or off) at any time.
+
+**Who you are.** Yes leads to the identity step: if a global identity
+exists (`git config --global user.name`/`user.email`), it is shown and
+used by default. If not, the card offers to set one — name and email,
+written with `git config --global` — or to skip and set identities per
+repository instead. Each repository can have its own (`git config
+user.name` inside it), shown and edited in Settings → Version control
+while inside it, and in the folder's properties; the default is to
+inherit the global one.
+
+**Basics (P2):**
+- **The branch**: inside a repository, a small pill in the status row
+  (`⎇ main`, the short commit when detached), with `↑2 ↓1` when it is
+  ahead of or behind its upstream. Read from `git status --porcelain=v2
+  --branch`, off the drawing thread, refreshed when `.git/HEAD` or the
+  index changes.
+- **Make a repository**: "Initialise Git repository here" — the folder's
+  context menu and the command palette — runs `git init` (honouring
+  `init.defaultBranch`), then offers the identity step if there is no
+  identity to use.
+- **Switch branch**: clicking the pill opens a menu of local branches
+  (current one ticked) and "New branch…".
+- Nothing else in the window: no per-file badges, no staging, no commit
+  history. The pill is the only thing always on screen.
+
+**Remotes and accounts (P5):**
+- **Remote branches**: the branch menu lists the remote's branches too
+  (after `git fetch`, run on request or when the menu opens if the last
+  fetch is old), and checking one out makes a tracking branch.
+- **Accounts**: Settings → Version control → "Connect GitHub" (and
+  GitLab). GitHub's device flow — the window shows a short code, you
+  approve it in the browser — so no password ever passes through
+  enso-files; GitLab via its OAuth flow, including self-hosted instances.
+  Tokens live in the desktop's Secret Service (gnome-keyring here),
+  reached over D-Bus, never in a file. Git is then given them through a
+  credential helper (`enso-files --git-credential`), so `git push` from
+  the terminal benefits as well.
+- **With an account**: clone one of your repositories into a folder
+  (a searchable list of them, fuzzy like everything else); publish a
+  folder that is a repository but has no remote — create it on GitHub
+  (private by default), add it as `origin`, push; push and pull the
+  current branch from the pill's menu; "Open on GitHub" for the folder.
+- **Quiet still**: all of it lives in the pill's menu, the folder's
+  context menu, the command palette, and Settings; nothing new is
+  permanently on screen.
 
 ## 7. Keys and the mouse
 
@@ -815,9 +846,9 @@ trash + trash view + restore, delete, rename, new, duplicate, conflicts,
 undo/redo, progress pill and toasts, live updates, context menus,
 FileManager1, symlinks, run-vs-open, mounts in the sidebar (read-only),
 the settings panel and its layer ([§6.17](#617-settings)), and version
-control ([§6.18](#618-version-control-git)): asked once, the identity
-step, the branch pill, initialising a repository, per-repository
-identities.
+control basics ([§6.18](#618-version-control-git)): asked once, the
+identity step, the branch pill, switching branches, initialising a
+repository, per-repository identities.
 *Done when*: a week of normal use needs no other file manager; "Show in
 folder" from Firefox's downloads lands on the file, selected; answering
 "no" to version control leaves no trace of Git anywhere in the window.
@@ -837,7 +868,9 @@ recursive sizes, frecent folders, select-by.
 
 **P5 — Reach.**
 Drag and drop both ways, archives (browse/extract/compress), removable
-drives via udisks2 when present, IME in text fields, fractional scaling.
+drives via udisks2, IME in text fields, fractional scaling, and Git's
+remotes and accounts: remote branches, GitHub and GitLab sign-in, clone,
+publish, push, pull ([§6.18](#618-version-control-git)).
 
 **P6 — Nice to have, still real.**
 Saved searches, session restore, checksums, emblems/tags (xattr
@@ -918,9 +951,12 @@ Settled on 2026-11-18:
 4. **Name** — `enso-files`.
 5. **Settings** live in the window, for the file manager only, as an
    override layer over `config.toml` ([§6.17](#617-settings)).
-6. **Git** — basic and opt-in: asked once, "no" means off entirely; a
-   global identity by default, per-repository identities, the branch, and
-   initialising a repository ([§6.18](#618-version-control-git)).
+6. **Git** — opt-in: asked once, "no" means off entirely; a global
+   identity by default, per-repository identities. Runs the `git` binary
+   behind the scenes (the one exception to "no CLI wrappers"). Basics —
+   the branch, initialising, switching — in P2; remote branches and
+   GitHub (first) and GitLab accounts — clone, publish, push, pull — in
+   P5 ([§6.18](#618-version-control-git)).
 
 ## 14. Risks
 

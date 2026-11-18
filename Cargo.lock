@@ -248,8 +248,10 @@ dependencies = [
  "enso-ui",
  "jiff",
  "lexopt",
+ "rustix",
  "serde",
  "toml",
+ "zbus",
 ]
 
 [[package]]
