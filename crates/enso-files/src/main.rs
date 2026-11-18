@@ -25,6 +25,7 @@ mod recall;
 mod selection;
 mod service;
 mod settings;
+mod views;
 mod window;
 
 use std::{

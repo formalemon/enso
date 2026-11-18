@@ -818,8 +818,13 @@ live updates, settings, version control's basics, "Show in folder",
 links' real paths, and programs that run only when asked. **P3** done:
 thumbnails through the freedesktop cache (PNG, JPEG, WebP, GIF), the grid
 and its zoom, the preview pane and quick look, columns, rubber-band
-choosing, colour by kind, folders sliding in; SVG and PDF thumbnails wait
-on a renderer worth its weight. Next: **P4**.
+choosing, colour by kind, folders sliding in. SVG and PDF thumbnails are
+dropped: Firefox shows both. **P4** done: tabs and the split view (F5/F6
+across), search by name and inside files, query words, recent files (the
+shared xbel), GTK's bookmarks, the command palette, frecent folders,
+select-by, bulk rename (in-app and `$EDITOR`, a setting), properties with
+permissions and live folder sizes, make executable, per-folder views.
+Next: **P5**.
 
 Each phase ends usable, tested, committed, and measured against §8.
 

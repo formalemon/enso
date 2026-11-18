@@ -15,7 +15,7 @@ and one way of moving.
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
-| `enso-files` | File picker for every app (behind the desktop portal) and a file manager: multi-select across folders, previews, keyboard and mouse alike — see [the plan](docs/plans/enso-files.md) | browsing; picker next |
+| `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, bulk rename, the trash, drives — keyboard and mouse alike; see [the plan](docs/plans/enso-files.md) | working |
 
 This is the initial scaffold: the architecture, shared libraries, and a thin
 working slice of every tool. See [Roadmap](#roadmap) for what is not built yet.
@@ -507,6 +507,36 @@ counts as a failed attempt, and `pam_faillock` locks the account after three.
 Only polkit may ask for a password and only BlueZ for a pairing code: calls
 from anyone else are refused. If either service restarts, the agent
 registers again.
+
+**`enso-files`** — a file manager, and every application's file chooser
+once `enso-files portal enable` has run. The window is a list (or a grid
+of thumbnails, or columns: `Ctrl+1/2/3`) with the places, bookmarks,
+drives, and the trash down the side; each folder keeps its own view, sort,
+and dotfiles once you change them, and Settings (`Ctrl+,`) sets the rest.
+`?` shows the keys; `Ctrl+P` (or `:`) finds every command by name, with
+its key, and the folders you go to most.
+
+- **Moving**: arrows or `hjkl`, `Enter` to open, `Backspace` up, `Alt+←/→`
+  back and forward, `Ctrl+L` to type a path, `g h`/`g d`/… to jump.
+- **Choosing**: `Space`, `Shift`+arrows, a box dragged over empty space,
+  `Ctrl+A`; what's chosen stays chosen across folders, and the status line
+  says where.
+- **Tabs and the split**: `Ctrl+T`, `Ctrl+W`, `Ctrl+Tab`, `Alt+1…9`;
+  `F3` puts two side by side, `Tab` moves between them, `F5`/`F6` copy and
+  move across.
+- **Finding**: `/` filters the folder; `Ctrl+F` searches everything below
+  it by name as you type, `Ctrl+Shift+F` inside files (`/like this/` is a
+  regular expression). Both take query words — `type:image`, `ext:rs`,
+  `size:>10M`, `modified:<7d`, `name:…`. Recent, in the sidebar, is what
+  this and every other program opened lately.
+- **Looking**: `i` opens a preview beside the list, `Shift+Space` a large
+  one over it; `Ctrl+I` the properties, with permissions to tick and a
+  folder's size counted all the way down.
+- **Changing**: `F2` renames — several at once with find and replace, a
+  numbering template, or `$EDITOR` (a setting) — `Ctrl+Shift+N` makes a
+  folder, `Ctrl+C`/`X`/`V` copy, cut, and paste (with other file managers
+  too), `Delete` trashes, `Ctrl+Z` undoes, `Ctrl+D` bookmarks, `F4` opens
+  a terminal here.
 
 ## Theming
 

@@ -1974,6 +1974,36 @@ mod tests {
     }
 
     #[test]
+    fn folders_keep_their_own_view() {
+        use crate::config::{SortBy, View};
+        let root = std::env::temp_dir().join(format!("enso-files-views-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for dir in ["pictures", "papers"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let mut files = Files::new(context(), FilesConfig::default(), root.clone());
+        files.folder_views.change(&root.join("pictures"), |own| {
+            own.view = Some(View::Grid);
+            own.zoom = Some(3);
+        });
+        files.folder_views.change(&root.join("papers"), |own| {
+            own.sort = Some(SortBy::Modified);
+            own.descending = Some(true);
+        });
+        files.navigate(root.join("pictures"));
+        assert_eq!((files.config.view, files.zoom), (View::Grid, 3));
+        files.shown_at = root.join("pictures");
+        files.navigate(root.join("papers"));
+        assert_eq!(files.config.view, View::List, "the default again");
+        assert_eq!(files.zoom, super::super::grid::ZOOM);
+        assert!(files.pane.sort().descending);
+        files.shown_at = root.join("papers");
+        files.navigate(root.clone());
+        assert!(!files.pane.sort().descending);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn crumbs_start_at_home_or_the_root() {
         let home = Path::new("/home/me");
         let labels = |path: &str| -> Vec<String> {

@@ -227,6 +227,8 @@ impl Files {
             self.split = Some(self.active);
         }
         self.active = index;
+        let here = self.pane.location().to_owned();
+        self.apply_folder_view(&here);
         self.hover = None;
         self.menu = None;
         self.renaming = None;

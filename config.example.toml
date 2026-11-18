@@ -92,7 +92,9 @@ folders_first = true
 # Row height: "comfortable" or "compact".
 density = "comfortable"
 # "list", "grid" for thumbnails, or "columns" (the folder above, this one,
-# and what's under the cursor). Ctrl+1, Ctrl+2, and Ctrl+3 switch.
+# and what's under the cursor). These are the defaults: Ctrl+1, Ctrl+2, and
+# Ctrl+3, the sort menu, Ctrl+H, and the grid's zoom change only the folder
+# you're in, which keeps its own view (~/.local/state/enso/views.toml).
 view = "list"
 # F2 with several things chosen renames them all at once: find and replace,
 # numbering, a template, or $EDITOR. false renames the one under the cursor.

@@ -199,23 +199,29 @@ impl Files {
                     by,
                     ..self.pane.sort()
                 };
-                self.pane.set_sort(sort);
+                self.sort_here(sort, cx);
             }
             Action::Descending => {
                 let sort = self.pane.sort();
-                self.pane.set_sort(Sort {
-                    descending: !sort.descending,
-                    ..sort
-                });
+                self.sort_here(
+                    Sort {
+                        descending: !sort.descending,
+                        ..sort
+                    },
+                    cx,
+                );
             }
             Action::FoldersFirst => {
                 let sort = self.pane.sort();
-                self.pane.set_sort(Sort {
-                    folders_first: !sort.folders_first,
-                    ..sort
-                });
+                self.sort_here(
+                    Sort {
+                        folders_first: !sort.folders_first,
+                        ..sort
+                    },
+                    cx,
+                );
             }
-            Action::Hidden => self.pane.toggle_hidden(),
+            Action::Hidden => self.toggle_hidden_here(cx),
             Action::Reload => {
                 let request = self.pane.reload();
                 if let Some(proxy) = &self.proxy {
@@ -903,20 +909,24 @@ impl Files {
                     '2' => crate::config::View::Grid,
                     _ => crate::config::View::Columns,
                 };
-                self.overrides.view = Some(view);
-                self.save_overrides(cx);
+                // This folder; Settings sets the rest.
+                self.config.view = view;
+                self.remember_here(|own| own.view = Some(view), cx);
                 true
             }
             Key::Char('=' | '+') if mods.ctrl => {
                 self.zoom_by(1);
+                self.remember_zoom(cx);
                 true
             }
             Key::Char('-') if mods.ctrl => {
                 self.zoom_by(-1);
+                self.remember_zoom(cx);
                 true
             }
             Key::Char('0') if mods.ctrl => {
                 self.zoom = super::grid::ZOOM;
+                self.remember_zoom(cx);
                 true
             }
             Key::Char('?') | Key::F(1) => {
@@ -955,11 +965,11 @@ impl Files {
                 false
             }
             Key::Char('h') if mods.ctrl => {
-                self.pane.toggle_hidden();
+                self.toggle_hidden_here(cx);
                 true
             }
             Key::Char('.') if mods.is_plain() => {
-                self.pane.toggle_hidden();
+                self.toggle_hidden_here(cx);
                 true
             }
             Key::Char('b') if mods.ctrl => {
@@ -1210,6 +1220,7 @@ impl Files {
                 if cx.mods().ctrl {
                     if self.config.view == crate::config::View::Grid && dy.abs() > 0.0 {
                         self.zoom_by(if dy < 0.0 { 1 } else { -1 });
+                        self.remember_zoom(cx);
                         self.follow_cursor(now);
                         cx.redraw();
                     }

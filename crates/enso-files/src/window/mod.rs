@@ -292,6 +292,8 @@ pub struct Files {
     /// The tab on the split's other side, and where it was drawn.
     split: Option<usize>,
     split_rect: Rect,
+    /// How each folder is shown, where that was changed.
+    folder_views: crate::views::FolderViews,
     /// The properties, while they're up, and how many counts were begun.
     properties: Option<properties::Properties>,
     tallies: u64,
@@ -318,9 +320,12 @@ impl Files {
         let overrides =
             crate::settings::Overrides::load(&ctx.paths.state_dir.join(crate::settings::FILE));
         let config = overrides.over(&base_config);
+        let folder_views =
+            crate::views::FolderViews::load(&ctx.paths.state_dir.join(crate::views::FILE));
+        let start = location.clone();
         let (pane, request) = Pane::new(location, config.sort(), config.hidden);
         let home = places::home();
-        Self {
+        let mut files = Self {
             ctx,
             config,
             base_config,
@@ -388,12 +393,16 @@ impl Files {
             renamer: None,
             properties: None,
             tallies: 0,
+            folder_views,
             seek: None,
             seek_due: None,
             bookmarks: enso_fs::bookmarks::Bookmarks::load(&enso_fs::bookmarks::file()).folders(),
             behind: false,
             shown_at: PathBuf::new(),
-        }
+        };
+        // The first folder shown its own way, too.
+        files.apply_folder_view(&start);
+        files
     }
 
     /// The window as a picker, answering `request` into `outcome`.
@@ -475,6 +484,10 @@ impl Files {
             0.0
         };
         self.slide_pending = true;
+        // A folder arrives shown its own way.
+        if request.source.is_folder() && request.path != self.shown_at {
+            self.apply_folder_view(&request.path);
+        }
         // Thumbnails and previews are for what's shown.
         self.thumbs.keep_only(&request.path);
         self.shown = preview::Shown::default();

@@ -77,13 +77,76 @@ impl Files {
     }
 
     /// Make the window match the settings: config.toml with the changes
-    /// over it.
+    /// over it — and over those, this folder's own view, if it has one.
     pub(super) fn apply_config(&mut self) {
-        self.config = self.overrides.over(&self.base_config);
+        let here = self.pane.location().to_owned();
+        self.apply_folder_view(&here);
+    }
+
+    /// Show `folder` as it was last shown, where that was changed; else
+    /// as Settings says.
+    pub(super) fn apply_folder_view(&mut self, folder: &std::path::Path) {
+        let default = self.overrides.over(&self.base_config);
+        let own = if self.pane.source().is_folder() {
+            self.folder_views.get(folder)
+        } else {
+            crate::views::FolderView::default()
+        };
+        self.config = own.over(&default);
         self.pane.set_sort(self.config.sort());
         if self.pane.shows_hidden() != self.config.hidden {
             self.pane.toggle_hidden();
         }
+        self.zoom = own.zoom.unwrap_or(super::grid::ZOOM);
+    }
+
+    pub(super) fn remember_zoom(&mut self, cx: &mut Cx<'_>) {
+        let zoom = self.zoom;
+        self.remember_here(|own| own.zoom = Some(zoom), cx);
+    }
+
+    pub(super) fn toggle_hidden_here(&mut self, cx: &mut Cx<'_>) {
+        self.pane.toggle_hidden();
+        self.config.hidden = self.pane.shows_hidden();
+        let hidden = self.config.hidden;
+        self.remember_here(|own| own.hidden = Some(hidden), cx);
+    }
+
+    pub(super) fn sort_here(&mut self, sort: enso_fs::sort::Sort, cx: &mut Cx<'_>) {
+        self.pane.set_sort(sort);
+        let by: crate::config::SortBy = sort.by.into();
+        self.config.sort = by;
+        self.config.descending = sort.descending;
+        self.config.folders_first = sort.folders_first;
+        self.remember_here(
+            |own| {
+                own.sort = Some(by);
+                own.descending = Some(sort.descending);
+                own.folders_first = Some(sort.folders_first);
+            },
+            cx,
+        );
+    }
+
+    /// Remember a change to how this folder is shown. The first time a
+    /// folder keeps its own view, say so: Settings decides the rest.
+    pub(super) fn remember_here(
+        &mut self,
+        change: impl FnOnce(&mut crate::views::FolderView),
+        cx: &mut Cx<'_>,
+    ) {
+        if !self.pane.source().is_folder() {
+            return;
+        }
+        let here = self.pane.location().to_owned();
+        if self.folder_views.change(&here, change) {
+            self.toast(
+                "This folder keeps its own view · Settings sets the rest",
+                cx,
+            );
+        }
+        let file = self.ctx.paths.state_dir.join(crate::views::FILE);
+        let _ = self.folder_views.save(&file);
     }
 
     /// Change the setting on `row` (`step` moves the sort left or right).
