@@ -9,7 +9,6 @@
 //! The answer is one line on standard output (see [`crate::request`]).
 
 use std::{
-    f32::consts::PI,
     io::{self, BufRead, Write},
     sync::mpsc,
     thread,
@@ -17,13 +16,12 @@ use std::{
 };
 
 use enso_core::{
-    Context, Easing, Transition, Tween,
-    style::{icon, opacity, radius, space, stroke, type_scale},
+    Context,
+    style::{icon, type_scale},
 };
 use enso_ui::{
-    Align, App, Canvas, Cx, Event, Font, Key, KeyEvent, Paint, PointerEvent, Presence, Proxy, Rect,
-    SurfaceSpec, Text,
-    widget::{Button, Interaction, Kind, Look, controls},
+    App, Canvas, Cx, Event, Key, KeyEvent, Paint, PointerEvent, Presence, Proxy, Rect, SurfaceSpec,
+    widget::{Form, Interaction, Kind, Look, Note, Part, SecretField, Shown, secret},
 };
 
 use zeroize::Zeroizing;
@@ -33,26 +31,10 @@ use crate::{
     request::{Answer, Request},
 };
 
-const WIDTH: f32 = 440.0;
-const BADGE: f32 = 40.0;
-const FIELD: f32 = 44.0;
-const DOT: f32 = 8.0;
-const DOT_GAP: f32 = 8.0;
-/// Dots drawn at most: a longer password stops growing, which also keeps
-/// its length to itself.
-const MAX_DOTS: usize = 20;
 /// Characters taken: PAM takes no more than this anyway.
 const MAX_SECRET: usize = 256;
 const MAX_PIN: usize = 16;
 const PASSKEY_DIGITS: usize = 6;
-
-/// An empty answer with room for the longest (four bytes a character), so
-/// typing never moves it and leaves a copy behind.
-fn fresh() -> Zeroizing<String> {
-    Zeroizing::new(String::with_capacity(MAX_SECRET * 4))
-}
-/// The field's refusal: a quick sideways shake that dies away.
-const SHAKE: Transition = Transition::new(380, Easing::Linear);
 
 #[derive(Debug)]
 pub enum Message {
@@ -80,16 +62,6 @@ enum Phase {
     Leaving,
 }
 
-/// What the field takes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Field {
-    /// Shown as dots.
-    Secret,
-    /// Shown as typed.
-    Plain(usize),
-    Digits(usize),
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum Outcome {
     Ignored,
@@ -106,14 +78,11 @@ pub struct Prompt {
     answered: Option<Answer>,
     presence: Presence,
     phase: Phase,
-    typed: Zeroizing<String>,
-    dots: Tween<f32>,
+    field: SecretField,
     /// Which of the users is answering.
     user: usize,
     /// A line under the field: what went wrong (`true`), or a note.
     notice: Option<(String, bool)>,
-    shake: Tween<f32>,
-    caps_lock: bool,
     /// A further question from PAM: its words, and whether typing shows.
     further: Option<(String, bool)>,
     reply: Option<mpsc::Sender<Option<Zeroizing<String>>>>,
@@ -134,6 +103,10 @@ impl std::fmt::Debug for Prompt {
 
 impl Prompt {
     pub fn new(ctx: Context, request: Request, out: Option<Box<dyn Write>>, preview: bool) -> Self {
+        let mut field = SecretField::new(MAX_SECRET);
+        if let Some((shown, max)) = wanted(&request, None) {
+            field.ask(shown, max, &ctx.motion, std::time::Instant::now());
+        }
         Self {
             presence: enso_ui::Presence::new(&ctx.motion),
             ctx,
@@ -142,12 +115,9 @@ impl Prompt {
             out,
             answered: None,
             phase: Phase::Asking,
-            typed: fresh(),
-            dots: Tween::new(0.0),
+            field,
             user: 0,
             notice: None,
-            shake: Tween::new(1.0),
-            caps_lock: false,
             further: None,
             reply: None,
             proxy: None,
@@ -168,14 +138,9 @@ impl Prompt {
         )
     }
 
-    fn field(&self) -> Option<Field> {
-        match (&self.request, &self.further) {
-            (Request::Password { .. }, Some((_, true))) => Some(Field::Plain(MAX_SECRET)),
-            (Request::Password { .. }, _) => Some(Field::Secret),
-            (Request::Pin { .. }, _) => Some(Field::Plain(MAX_PIN)),
-            (Request::Passkey { .. }, _) => Some(Field::Digits(PASSKEY_DIGITS)),
-            _ => None,
-        }
+    /// What the field asks for now, if there is a field.
+    fn wanted(&self) -> Option<(Shown, usize)> {
+        wanted(&self.request, self.further.as_ref())
     }
 
     fn users(&self) -> &[String] {
@@ -200,15 +165,11 @@ impl Prompt {
         }
     }
 
-    fn set_dots(&mut self, now: Instant) {
-        let count = self.typed.chars().count().min(MAX_DOTS) as f32;
-        self.dots
-            .set(count, self.ctx.motion.apply(Transition::HOVER), now);
-    }
-
+    /// Empty the field, asking for what's wanted now.
     fn clear(&mut self, now: Instant) {
-        self.typed = fresh();
-        self.set_dots(now);
+        if let Some((shown, max)) = self.wanted() {
+            self.field.ask(shown, max, &self.ctx.motion, now);
+        }
     }
 
     /// Say `answer`, once, and go.
@@ -236,13 +197,12 @@ impl Prompt {
         match &self.request {
             Request::Password { users, cookie, .. } => {
                 let (user, cookie) = (users.get(self.user).cloned(), cookie.clone());
-                if self.typed.is_empty() {
+                if self.field.is_empty() {
                     return Outcome::Ignored;
                 }
-                let typed = std::mem::replace(&mut self.typed, fresh());
+                let typed = self.field.take(&self.ctx.motion, now);
                 self.notice = None;
                 self.phase = Phase::Checking;
-                self.set_dots(now);
                 if self.further.take().is_some() {
                     // The answer to PAM's further question.
                     if let Some(reply) = &self.reply {
@@ -272,11 +232,11 @@ impl Prompt {
                 });
                 Outcome::Redraw
             }
-            Request::Pin { .. } if !self.typed.is_empty() => {
-                let pin = std::mem::replace(&mut self.typed, fresh());
+            Request::Pin { .. } if !self.field.is_empty() => {
+                let pin = self.field.take(&self.ctx.motion, now);
                 self.answer(Answer::Pin(pin.as_str().to_owned()))
             }
-            Request::Passkey { .. } => match self.typed.parse() {
+            Request::Passkey { .. } => match self.field.text().parse() {
                 Ok(passkey) => self.answer(Answer::Passkey(passkey)),
                 Err(_) => Outcome::Ignored,
             },
@@ -324,8 +284,7 @@ impl Prompt {
                             self.notice =
                                 Some(("That's not the password. Try again.".to_owned(), true));
                         }
-                        self.shake.jump(0.0);
-                        self.shake.set(1.0, self.ctx.motion.apply(SHAKE), now);
+                        self.field.refuse(&self.ctx.motion, now);
                     }
                     Err(err) => self.notice = Some((format!("Can't check it: {err}"), true)),
                 }
@@ -337,9 +296,7 @@ impl Prompt {
     }
 
     fn key(&mut self, key: &KeyEvent, now: Instant) -> Outcome {
-        let caps_changed =
-            std::mem::replace(&mut self.caps_lock, key.mods.caps_lock) != key.mods.caps_lock;
-        let quiet = if caps_changed {
+        let quiet = if self.field.note_mods(key.mods) {
             Outcome::Redraw
         } else {
             Outcome::Ignored
@@ -363,32 +320,10 @@ impl Prompt {
             }
             _ => {}
         }
-        let Some(field) = self.field() else {
+        if self.wanted().is_none()
+            || self.field.key(key, &self.ctx.motion, now) != secret::Response::Changed
+        {
             return quiet;
-        };
-        match key.key {
-            Key::Char('u') if key.mods.ctrl => self.clear(now),
-            Key::Backspace if key.mods.ctrl => self.clear(now),
-            Key::Backspace => {
-                if self.typed.pop().is_none() {
-                    return quiet;
-                }
-                self.set_dots(now);
-            }
-            _ => {
-                let Some(c) = key.text() else { return quiet };
-                let count = self.typed.chars().count();
-                let fits = match field {
-                    Field::Secret => count < MAX_SECRET,
-                    Field::Plain(max) => count < max && !c.is_control(),
-                    Field::Digits(max) => count < max && c.is_ascii_digit(),
-                };
-                if !fits {
-                    return quiet;
-                }
-                self.typed.push(c);
-                self.set_dots(now);
-            }
         }
         // Typing again takes back the complaint.
         if self
@@ -506,292 +441,124 @@ impl Prompt {
     pub fn render(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
         let presence = self.presence.get(now);
         let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
         let look = self.look();
-        let bounds = canvas.bounds();
-        let (body, small) = (self.font(type_scale::BODY), self.font(type_scale::SMALL));
-        let inner_w = WIDTH - 2.0 * space::XL;
         self.hits.clear();
 
-        // Measure first: the card is as tall as what it says.
-        let (title, about, meta) = self.words();
-        let title_text = Text::new(&title, self.font(type_scale::TITLE * 1.1), colors.text)
-            .medium()
-            .max_width(inner_w - BADGE - space::MD)
-            .max_lines(2);
-        let about_text = Text::new(&about, body, colors.subtle)
-            .max_width(inner_w)
-            .max_lines(5);
-        let meta_text = meta.as_deref().map(|meta| {
-            Text::new(meta, small, colors.muted)
-                .max_width(inner_w)
-                .max_lines(2)
-        });
-        let code = self.code();
-        let code_size = self.font(type_scale::HEADING * 1.6);
-        let title_h = canvas.measure(&title_text).h.max(BADGE);
-        let about_h = canvas.measure(&about_text).h;
-        let meta_h = meta_text
-            .as_ref()
-            .map_or(0.0, |text| canvas.measure(text).h + space::XS);
-        let users_h = if self.users().is_empty() {
-            0.0
-        } else {
-            space::LG + 30.0
-        };
-        let code_h = if code.is_some() {
-            space::LG + code_size * 1.4
-        } else {
-            0.0
-        };
-        let field_h = if self.field().is_some() {
-            space::LG + FIELD
-        } else {
-            0.0
-        };
-        let notice_h = space::SM + small * 1.5;
-        let height = 2.0 * space::XL
-            + title_h
-            + space::MD
-            + about_h
-            + meta_h
-            + users_h
-            + code_h
-            + field_h
-            + notice_h
-            + space::MD
-            + controls::HEIGHT;
-        let inner = controls::dialog(canvas, bounds, WIDTH, height, &look, presence);
-        canvas.set_opacity(presence);
-
-        // The badge: a lock, or Bluetooth's mark.
-        let (badge_icon, badge_color) = if self.request.is_bluetooth() {
+        let (title, about, aside) = self.words();
+        let (badge, tint) = if self.request.is_bluetooth() {
             (icon::BLUETOOTH, colors.foam)
         } else {
-            (icon::LOCK, accent)
+            (icon::LOCK, look.accent)
         };
-        let badge = Rect::new(inner.x, inner.y + (title_h - BADGE) / 2.0, BADGE, BADGE);
-        let (bx, by) = badge.center();
-        canvas.circle(bx, by, BADGE / 2.0, badge_color.alpha(opacity::TINT));
-        canvas.icon(badge_icon, 20.0, badge_color, badge, Align::Center);
-        let title_size = canvas.measure(&title_text);
-        canvas.text(
-            &title_text,
-            badge.right() + space::MD,
-            inner.y + (title_h - title_size.h) / 2.0,
-        );
-        let mut y = inner.y + title_h + space::MD;
-        canvas.text(&about_text, inner.x, y);
-        y += about_h;
-        if let Some(meta) = &meta_text {
-            y += space::XS;
-            canvas.text(meta, inner.x, y);
-            y += canvas.measure(meta).h;
-        }
-
-        // Who answers: their name, or a choice of names.
-        if !self.users().is_empty() {
-            y += space::LG;
-            let label = Text::new("As", small, colors.muted);
-            let label_w = canvas.measure(&label).w;
-            canvas.text_in(&label, Rect::new(inner.x, y, label_w, 30.0), Align::Start);
-            let mut x = inner.x + label_w + space::SM;
-            let users = self.users().to_vec();
-            let choosable = users.len() > 1 && self.further.is_none();
-            for (index, name) in users.iter().enumerate() {
-                let chosen = index == self.user;
-                let ink = if chosen { look.base } else { colors.subtle };
-                let text = Text::new(name, small, ink);
-                let w = canvas.measure(&text).w + 2.0 * space::MD;
-                if x + w > inner.right() {
-                    break;
-                }
-                let pill = Rect::new(x, y + 2.0, w, 26.0);
-                let fill = if chosen {
-                    accent
-                } else if self.hover == Some(Hit::User(index)) {
-                    colors.highlight_med
-                } else {
-                    colors.overlay
-                };
-                canvas.fill(pill, radius::pill(pill.h), fill);
-                canvas.text_in(&text, pill, Align::Center);
-                if choosable {
-                    self.hits.push((pill, Hit::User(index)));
-                }
-                x = pill.right() + space::XS;
-            }
-            y += 30.0;
-        }
-
-        if let Some(code) = &code {
-            y += space::LG;
-            let text = Text::new(code, code_size, colors.text).font(Font::Mono);
-            let size = canvas.measure(&text);
-            canvas.text(
-                &text,
-                inner.x + (inner.w - size.w) / 2.0,
-                y + (code_size * 1.4 - size.h) / 2.0,
-            );
-            y += code_size * 1.4;
-        }
-
-        let mut caps_note = false;
-        if let Some(field) = self.field() {
-            y += space::LG;
-            let t = self.shake.get(now);
-            let shake = if t < 1.0 {
-                (t * PI * 6.0).sin() * (1.0 - t) * 10.0
-            } else {
-                0.0
-            };
-            let rect = Rect::new(inner.x + shake, y, inner.w, FIELD);
-            let complaint = self
-                .notice
-                .as_ref()
-                .is_some_and(|(_, complaint)| *complaint);
-            let dots = self.dots.get(now);
-            let typed = !self.typed.is_empty() || dots > 0.0;
-            canvas.fill(rect, radius::pill(FIELD), colors.base);
-            let (width, color) = if complaint {
-                (stroke::FOCUS, colors.love.alpha(0.9))
-            } else if self.phase == Phase::Asking {
-                (stroke::FOCUS, accent.alpha(if typed { 0.9 } else { 0.55 }))
-            } else {
-                (stroke::HAIRLINE, colors.highlight_high)
-            };
-            canvas.stroke(rect, radius::pill(FIELD), width, color);
-            let text_area = rect.inset_xy(space::LG + 2.0, 0.0);
-            let ink = if self.phase == Phase::Checking {
-                colors.subtle
-            } else {
-                colors.text
-            };
-            if !typed {
-                let hint = match (&self.further, field) {
-                    (Some((question, _)), _) => question.clone(),
-                    (None, Field::Secret) => match self.users().get(self.user) {
-                        Some(user) => format!("{user}'s password"),
-                        None => "Password".to_owned(),
-                    },
-                    (None, Field::Digits(_)) => "000000".to_owned(),
-                    (None, Field::Plain(_)) => "PIN".to_owned(),
-                };
-                let hint = if self.phase == Phase::Checking {
-                    "Checking…".to_owned()
-                } else {
-                    hint
-                };
-                canvas.text_in(
-                    &Text::new(&hint, body, colors.muted),
-                    text_area,
-                    Align::Start,
-                );
-            } else if field == Field::Secret {
-                // The row grows from the left; the newest dot swells in.
-                let whole = dots.ceil() as usize;
-                let (_, center_y) = rect.center();
-                for index in 0..whole {
-                    let grown = (dots - index as f32).clamp(0.0, 1.0);
-                    let x = text_area.x + index as f32 * (DOT + DOT_GAP) + DOT / 2.0;
-                    canvas.circle(x, center_y, DOT / 2.0 * grown, ink);
-                }
-            } else {
-                let font = if matches!(field, Field::Digits(_)) {
-                    Font::Mono
-                } else {
-                    Font::Ui
-                };
-                let text = Text::new(&self.typed, body, ink).font(font);
-                let size = canvas.text_in(&text, text_area, Align::Start);
-                if self.phase == Phase::Asking {
-                    let caret = Rect::new(
-                        text_area.x + size.w + 2.0,
-                        rect.y + 12.0,
-                        stroke::FOCUS,
-                        FIELD - 24.0,
-                    );
-                    canvas.fill(caret, 1.0, accent);
-                }
-            }
-            caps_note = field == Field::Secret && self.caps_lock && self.notice.is_none();
-            y += FIELD;
-        }
-
-        // A line for what went wrong, a note, or Caps Lock.
-        y += space::SM;
-        let line = Rect::new(inner.x, y, inner.w, small * 1.5);
-        if let Some((text, complaint)) = &self.notice {
-            let color = if *complaint {
-                colors.love
-            } else {
-                colors.subtle
-            };
-            canvas.text_in(
-                &Text::new(text, small, color).max_width(inner.w),
-                line,
-                Align::Start,
-            );
-        } else if caps_note {
-            canvas.icon(
-                icon::CAPS_LOCK,
-                small + 2.0,
-                colors.gold,
-                line,
-                Align::Start,
-            );
-            let words = Rect::new(line.x + small + 2.0 + space::SM, line.y, line.w, line.h);
-            canvas.text_in(
-                &Text::new("Caps Lock is on", small, colors.subtle),
-                words,
-                Align::Start,
-            );
-        }
-
-        // The buttons, the "yes" rightmost.
+        let users: Vec<&str> = self.users().iter().map(String::as_str).collect();
+        let code = self.code();
+        let wanted = self.wanted();
+        let busy = self.phase != Phase::Asking;
+        let said = self
+            .notice
+            .as_ref()
+            .map(|(words, complaint)| (words.as_str(), *complaint));
         let (no, yes) = self.buttons();
-        let row_y = inner.bottom() - controls::HEIGHT;
-        let mut x = inner.right();
-        if let Some(yes) = yes {
-            let button = Button::new(yes, Kind::Primary);
-            let w = button.width(canvas, &look);
-            let rect = Rect::new(x - w, row_y, w, controls::HEIGHT);
-            let disabled = self.phase != Phase::Asking
-                || (self.field().is_some() && self.typed.is_empty())
-                || (matches!(self.field(), Some(Field::Digits(_))) && self.typed.is_empty());
-            button.draw(
-                canvas,
-                rect,
-                &look,
+
+        let mut form = Form::new(&title)
+            .badge(badge, tint)
+            .about(&about)
+            .aside(aside.as_deref());
+        if !users.is_empty() {
+            form = form.part(Part::Choices {
+                label: Some("As"),
+                options: &users,
+                chosen: self.user,
+                hovered: match self.hover {
+                    Some(Hit::User(index)) => Some(index),
+                    _ => None,
+                },
+                enabled: users.len() > 1 && self.further.is_none(),
+            });
+        }
+        if let Some(code) = &code {
+            form = form.part(Part::Code(code));
+        }
+        let field_at = wanted.map(|_| form_len(&users, &code));
+        if wanted.is_some() {
+            form = form.field();
+        }
+        form = form
+            .note(Note::under(
+                &self.field,
+                said,
+                self.phase == Phase::Checking,
+            ))
+            .button(
+                no,
+                Kind::Secondary,
                 Interaction {
-                    hovered: self.hover == Some(Hit::Primary),
-                    disabled,
+                    hovered: self.hover == Some(Hit::Secondary),
                     ..Interaction::default()
                 },
             );
-            self.hits.push((rect, Hit::Primary));
-            x = rect.x - space::SM;
+        if let Some(yes) = yes {
+            form = form.button(
+                yes,
+                Kind::Primary,
+                Interaction {
+                    hovered: self.hover == Some(Hit::Primary),
+                    disabled: busy || (wanted.is_some() && self.field.is_empty()),
+                    ..Interaction::default()
+                },
+            );
         }
-        let button = Button::new(no, Kind::Secondary);
-        let w = button.width(canvas, &look);
-        let rect = Rect::new(x - w, row_y, w, controls::HEIGHT);
-        button.draw(
-            canvas,
-            rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Secondary),
-                ..Interaction::default()
-            },
-        );
-        self.hits.push((rect, Hit::Secondary));
+        let placed = form.draw(canvas, canvas.bounds(), &look, presence);
+
+        if let (Some(at), Some((shown, _))) = (field_at, wanted) {
+            let hint = if self.phase == Phase::Checking {
+                "Checking…".to_owned()
+            } else {
+                match (&self.further, shown) {
+                    (Some((question, _)), _) => question.clone(),
+                    (None, Shown::Dots) => match self.users().get(self.user) {
+                        Some(user) => format!("{user}'s password"),
+                        None => "Password".to_owned(),
+                    },
+                    (None, Shown::Digits) => "000000".to_owned(),
+                    (None, Shown::Text) => "PIN".to_owned(),
+                }
+            };
+            let style = secret::Style {
+                busy,
+                complaint: said.is_some_and(|(_, complaint)| complaint),
+                ..secret::Style::new(&look, &hint)
+            };
+            self.field.draw(canvas, placed.parts[at], &style, now);
+        }
+        for &(_, option, pill) in &placed.choices {
+            self.hits.push((pill, Hit::User(option)));
+        }
+        self.hits.push((placed.buttons[0], Hit::Secondary));
+        if let Some(&rect) = placed.buttons.get(1) {
+            self.hits.push((rect, Hit::Primary));
+        }
         canvas.set_opacity(1.0);
 
-        Paint::when(
-            self.presence.is_animating(now)
-                || self.dots.is_animating(now)
-                || self.shake.is_animating(now),
-        )
+        Paint::when(self.presence.is_animating(now) || self.field.is_animating(now))
+    }
+}
+
+/// Where the field comes among the form's parts: after the users and the
+/// code, when there are those.
+fn form_len(users: &[&str], code: &Option<String>) -> usize {
+    usize::from(!users.is_empty()) + usize::from(code.is_some())
+}
+
+/// What the field asks for, for `request` (and PAM's `further` question,
+/// with whether its answer shows): how it's shown, and how long it may be.
+fn wanted(request: &Request, further: Option<&(String, bool)>) -> Option<(Shown, usize)> {
+    match (request, further) {
+        (Request::Password { .. }, Some((_, true))) => Some((Shown::Text, MAX_SECRET)),
+        (Request::Password { .. }, _) => Some((Shown::Dots, MAX_SECRET)),
+        (Request::Pin { .. }, _) => Some((Shown::Text, MAX_PIN)),
+        (Request::Passkey { .. }, _) => Some((Shown::Digits, PASSKEY_DIGITS)),
+        _ => None,
     }
 }
 
@@ -919,10 +686,10 @@ mod tests {
         );
         type_text(&mut prompt, "hunter2");
         press(&mut prompt, Key::Backspace);
-        assert_eq!(prompt.typed.as_str(), "hunter");
+        assert_eq!(prompt.field.text(), "hunter");
         assert_eq!(press(&mut prompt, Key::Enter), Outcome::Close);
         assert_eq!(prompt.answered, Some(Answer::Allow));
-        assert!(prompt.typed.is_empty());
+        assert!(prompt.field.is_empty());
     }
 
     #[test]
@@ -933,7 +700,7 @@ mod tests {
         let now = Instant::now();
         prompt.message(Message::Verdict(Ok(Verdict::Refused)), now);
         assert_eq!(prompt.phase, Phase::Asking);
-        assert!(prompt.shake.is_animating(now));
+        assert!(prompt.field.is_animating(now));
         assert!(prompt.notice.as_ref().unwrap().1);
         // PAM's own complaint is kept over the plain one.
         prompt.phase = Phase::Checking;
@@ -955,7 +722,7 @@ mod tests {
         type_text(&mut prompt, "abc");
         press(&mut prompt, Key::Tab);
         assert_eq!(prompt.user, 1);
-        assert!(prompt.typed.is_empty(), "a new user starts afresh");
+        assert!(prompt.field.is_empty(), "a new user starts afresh");
         press(&mut prompt, Key::Left);
         assert_eq!(prompt.user, 0);
         assert_eq!(press(&mut prompt, Key::Escape), Outcome::Close);
@@ -979,7 +746,7 @@ mod tests {
             }),
             now,
         );
-        assert_eq!(prompt.field(), Some(Field::Plain(MAX_SECRET)));
+        assert_eq!(prompt.wanted(), Some((Shown::Text, MAX_SECRET)));
         let (reply, replies) = mpsc::channel();
         prompt.reply = Some(reply);
         type_text(&mut prompt, "123456");
@@ -1001,7 +768,7 @@ mod tests {
             device: "Keyboard".into(),
         });
         type_text(&mut passkey, "12a34567");
-        assert_eq!(passkey.typed.as_str(), "123456", "digits only, six of them");
+        assert_eq!(passkey.field.text(), "123456", "digits only, six of them");
         assert_eq!(press(&mut passkey, Key::Enter), Outcome::Close);
         assert_eq!(passkey.answered, Some(Answer::Passkey(123_456)));
 
@@ -1035,7 +802,10 @@ mod tests {
     #[test]
     fn renders_each_kind() {
         let mut fresh = prompt(password());
-        fresh.caps_lock = true;
+        fresh.field.note_mods(enso_ui::Mods {
+            caps_lock: true,
+            ..enso_ui::Mods::default()
+        });
         render(&mut fresh, "enso-auth-password-empty");
         let mut confirm = prompt(Request::Confirm {
             device: "Sony WH-1000XM5".into(),

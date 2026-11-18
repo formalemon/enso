@@ -11,8 +11,8 @@ use std::{
 };
 
 use enso_core::{
-    Context, Easing, Transition, Tween,
-    style::{icon, opacity, space, stroke, type_scale},
+    Context, Transition, Tween,
+    style::{icon, opacity, space, type_scale},
     wallpaper::{self, Chosen, Fit, WallConfig},
 };
 use enso_sys::{
@@ -20,8 +20,8 @@ use enso_sys::{
     logind::{self, Machine},
 };
 use enso_ui::{
-    Align, Canvas, Cx, Event, Key, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens,
-    Text,
+    Align, Canvas, Cx, Event, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens, Text,
+    widget::{Look, Note, SecretField, secret},
 };
 use niri_ipc::{Action, Request, socket::Socket};
 use serde::Deserialize;
@@ -72,11 +72,6 @@ impl Default for LockConfig {
 
 const FIELD_WIDTH: f32 = 280.0;
 const FIELD_HEIGHT: f32 = 48.0;
-const DOT: f32 = 9.0;
-const DOT_GAP: f32 = 9.0;
-/// Dots drawn at most; a longer password stops growing, which also keeps
-/// its length to itself.
-const MAX_DOTS: usize = 14;
 /// Characters accepted; PAM takes no more than this many bytes anyway.
 const MAX_PASSWORD: usize = 256;
 /// Longest side of the wallpaper as it is kept for the backdrop. It is
@@ -86,8 +81,6 @@ const BACKDROP_SIDE: u32 = 256;
 const FREE_ATTEMPTS: u32 = 3;
 /// How long "Wrong password" stays up.
 const NOTICE: Duration = Duration::from_secs(3);
-/// The field's refusal: a quick sideways shake that dies away.
-const SHAKE: Transition = Transition::new(380, Easing::Linear);
 
 /// Messages from the background threads.
 #[derive(Debug)]
@@ -140,10 +133,7 @@ pub struct Lock {
     verify: Verify,
     proxy: Option<Proxy<Message>>,
     phase: Phase,
-    /// What's typed, with room for the longest, so growing never leaves
-    /// a copy behind; overwritten when dropped.
-    password: Zeroizing<String>,
-    caps_lock: bool,
+    field: SecretField,
     /// Wrong attempts in a row.
     failures: u32,
     /// No attempt is taken before this.
@@ -162,9 +152,6 @@ pub struct Lock {
     /// How present the clock and field are: `0` hidden, `1` shown.
     presence: Tween<f32>,
     revealed: bool,
-    /// Animated number of dots in the field.
-    dots: Tween<f32>,
-    shake: Tween<f32>,
     /// The blurred wallpaper, small; and how far it has faded in.
     backdrop: Option<Picture>,
     backdrop_shown: Tween<f32>,
@@ -185,8 +172,7 @@ impl Lock {
             verify,
             proxy: None,
             phase: Phase::Asking,
-            password: fresh_password(),
-            caps_lock: false,
+            field: SecretField::new(MAX_PASSWORD),
             failures: 0,
             locked_out_until: None,
             notice: None,
@@ -198,8 +184,6 @@ impl Lock {
             suspended: false,
             presence: Tween::new(0.0),
             revealed: false,
-            dots: Tween::new(0.0),
-            shake: Tween::new(0.0),
             backdrop: None,
             backdrop_shown: Tween::new(0.0),
             fitted: Vec::new(),
@@ -244,21 +228,13 @@ impl Lock {
         }
         match self.phase {
             Phase::Checking => Some(("Checking…".to_owned(), false)),
-            _ if self.caps_lock => Some(("Caps Lock is on".to_owned(), false)),
             _ => None,
         }
     }
 
-    fn set_dots(&mut self, now: Instant) {
-        let count = self.password.chars().count().min(MAX_DOTS) as f32;
-        self.dots
-            .set(count, self.ctx.motion.apply(Transition::HOVER), now);
-    }
-
     /// Forget what was typed, overwriting it first.
     fn clear_password(&mut self, now: Instant) {
-        self.password = fresh_password();
-        self.set_dots(now);
+        self.field.clear(&self.ctx.motion, now);
     }
 
     /// Someone is here: note it, and if the screens were off, they are
@@ -276,8 +252,7 @@ impl Lock {
 
     fn key(&mut self, key: KeyEvent, now: Instant) -> Outcome {
         let woke = self.stir(now);
-        let caps_changed =
-            std::mem::replace(&mut self.caps_lock, key.mods.caps_lock) != key.mods.caps_lock;
+        let caps_changed = self.field.note_mods(key.mods);
         let quiet = if woke || caps_changed {
             Outcome::Redraw
         } else {
@@ -286,34 +261,29 @@ impl Lock {
         if self.phase != Phase::Asking || self.locked_out(now).is_some() {
             return quiet;
         }
-        match key.key {
-            Key::Enter if self.password.is_empty() => return quiet,
-            Key::Enter => {
+        match self.field.key(&key, &self.ctx.motion, now) {
+            secret::Response::Submit if self.field.is_empty() => quiet,
+            secret::Response::Submit => {
                 self.phase = Phase::Checking;
                 self.notice = None;
-                return Outcome::Submit(std::mem::replace(&mut self.password, fresh_password()));
+                Outcome::Submit(self.field.take(&self.ctx.motion, now))
             }
-            Key::Escape => self.clear_password(now),
-            Key::Char('u') if key.mods.ctrl => self.clear_password(now),
-            Key::Backspace if key.mods.ctrl => self.clear_password(now),
-            Key::Backspace => {
-                if self.password.pop().is_none() {
-                    return quiet;
-                }
+            // Nothing to cancel on a lock screen: Esc starts over.
+            secret::Response::Cancel => {
+                self.clear_password(now);
+                self.notice = None;
+                Outcome::Redraw
             }
-            _ => match key.text() {
-                Some(c) if self.password.chars().count() < MAX_PASSWORD => self.password.push(c),
-                _ => return quiet,
-            },
+            secret::Response::Changed => {
+                self.notice = None;
+                Outcome::Redraw
+            }
+            secret::Response::Ignored => quiet,
         }
-        self.notice = None;
-        self.set_dots(now);
-        Outcome::Redraw
     }
 
     /// Take the answer to a password check. Returns whether it was right.
     fn verdict(&mut self, verdict: Result<bool, String>, now: Instant) -> bool {
-        self.set_dots(now);
         match verdict {
             Ok(true) => {
                 self.phase = Phase::Leaving;
@@ -341,8 +311,7 @@ impl Lock {
             }
         }
         self.phase = Phase::Asking;
-        self.shake.jump(1.0);
-        self.shake.set(0.0, self.ctx.motion.apply(SHAKE), now);
+        self.field.refuse(&self.ctx.motion, now);
         false
     }
 
@@ -453,11 +422,6 @@ impl Lock {
         };
         self.fitted.get(at)
     }
-}
-
-/// An empty password with room for the longest (four bytes a character).
-fn fresh_password() -> Zeroizing<String> {
-    Zeroizing::new(String::with_capacity(MAX_PASSWORD * 4))
 }
 
 /// Ask Niri to power the screens off or on. Outside Niri this does nothing.
@@ -630,109 +594,40 @@ impl Screens for Lock {
         );
 
         // The field: a pill that fills with dots.
-        let shake = self.shake.get(now);
-        let sway = (shake * std::f32::consts::PI * 5.0).sin() * shake * space::MD;
+        let look = Look::new(&colors, accent, base_size);
         let field = Rect::new(
-            (bounds.w - FIELD_WIDTH) / 2.0 + sway,
+            (bounds.w - FIELD_WIDTH) / 2.0,
             top + clock_height + date_height + space::XXL,
             FIELD_WIDTH.min(bounds.w - 2.0 * space::LG),
             FIELD_HEIGHT,
         );
         let caption = self.caption(now);
-        let complaint = caption.as_ref().is_some_and(|(_, complaint)| *complaint);
-        let dots = self.dots.get(now);
-        let border = if complaint {
-            colors.love
-        } else if dots > 0.0 {
-            accent
-        } else {
-            colors.highlight_high
+        let said = caption
+            .as_ref()
+            .map(|(words, complaint)| (words.as_str(), *complaint));
+        let checking = self.phase == Phase::Checking;
+        let style = secret::Style {
+            fill: colors.surface.alpha(0.82),
+            icon: Some(icon::LOCK),
+            align: Align::Center,
+            busy: checking,
+            complaint: said.is_some_and(|(_, complaint)| complaint),
+            ..secret::Style::new(&look, "Password")
         };
-        canvas.pill(field, colors.surface.alpha(0.82));
-        canvas.stroke(
-            field,
-            FIELD_HEIGHT / 2.0,
-            if dots > 0.0 || complaint {
-                stroke::FOCUS
-            } else {
-                stroke::HAIRLINE
-            },
-            border.alpha(if complaint || dots > 0.0 { 0.9 } else { 0.7 }),
+        self.field.draw(canvas, field, &style, now);
+        let line = Rect::new(0.0, field.bottom() + space::MD, bounds.w, 22.0);
+        Note::under(&self.field, said, checking).draw(
+            canvas,
+            line,
+            &look,
+            base_size * type_scale::SMALL,
+            Align::Center,
         );
-
-        if dots <= 0.0 {
-            // Empty: a lock, or the word where there are no glyphs.
-            if canvas.glyphs() {
-                canvas.icon(
-                    icon::LOCK,
-                    (base_size * 1.43).round(),
-                    colors.muted,
-                    field,
-                    Align::Center,
-                );
-            } else {
-                canvas.text_in(
-                    &Text::new("Password", base_size, colors.muted),
-                    field,
-                    Align::Center,
-                );
-            }
-        } else {
-            // The row stays centred as it grows; the newest dot swells in.
-            let whole = dots.ceil() as usize;
-            let row = dots * DOT + (dots - 1.0).max(0.0) * DOT_GAP;
-            let (center_x, center_y) = field.center();
-            let color = if self.phase == Phase::Checking {
-                colors.subtle
-            } else {
-                colors.text
-            };
-            for index in 0..whole {
-                let grown = (dots - index as f32).clamp(0.0, 1.0);
-                let x = center_x - row / 2.0 + index as f32 * (DOT + DOT_GAP) + DOT / 2.0;
-                canvas.circle(x, center_y, DOT / 2.0 * grown, color);
-            }
-        }
-
-        if let Some((text, complaint)) = &caption {
-            let color = if *complaint {
-                colors.love
-            } else {
-                colors.subtle
-            };
-            let line = Rect::new(0.0, field.bottom() + space::MD, bounds.w, 22.0);
-            if !*complaint && self.caps_lock && self.phase != Phase::Checking && canvas.glyphs() {
-                // Caps Lock gets its glyph, set just left of the words.
-                let words = Text::new(text, base_size * type_scale::SMALL, color);
-                let width = canvas.measure(&words).w;
-                let glyph = base_size + 2.0;
-                let start = (bounds.w - width - glyph - space::SM) / 2.0;
-                canvas.icon(
-                    icon::CAPS_LOCK,
-                    glyph,
-                    colors.gold,
-                    Rect::new(start, line.y, glyph, line.h),
-                    Align::Start,
-                );
-                canvas.text_in(
-                    &words,
-                    Rect::new(start + glyph + space::SM, line.y, width + 1.0, line.h),
-                    Align::Start,
-                );
-            } else {
-                canvas.text_in(
-                    &Text::new(text, base_size * type_scale::SMALL, color),
-                    line,
-                    Align::Center,
-                );
-            }
-        }
         canvas.set_opacity(1.0);
 
         Paint::when(
             self.presence.is_animating(now)
-                || self.dots.is_animating(now)
-                || self.shake.is_animating(now)
+                || self.field.is_animating(now)
                 || self.backdrop_shown.is_animating(now),
         )
     }
@@ -741,7 +636,7 @@ impl Screens for Lock {
 #[cfg(test)]
 mod tests {
     use enso_core::Paths;
-    use enso_ui::{Mods, Offscreen, TextEngine};
+    use enso_ui::{Key, Mods, Offscreen, TextEngine};
 
     use super::*;
 
@@ -828,7 +723,7 @@ mod tests {
 
         assert!(attempt(&mut lock, "correct horse", now));
         assert_eq!(lock.phase, Phase::Leaving);
-        assert!(lock.password.is_empty());
+        assert!(lock.field.is_empty());
         // While leaving, keys do nothing more.
         assert_eq!(press(&mut lock, Key::Char('x'), now), Outcome::Ignored);
         // The session is let go once the fade has run, not before.
@@ -842,9 +737,9 @@ mod tests {
         let now = Instant::now();
         type_text(&mut lock, "abc", now);
         assert_eq!(press(&mut lock, Key::Backspace, now), Outcome::Redraw);
-        assert_eq!(lock.password.as_str(), "ab");
+        assert_eq!(lock.field.text(), "ab");
         assert_eq!(press(&mut lock, Key::Escape, now), Outcome::Redraw);
-        assert!(lock.password.is_empty());
+        assert!(lock.field.is_empty());
         assert_eq!(press(&mut lock, Key::Backspace, now), Outcome::Ignored);
 
         // Ctrl+u clears; other shortcuts are not typed into the password.
@@ -858,9 +753,9 @@ mod tests {
             repeat: false,
         };
         assert_eq!(lock.key(ctrl(Key::Char('a')), now), Outcome::Ignored);
-        assert_eq!(lock.password.as_str(), "abc");
+        assert_eq!(lock.field.text(), "abc");
         assert_eq!(lock.key(ctrl(Key::Char('u')), now), Outcome::Redraw);
-        assert!(lock.password.is_empty());
+        assert!(lock.field.is_empty());
 
         // Caps Lock changing is worth a redraw, and a word of warning.
         let caps = KeyEvent {
@@ -872,7 +767,7 @@ mod tests {
             repeat: false,
         };
         assert_eq!(lock.key(caps, now), Outcome::Redraw);
-        assert_eq!(lock.caption(now).unwrap().0, "Caps Lock is on");
+        assert_eq!(Note::under(&lock.field, None, false), Note::CapsLock);
     }
 
     #[test]
@@ -894,7 +789,7 @@ mod tests {
         assert_eq!(lock.caption(now).unwrap().0, "Try again in 1 s");
         // Typing during the wait goes nowhere.
         assert_eq!(press(&mut lock, Key::Char('x'), now), Outcome::Ignored);
-        assert!(lock.password.is_empty());
+        assert!(lock.field.is_empty());
         // The countdown keeps the screen fresh, then ends.
         assert!(lock.next_wake(now).unwrap() <= Duration::from_millis(1005));
         now += Duration::from_millis(1100);
@@ -947,7 +842,7 @@ mod tests {
         assert!(due.screens_off && !due.suspend && lock.asleep);
         assert!(lock.fitted.is_empty());
         // What was half typed is gone, and it is asked for only once.
-        assert!(lock.password.is_empty());
+        assert!(lock.field.is_empty());
         assert_eq!(lock.tick(later + Duration::from_secs(1)), Due::default());
 
         // The one thing left to wake for is the suspend; after that,
@@ -1018,7 +913,10 @@ mod tests {
         let mut dawn = Lock::with_verify(ctx, LockConfig::default(), |_| Ok(false));
         dawn.time = "09:41".to_owned();
         dawn.date = "Monday, 16 November".to_owned();
-        dawn.caps_lock = true;
+        dawn.field.note_mods(Mods {
+            caps_lock: true,
+            ..Mods::default()
+        });
         render(&mut dawn, start);
         snapshot(&render(&mut dawn, settled).0, "lock-rose-pine-dawn");
     }

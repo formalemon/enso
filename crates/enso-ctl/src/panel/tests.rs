@@ -835,7 +835,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
 
     // Letters are text now — j, k, q, and space included — and nothing moves.
     type_text(&mut panel, "jk q matcha");
-    assert_eq!(panel.prompt.as_ref().unwrap().text.as_str(), "jk q matcha");
+    assert_eq!(panel.prompt.as_ref().unwrap().field.text(), "jk q matcha");
     assert_eq!(panel.networks()[panel.selected].name, "Loft 5G");
     press(&mut panel, Key::Backspace);
     let clear = KeyEvent {
@@ -846,7 +846,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
         ..key(Key::Char('u'))
     };
     assert_eq!(panel.on_key(clear), Outcome::Changed);
-    assert_eq!(panel.prompt.as_ref().unwrap().text.as_str(), "");
+    assert_eq!(panel.prompt.as_ref().unwrap().field.text(), "");
     // Nothing typed, nothing sent.
     press(&mut panel, Key::Enter);
     assert!(sent(&requests).is_empty());
@@ -866,7 +866,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
             passphrase: Some(Zeroizing::new("hunter2".into()))
         }]
     );
-    assert_eq!(panel.prompt, None);
+    assert!(panel.prompt.is_none());
     assert_eq!(panel.busy.as_deref(), Some(loft.as_str()));
 
     // Refused: the field comes back, empty, saying so.
@@ -874,19 +874,14 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
         network: loft.clone(),
         result: Err(ConnectError::Rejected),
     });
-    assert_eq!(
-        panel.prompt,
-        Some(Prompt {
-            network: loft.clone(),
-            text: Zeroizing::new(String::new()),
-            rejected: true
-        })
-    );
+    let prompt = panel.prompt.as_ref().unwrap();
+    assert_eq!(prompt.network, loft);
+    assert!(prompt.field.is_empty() && prompt.rejected);
     assert_eq!(panel.busy, None);
 
     // Esc gives up on the passphrase, not on the page.
     assert_eq!(press(&mut panel, Key::Escape), Outcome::Changed);
-    assert_eq!((panel.prompt.clone(), panel.page), (None, Page::Wifi));
+    assert!(panel.prompt.is_none() && panel.page == Page::Wifi);
 
     // A saved network whose passphrase no longer works asks too.
     panel.apply(Update::WifiConnect {
@@ -898,7 +893,7 @@ fn a_passphrase_is_typed_unseen_and_asked_again_if_refused() {
     let mut fewer = wifi();
     fewer.networks.retain(|network| network.id != loft);
     panel.apply(Update::Wifi(Some(fewer)));
-    assert_eq!(panel.prompt, None);
+    assert!(panel.prompt.is_none());
 }
 
 #[test]

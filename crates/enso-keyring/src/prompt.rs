@@ -3,20 +3,18 @@
 //! waits; the keyring closes it, or says why not and lets it try again.
 
 use std::{
-    f32::consts::PI,
     io::{self, BufRead, Write},
     thread,
     time::Instant,
 };
 
 use enso_core::{
-    Context, Easing, Transition, Tween,
-    style::{icon, opacity, radius, space, stroke, type_scale},
+    Context,
+    style::{icon, type_scale},
 };
 use enso_ui::{
-    Align, App, Canvas, Cx, Event, Key, KeyEvent, Paint, PointerEvent, Presence, Proxy, Rect,
-    SurfaceSpec, Text,
-    widget::{Button, Interaction, Kind, Look, controls},
+    App, Canvas, Cx, Event, Key, KeyEvent, Paint, PointerEvent, Presence, Proxy, Rect, SurfaceSpec,
+    widget::{Form, Interaction, Kind, Look, Note, SecretField, secret},
 };
 use zeroize::Zeroizing;
 
@@ -25,13 +23,7 @@ use crate::{
     crypto::{hex, unhex},
 };
 
-const WIDTH: f32 = 440.0;
-const BADGE: f32 = 40.0;
-const FIELD: f32 = 44.0;
-const DOT: f32 = 8.0;
-const MAX_DOTS: usize = 20;
 const MAX_PASSWORD: usize = 512;
-const SHAKE: Transition = Transition::new(380, Easing::Linear);
 
 #[derive(Debug)]
 pub enum Message {
@@ -62,14 +54,11 @@ pub struct Card {
     asker: String,
     out: Option<Box<dyn Write>>,
     presence: Presence,
-    typed: Zeroizing<String>,
-    dots: Tween<f32>,
+    field: SecretField,
     /// Sent, waiting for the keyring's answer.
     waiting: bool,
     leaving: bool,
     complaint: Option<String>,
-    shake: Tween<f32>,
-    caps_lock: bool,
     hits: Vec<(Rect, Hit)>,
     hover: Option<Hit>,
 }
@@ -90,13 +79,10 @@ impl Card {
             mode,
             asker,
             out,
-            typed: Zeroizing::new(String::with_capacity(MAX_PASSWORD * 4)),
-            dots: Tween::new(0.0),
+            field: SecretField::new(MAX_PASSWORD),
             waiting: false,
             leaving: false,
             complaint: None,
-            shake: Tween::new(1.0),
-            caps_lock: false,
             hits: Vec::new(),
             hover: None,
         }
@@ -113,20 +99,14 @@ impl Card {
         }
     }
 
-    fn set_dots(&mut self, now: Instant) {
-        let count = self.typed.chars().count().min(MAX_DOTS) as f32;
-        self.dots
-            .set(count, self.ctx.motion.apply(Transition::HOVER), now);
-    }
-
     fn submit(&mut self, now: Instant) -> Outcome {
-        if self.waiting || self.typed.is_empty() {
+        if self.waiting || self.field.is_empty() {
             return Outcome::Ignored;
         }
-        let line = Zeroizing::new(format!("password {}", hex(self.typed.as_bytes())));
+        let typed = self.field.take(&self.ctx.motion, now);
+        let encoded = Zeroizing::new(hex(typed.as_bytes()));
+        let line = Zeroizing::new(format!("password {}", encoded.as_str()));
         self.say(&line);
-        self.typed = Zeroizing::new(String::with_capacity(MAX_PASSWORD * 4));
-        self.set_dots(now);
         self.waiting = true;
         self.complaint = None;
         Outcome::Redraw
@@ -156,8 +136,7 @@ impl Card {
                 self.complaint = (!words.is_empty()).then_some(words);
                 // A new question isn't a wrong answer.
                 if !changed {
-                    self.shake.jump(0.0);
-                    self.shake.set(1.0, self.ctx.motion.apply(SHAKE), now);
+                    self.field.refuse(&self.ctx.motion, now);
                 }
                 Outcome::Redraw
             }
@@ -165,8 +144,7 @@ impl Card {
     }
 
     fn key(&mut self, key: &KeyEvent, now: Instant) -> Outcome {
-        let caps = std::mem::replace(&mut self.caps_lock, key.mods.caps_lock) != key.mods.caps_lock;
-        let quiet = if caps {
+        let quiet = if self.field.note_mods(key.mods) {
             Outcome::Redraw
         } else {
             Outcome::Ignored
@@ -175,20 +153,15 @@ impl Card {
             Key::Escape => return self.cancel(),
             Key::Enter => return self.submit(now),
             _ if self.waiting => return quiet,
-            Key::Char('u') if key.mods.ctrl => self.typed.clear(),
-            Key::Backspace => {
-                if self.typed.pop().is_none() {
-                    return quiet;
-                }
-            }
-            _ => match key.text() {
-                Some(c) if self.typed.chars().count() < MAX_PASSWORD => self.typed.push(c),
-                _ => return quiet,
-            },
+            _ => {}
         }
-        self.complaint = None;
-        self.set_dots(now);
-        Outcome::Redraw
+        match self.field.key(key, &self.ctx.motion, now) {
+            secret::Response::Changed => {
+                self.complaint = None;
+                Outcome::Redraw
+            }
+            _ => quiet,
+        }
     }
 
     fn pointer(&mut self, event: PointerEvent, now: Instant) -> Outcome {
@@ -250,159 +223,58 @@ impl Card {
 
     pub fn render(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
         let presence = self.presence.get(now);
-        let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
-        let look = Look::new(&colors, accent, self.font(type_scale::BODY));
-        let (body, small) = (self.font(type_scale::BODY), self.font(type_scale::SMALL));
-        let inner_w = WIDTH - 2.0 * space::XL;
+        let look = Look::new(
+            &self.ctx.theme.colors,
+            self.ctx.accent(),
+            self.font(type_scale::BODY),
+        );
         self.hits.clear();
         let (title, about) = self.words();
-        let title_text = Text::new(title, self.font(type_scale::TITLE * 1.1), colors.text)
-            .medium()
-            .max_width(inner_w - BADGE - space::MD);
-        let about_text = Text::new(&about, body, colors.subtle)
-            .max_width(inner_w)
-            .max_lines(5);
-        let about_h = canvas.measure(&about_text).h;
-        let height = 2.0 * space::XL
-            + BADGE
-            + space::MD
-            + about_h
-            + space::LG
-            + FIELD
-            + space::SM
-            + small * 1.5
-            + space::MD
-            + controls::HEIGHT;
-        let inner = controls::dialog(canvas, bounds_of(canvas), WIDTH, height, &look, presence);
-        canvas.set_opacity(presence);
-
-        let badge = Rect::new(inner.x, inner.y, BADGE, BADGE);
-        let (bx, by) = badge.center();
-        canvas.circle(bx, by, BADGE / 2.0, accent.alpha(opacity::TINT));
-        canvas.icon(icon::LOCK, 20.0, accent, badge, Align::Center);
-        canvas.text_in(
-            &title_text,
-            Rect::new(
-                badge.right() + space::MD,
-                inner.y,
-                inner_w - BADGE - space::MD,
-                BADGE,
-            ),
-            Align::Start,
-        );
-        let mut y = inner.y + BADGE + space::MD;
-        canvas.text(&about_text, inner.x, y);
-        y += about_h + space::LG;
-
-        let t = self.shake.get(now);
-        let shake = if t < 1.0 {
-            (t * PI * 6.0).sin() * (1.0 - t) * 10.0
-        } else {
-            0.0
-        };
-        let field = Rect::new(inner.x + shake, y, inner_w, FIELD);
-        let complaint = self.complaint.is_some();
-        canvas.fill(field, radius::pill(FIELD), colors.base);
-        let ring = if complaint {
-            colors.love.alpha(0.9)
-        } else {
-            accent.alpha(0.8)
-        };
-        canvas.stroke(field, radius::pill(FIELD), stroke::FOCUS, ring);
-        let text_area = field.inset_xy(space::LG + 2.0, 0.0);
-        let dots = self.dots.get(now);
-        if dots <= 0.0 {
-            let hint = match (self.waiting, self.mode) {
-                (true, _) => "Checking…",
-                (false, _) => "Your login password",
-            };
-            canvas.text_in(
-                &Text::new(hint, body, colors.muted),
-                text_area,
-                Align::Start,
-            );
-        } else {
-            let ink = if self.waiting {
-                colors.subtle
-            } else {
-                colors.text
-            };
-            let (_, center_y) = field.center();
-            for index in 0..dots.ceil() as usize {
-                let grown = (dots - index as f32).clamp(0.0, 1.0);
-                let x = text_area.x + index as f32 * (DOT * 2.0) + DOT / 2.0;
-                canvas.circle(x, center_y, DOT / 2.0 * grown, ink);
-            }
-        }
-        y += FIELD + space::SM;
-        let line = Rect::new(inner.x, y, inner_w, small * 1.5);
-        if let Some(words) = &self.complaint {
-            canvas.text_in(
-                &Text::new(words, small, colors.love).max_width(inner_w),
-                line,
-                Align::Start,
-            );
-        } else if self.caps_lock {
-            canvas.icon(
-                icon::CAPS_LOCK,
-                small + 2.0,
-                colors.gold,
-                line,
-                Align::Start,
-            );
-            let words = Rect::new(line.x + small + 2.0 + space::SM, line.y, line.w, line.h);
-            canvas.text_in(
-                &Text::new("Caps Lock is on", small, colors.subtle),
-                words,
-                Align::Start,
-            );
-        }
-
-        let row_y = inner.bottom() - controls::HEIGHT;
         let label = match self.mode {
             Mode::Create => "Set up",
             Mode::Unlock => "Unlock",
             Mode::Lost => "Start anew",
         };
-        let primary = Button::new(label, Kind::Primary);
-        let w = primary.width(canvas, &look);
-        let rect = Rect::new(inner.right() - w, row_y, w, controls::HEIGHT);
-        primary.draw(
-            canvas,
-            rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Unlock),
-                disabled: self.waiting || self.typed.is_empty(),
-                ..Interaction::default()
-            },
-        );
-        self.hits.push((rect, Hit::Unlock));
-        let cancel = Button::new("Not now", Kind::Secondary);
-        let w2 = cancel.width(canvas, &look);
-        let cancel_rect = Rect::new(rect.x - space::SM - w2, row_y, w2, controls::HEIGHT);
-        cancel.draw(
-            canvas,
-            cancel_rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Cancel),
-                ..Interaction::default()
-            },
-        );
-        self.hits.push((cancel_rect, Hit::Cancel));
+        let said = self.complaint.as_deref().map(|words| (words, true));
+        let form = Form::new(title)
+            .badge(icon::LOCK, look.accent)
+            .about(&about)
+            .field()
+            .note(Note::under(&self.field, said, self.waiting))
+            .button(
+                "Not now",
+                Kind::Secondary,
+                Interaction {
+                    hovered: self.hover == Some(Hit::Cancel),
+                    ..Interaction::default()
+                },
+            )
+            .button(
+                label,
+                Kind::Primary,
+                Interaction {
+                    hovered: self.hover == Some(Hit::Unlock),
+                    disabled: self.waiting || self.field.is_empty(),
+                    ..Interaction::default()
+                },
+            );
+        let placed = form.draw(canvas, canvas.bounds(), &look, presence);
+        let hint = if self.waiting {
+            "Checking…"
+        } else {
+            "Your login password"
+        };
+        let style = secret::Style {
+            busy: self.waiting,
+            complaint: self.complaint.is_some(),
+            ..secret::Style::new(&look, hint)
+        };
+        self.field.draw(canvas, placed.parts[0], &style, now);
+        self.hits.push((placed.buttons[0], Hit::Cancel));
+        self.hits.push((placed.buttons[1], Hit::Unlock));
         canvas.set_opacity(1.0);
-        Paint::when(
-            self.presence.is_animating(now)
-                || self.dots.is_animating(now)
-                || self.shake.is_animating(now),
-        )
+        Paint::when(self.presence.is_animating(now) || self.field.is_animating(now))
     }
-}
-
-fn bounds_of(canvas: &Canvas<'_>) -> Rect {
-    canvas.bounds()
 }
 
 impl App for Card {
@@ -542,12 +414,12 @@ mod tests {
             );
         }
         assert_eq!(card.submit(now), Outcome::Redraw);
-        assert!(card.waiting && card.typed.is_empty());
+        assert!(card.waiting && card.field.is_empty());
         card.message(
             Message::Again(Mode::Unlock, "That's not your login password".into()),
             now,
         );
-        assert!(!card.waiting && card.shake.is_animating(now));
+        assert!(!card.waiting && card.field.is_animating(now));
         render(&mut card, "enso-keyring-unlock");
         // A new question: the keyring can't be opened here anymore.
         card.message(Message::Again(Mode::Lost, String::new()), now);

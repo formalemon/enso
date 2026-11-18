@@ -17,9 +17,19 @@
 
 use std::ops::Range;
 
-use enso_core::{Rgba, style::radius};
+use enso_core::{
+    Rgba,
+    style::{opacity, radius, space, stroke},
+};
 
+use super::Look;
 use crate::{Canvas, Key, KeyEvent, Rect, Text};
+
+/// Height of a one-line field in a dialog or a card.
+pub const HEIGHT: f32 = 40.0;
+
+/// Room between a field's edge and what's typed in it.
+pub const INSET: f32 = space::LG;
 
 /// What a key did to the field.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -455,6 +465,55 @@ pub struct Style<'a> {
     pub placeholder_color: Rgba,
     pub caret: Rgba,
     pub selection: Rgba,
+}
+
+impl<'a> Style<'a> {
+    /// Body text in `look`'s colours, saying `placeholder` while empty.
+    pub fn new(look: &Look, placeholder: &'a str) -> Self {
+        Self {
+            size: look.size,
+            color: look.text,
+            placeholder,
+            placeholder_color: look.muted,
+            caret: look.accent,
+            selection: look.accent.alpha(opacity::TINT * 2.0),
+        }
+    }
+}
+
+/// How a field stands, which decides the ring around it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Frame {
+    /// Has the keyboard.
+    pub focused: bool,
+    /// Something is typed in it.
+    pub filled: bool,
+    /// What was in it was refused.
+    pub complaint: bool,
+    /// What's in it is being checked: hands off for now.
+    pub busy: bool,
+}
+
+impl Frame {
+    /// Draw a field's shape — the one every field in the suite has: a
+    /// pill on `fill`, ringed by how it stands. Returns where its contents
+    /// go.
+    pub fn draw(self, canvas: &mut Canvas<'_>, rect: Rect, look: &Look, fill: Rgba) -> Rect {
+        let pill = radius::pill(rect.h);
+        canvas.fill(rect, pill, fill);
+        let (width, color) = if self.complaint {
+            (stroke::FOCUS, look.danger.alpha(0.9))
+        } else if self.busy {
+            (stroke::HAIRLINE, look.highlight_high)
+        } else if self.focused {
+            let strength = if self.filled { 0.9 } else { 0.55 };
+            (stroke::FOCUS, look.accent.alpha(strength))
+        } else {
+            (stroke::HAIRLINE, look.highlight_med)
+        };
+        canvas.stroke(rect, pill, width, color);
+        rect.inset_xy(INSET, 0.0)
+    }
 }
 
 fn is_word(c: char) -> bool {

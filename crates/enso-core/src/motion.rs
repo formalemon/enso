@@ -82,6 +82,9 @@ impl Transition {
     /// The whole screen changing: one wallpaper giving way to another. Longer
     /// than interface motion, because it is scenery rather than an answer.
     pub const SCENE: Self = Self::new(420, Easing::InOutCubic);
+    /// A refusal: a wrong password's field shaking its head, quickly, the
+    /// sway dying away. Linear, because the sway itself is the curve.
+    pub const SHAKE: Self = Self::new(380, Easing::Linear);
 }
 
 /// The user's motion preferences applied to transition tokens.

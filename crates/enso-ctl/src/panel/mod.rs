@@ -33,7 +33,9 @@ use enso_sys::{
 };
 use enso_ui::{
     Anchor, App, Button, Canvas, Cx, Event, Key, KeyEvent, Keyboard, Layer, Nav, Paint,
-    PointerEvent, Presence, Proxy, Rect, SurfaceSpec, watch::watch_dir,
+    PointerEvent, Presence, Proxy, Rect, SurfaceSpec,
+    watch::watch_dir,
+    widget::{SecretField, secret},
 };
 use serde::Deserialize;
 use zeroize::Zeroizing;
@@ -92,11 +94,6 @@ pub const NAME: &str = "enso-ctl";
 const GRACE: Duration = Duration::from_millis(300);
 /// Characters a passphrase may have: more than WPA's 63, for WPA3.
 const MAX_PASSPHRASE: usize = 256;
-
-/// An empty passphrase with room for the longest (four bytes a character).
-fn empty_passphrase() -> Zeroizing<String> {
-    Zeroizing::new(String::with_capacity(MAX_PASSPHRASE * 4))
-}
 
 #[derive(Debug)]
 pub enum Message {
@@ -184,13 +181,11 @@ enum Hit {
 }
 
 /// A passphrase being typed for a network.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct Prompt {
     /// The network's id.
     network: String,
-    /// What's typed, with room for the longest so growing never leaves a
-    /// copy behind; overwritten when dropped.
-    text: Zeroizing<String>,
+    field: SecretField,
     /// The last passphrase tried was not accepted.
     rejected: bool,
 }
@@ -799,9 +794,13 @@ impl Panel {
             return;
         };
         self.selected = index;
+        let mut field = SecretField::new(MAX_PASSPHRASE);
+        if rejected {
+            field.refuse(&self.ctx.motion, Instant::now());
+        }
         self.prompt = Some(Prompt {
             network,
-            text: empty_passphrase(),
+            field,
             rejected,
         });
     }
@@ -1063,22 +1062,23 @@ impl Panel {
         let Some(prompt) = &mut self.prompt else {
             return Outcome::Ignored;
         };
-        match key.key {
-            Key::Escape => self.prompt = None,
-            Key::Enter if !prompt.text.is_empty() => {
-                if let Some(Prompt { network, text, .. }) = self.prompt.take() {
-                    self.connect(network, Some(text));
+        let now = Instant::now();
+        prompt.field.note_mods(key.mods);
+        match prompt.field.key(&key, &self.ctx.motion, now) {
+            secret::Response::Cancel => self.prompt = None,
+            secret::Response::Submit if prompt.field.is_empty() => return Outcome::Ignored,
+            secret::Response::Submit => {
+                if let Some(Prompt {
+                    network, mut field, ..
+                }) = self.prompt.take()
+                {
+                    let passphrase = field.take(&self.ctx.motion, now);
+                    self.connect(network, Some(passphrase));
                 }
             }
-            Key::Backspace => {
-                prompt.text.pop();
-            }
-            Key::Char('u') if key.mods.ctrl => prompt.text.clear(),
-            _ => match key.text() {
-                Some(c) if prompt.text.chars().count() < MAX_PASSPHRASE => prompt.text.push(c),
-                Some(_) => {}
-                None => return Outcome::Ignored,
-            },
+            secret::Response::Changed => {}
+            // Keys not for the field still aren't the panel's while it asks.
+            secret::Response::Ignored => return Outcome::Ignored,
         }
         self.settle();
         Outcome::Changed

@@ -6,7 +6,10 @@
 //! the interface that owns a widget lays it out and routes input to it,
 //! as it does for everything else it draws.
 //!
-//! - [`field`] — a one-line text field.
+//! - [`field`] — a one-line text field, and the shape every field has.
+//! - [`secret`] — a password field: dots, a shake, the Caps Lock note.
+//! - [`form`] — a dialog's card: title, what it's about, fields, choices,
+//!   buttons.
 //! - [`menu`] — context menus and dropdowns.
 //! - [`scroll`] — a scrolling offset and its scrollbar.
 //! - [`controls`] — buttons, toggles, the dialog card, tooltips, splitters,
@@ -14,10 +17,14 @@
 
 pub mod controls;
 pub mod field;
+pub mod form;
 pub mod menu;
 pub mod scroll;
+pub mod secret;
 
 pub use controls::{Button, Interaction, Kind, Look, Splitter, Toggle, Tooltip};
 pub use field::TextField;
+pub use form::{Form, Part, Placed};
 pub use menu::{Item, Menu};
 pub use scroll::Scroll;
+pub use secret::{Note, SecretField, Shown};

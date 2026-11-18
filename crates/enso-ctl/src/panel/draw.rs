@@ -15,7 +15,10 @@ use enso_sys::{
     power::BatteryStatus,
     wifi::{Link, Security},
 };
-use enso_ui::{Align, Canvas, Paint, Rect, Text};
+use enso_ui::{
+    Align, Canvas, Paint, Rect, Text,
+    widget::{self, secret},
+};
 
 use super::{
     Dial, Hit, Item, NOTICE_HEIGHT, PAD, Page, Panel, ROW_HEIGHT, Section, TILE_HEIGHT,
@@ -203,7 +206,11 @@ impl Panel {
                     &self.mic_switch,
                 ]
                 .into_iter()
-                .any(|tween| tween.is_animating(now)),
+                .any(|tween| tween.is_animating(now))
+                || self
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.field.is_animating(now)),
         )
     }
 
@@ -592,7 +599,7 @@ impl Panel {
             if prompt == Some(index) {
                 let field = row.translate(0.0, ROW_HEIGHT);
                 if field.bottom() <= card.bottom() {
-                    self.paint_prompt(canvas, field, look);
+                    self.paint_prompt(canvas, field, look, now);
                     bottom = field.bottom();
                 }
             }
@@ -860,40 +867,21 @@ impl Panel {
     }
 
     /// The passphrase field under the network it is for.
-    fn paint_prompt(&self, canvas: &mut Canvas<'_>, row: Rect, look: &Look) {
+    fn paint_prompt(&self, canvas: &mut Canvas<'_>, row: Rect, look: &Look, now: Instant) {
         let Some(prompt) = &self.prompt else { return };
-        let colors = &look.colors;
-        let field = row.inset_xy(space::SM, 5.0);
-        canvas.fill(field, radius::CONTROL, colors.base);
-        canvas.stroke(field, radius::CONTROL, stroke::HAIRLINE, look.accent);
-
-        let inner = field.inset_xy(space::MD, 0.0);
-        let typed = if prompt.text.is_empty() {
-            let (hint, tint) = if prompt.rejected {
-                ("Not accepted — try again", colors.love)
-            } else {
-                ("Password", colors.muted)
-            };
-            canvas.text_in(&Text::new(hint, look.base, tint), inner, Align::Start);
-            0.0
+        let shared = widget::Look::new(&look.colors, look.accent, look.base);
+        let hint = if prompt.rejected {
+            "Not accepted — try again"
         } else {
-            // Never the passphrase itself: one dot a character.
-            let dots = "•".repeat(prompt.text.chars().count());
-            canvas
-                .text_in(
-                    &Text::new(&dots, look.base, colors.text),
-                    inner,
-                    Align::Start,
-                )
-                .w
+            "Password"
         };
-        let caret = Rect::new(
-            (inner.x + typed + 1.0).min(inner.right()),
-            inner.y + (inner.h - look.base * 1.3) / 2.0,
-            2.0,
-            look.base * 1.3,
-        );
-        canvas.fill(caret, 1.0, look.accent);
+        let style = secret::Style {
+            complaint: prompt.rejected && prompt.field.is_empty(),
+            ..secret::Style::new(&shared, hint)
+        };
+        prompt
+            .field
+            .draw(canvas, row.inset_xy(space::SM, 5.0), &style, now);
     }
 }
 

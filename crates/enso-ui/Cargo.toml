@@ -15,6 +15,7 @@ kbvm.workspace = true
 tiny-skia.workspace = true
 cosmic-text.workspace = true
 rustix.workspace = true
+zeroize.workspace = true
 zune-jpeg = { workspace = true, optional = true }
 
 [features]

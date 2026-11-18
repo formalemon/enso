@@ -26,7 +26,10 @@ pub struct Look {
     pub accent: Rgba,
     pub highlight_low: Rgba,
     pub highlight_med: Rgba,
+    pub highlight_high: Rgba,
     pub danger: Rgba,
+    /// A heads-up that isn't a fault: Caps Lock is on.
+    pub warning: Rgba,
 }
 
 impl Look {
@@ -42,7 +45,9 @@ impl Look {
             accent,
             highlight_low: palette.highlight_low,
             highlight_med: palette.highlight_med,
+            highlight_high: palette.highlight_high,
             danger: palette.love,
+            warning: palette.gold,
         }
     }
 
