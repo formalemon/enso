@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.89"
 repository = "https://github.com/formalemon/enso"
 authors = ["Anshul"]
+license = "MIT"
 
 [workspace.dependencies]
 # Internal crates.

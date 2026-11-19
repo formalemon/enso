@@ -47,7 +47,7 @@ jobs:
           mkdir "$name"
           find target/release -maxdepth 1 -type f -executable -name 'enso-*' \
             -exec cp {} "$name/" \;
-          cp README.md config.example.toml "$name/"
+          cp README.md LICENSE config.example.toml "$name/"
           ls -l "$name"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
