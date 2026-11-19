@@ -18,7 +18,7 @@ and one way of moving.
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
-| `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, archives, git with GitHub and GitLab, drag and drop — keyboard and mouse alike; see [the plan](docs/plans/enso-files.md) | working |
+| `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, archives, git with GitHub and GitLab, drag and drop — keyboard and mouse alike | working |
 
 What's not built yet is under [Roadmap](#roadmap); what changed in each
 version is in its [release notes](https://github.com/formalemon/enso/releases).
@@ -120,7 +120,6 @@ crates/
   enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
   enso-play/                                                     the binaries
 config.example.toml   every config key with its default
-docs/plans/           the file manager's plan, phase by phase
 contrib/              udev rules: the power profile, and udisks for wheel
 ```
 

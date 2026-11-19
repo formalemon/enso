@@ -1,10 +1,9 @@
 //! `enso-files` — the enso file manager, and in time the file picker every
 //! application gets through the desktop portal.
 //!
-//! See `docs/plans/enso-files.md` for where this is going. What is here:
-//! a window onto one folder at a time, listed in two passes so it is on
-//! screen before its sizes are known ([`enso_fs::list`]), driven by keys or
-//! the pointer alike.
+//! What is here: a window onto one folder at a time, listed in two passes so
+//! it is on screen before its sizes are known ([`enso_fs::list`]), driven by
+//! keys or the pointer alike.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
