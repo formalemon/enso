@@ -8,6 +8,8 @@
 //!   icons, and shapes of one's own.
 //! - [`figure`] — the suite's icons, drawn: one hand, one pen, no icon font.
 //! - [`picture`] — full-screen pictures, fitted to an output once and copied.
+//! - input methods (`ime`) — composing text into the focused field, the
+//!   preedit shown in it.
 //! - [`input`] — keyboard and pointer events, including the suite-wide
 //!   navigation keys.
 //! - [`watch`] — inotify-based change notification for live theme switching.
@@ -24,6 +26,7 @@ mod fractional;
 pub mod geom;
 pub mod idle;
 pub mod image;
+mod ime;
 pub mod input;
 mod keymap;
 pub mod picture;
@@ -37,6 +40,7 @@ pub mod widget;
 pub use canvas::{Canvas, Offscreen, Shape};
 pub use geom::{Align, Rect, Size};
 pub use image::Image;
+pub use ime::Preedit;
 pub use input::{
     BUTTON_BACK, BUTTON_FORWARD, Button, Clicks, Key, KeyEvent, Mods, Nav, PointerEvent,
 };

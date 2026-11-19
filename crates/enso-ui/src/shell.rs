@@ -30,6 +30,9 @@ use smithay_client_toolkit::reexports::protocols::{
             wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
             wp_fractional_scale_v1::WpFractionalScaleV1,
         },
+        text_input::zv3::client::{
+            zwp_text_input_manager_v3::ZwpTextInputManagerV3, zwp_text_input_v3::ZwpTextInputV3,
+        },
         viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
     },
     xdg::foreign::zv2::client::{
@@ -94,6 +97,7 @@ use crate::{
     canvas::Canvas,
     fractional::{self, Extension, ScaleOf, Scaled},
     geom::{Rect, Size},
+    ime::{self, Composing, Composition, Done},
     input::{Button, KeyEvent, Mods, PointerEvent},
     keymap::Keys,
     text::{Text, TextEngine},
@@ -738,6 +742,8 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         .map_err(|err| Error::new("event loop", err))?;
     // Without one there is no clipboard, and nothing else is lost.
     let data_devices = DataDeviceManagerState::bind(&globals, &qh).ok();
+    // Without one, keys type only what the keyboard layout has.
+    let text_inputs: Option<ZwpTextInputManagerV3> = globals.bind(&qh, 1..=1, ime::Manager).ok();
 
     let (sender, messages) = channel::channel();
     handle
@@ -781,6 +787,9 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         input_serial: None,
         data_devices,
         data_device: None,
+        text_inputs,
+        text_input: None,
+        composition: Composition::default(),
         copied: None,
         dragging: None,
         dropping: None,
@@ -849,6 +858,10 @@ struct Runtime<A: App> {
     input_serial: Option<u32>,
     data_devices: Option<DataDeviceManagerState>,
     data_device: Option<DataDevice>,
+    text_inputs: Option<ZwpTextInputManagerV3>,
+    /// The seat's text input, for input methods.
+    text_input: Option<ZwpTextInputV3>,
+    composition: Composition,
     /// What this program has on the clipboard, while it has it.
     copied: Option<(CopyPasteSource, Clip)>,
     /// What this program is dragging, while it is.
@@ -1195,7 +1208,12 @@ impl<A: App> Runtime<A> {
             true,
             &mut self.text,
         );
+        canvas.set_preedit(self.composition.preedit().cloned());
         let paint = self.app.draw(&mut canvas, Instant::now());
+        let caret = canvas.text_input();
+        if let Some(request) = self.composition.drawn(caret) {
+            self.request(request);
+        }
 
         let surface = self.surface.wl_surface();
         match &self.viewport {
@@ -1257,6 +1275,31 @@ impl<A: App> Runtime<A> {
     fn stop_repeat(&mut self) {
         if let Some((_, token)) = self.repeating.take() {
             self.handle.remove(token);
+        }
+    }
+}
+
+impl<A: App> Composing for Runtime<A> {
+    fn is_own(&self, surface: &WlSurface) -> bool {
+        Runtime::is_own(self, surface)
+    }
+
+    fn composition(&mut self) -> &mut Composition {
+        &mut self.composition
+    }
+
+    fn request(&mut self, request: ime::Request) {
+        if let Some(input) = &self.text_input {
+            ime::send(input, request);
+        }
+    }
+
+    fn composed(&mut self, done: Done) {
+        self.dirty |= done.redraw;
+        if let Some(text) = done.commit {
+            for key in ime::keys(&text) {
+                self.deliver(Event::Key(key));
+            }
         }
     }
 }
@@ -1693,6 +1736,10 @@ impl<A: App> SeatHandler for Runtime<A> {
         match capability {
             Capability::Keyboard if self.keyboard.is_none() => {
                 self.keyboard = Some(seat.get_keyboard(qh, KeyboardData));
+                self.text_input = self
+                    .text_inputs
+                    .as_ref()
+                    .map(|inputs| inputs.get_text_input(&seat, qh, ime::TextInputData));
                 if self.data_device.is_none() {
                     self.data_device = self
                         .data_devices
@@ -1730,6 +1777,10 @@ impl<A: App> SeatHandler for Runtime<A> {
                 self.stop_repeat();
                 if let Some(keyboard) = self.keyboard.take() {
                     keyboard.release();
+                }
+                if let Some(input) = self.text_input.take() {
+                    input.destroy();
+                    self.dirty |= self.composition.leave();
                 }
             }
             Capability::Pointer => {

@@ -286,3 +286,97 @@ fn widgets_draw_in_both_themes() {
         assert_ne!(frame.pixel(60, 60), frame.pixel(4, 4));
     }
 }
+
+/// A focused field shows what an input method composes at its caret,
+/// underlined, and says where its caret is; an unfocused one does neither.
+#[test]
+fn field_shows_what_is_composed() {
+    use enso_ui::{
+        Preedit,
+        widget::{TextField, field},
+    };
+
+    let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-test"));
+    let colors = &ctx.theme.colors;
+    let mut text = TextEngine::new(&ctx.config.appearance);
+    let style = field::Style {
+        size: 14.0,
+        color: colors.text,
+        placeholder: "Search",
+        placeholder_color: colors.muted,
+        caret: colors.iris,
+        selection: colors.iris.alpha(0.32),
+    };
+    let row = |i: f32| Rect::new(24.0, 16.0 + i * 44.0, 300.0, 34.0);
+    let mut carets = Vec::new();
+    let frame = Offscreen::render(&mut text, (360, 196), 2, |canvas| {
+        canvas.clear(colors.base);
+        let mut draw = |canvas: &mut enso_ui::Canvas<'_>,
+                        rect: Rect,
+                        preedit: Option<Preedit>,
+                        focused: bool| {
+            canvas.set_preedit(preedit);
+            let before = canvas.text_input();
+            canvas.fill(rect, radius::pill(34.0), colors.surface);
+            let mut field = TextField::new("tea ");
+            field.draw(canvas, rect.inset_xy(space::LG, 0.0), &style, focused);
+            carets.push(
+                canvas
+                    .text_input()
+                    .filter(|_| canvas.text_input() != before),
+            );
+        };
+        draw(canvas, row(0.0), None, true);
+        // Composing, the caret at its end.
+        draw(
+            canvas,
+            row(1.0),
+            Some(Preedit {
+                text: "zhong".into(),
+                cursor: Some(5..5),
+            }),
+            true,
+        );
+        // A conversion picked out: the highlight stands in for the caret.
+        draw(
+            canvas,
+            row(2.0),
+            Some(Preedit {
+                text: "zhongguo".into(),
+                cursor: Some(0..5),
+            }),
+            true,
+        );
+        // Unfocused: no preedit, no caret to report.
+        draw(
+            canvas,
+            row(3.0),
+            Some(Preedit {
+                text: "zhong".into(),
+                cursor: Some(5..5),
+            }),
+            false,
+        );
+    });
+    #[cfg(feature = "png")]
+    frame.snapshot(env!("CARGO_MANIFEST_DIR"), "field-preedit");
+
+    let plain = carets[0].expect("a focused field reports its caret");
+    let composing = carets[1].expect("a composing field reports its caret");
+    // The caret follows the preedit, on the same line of its own row.
+    assert!(composing.x > plain.x + 20.0, "{plain:?} {composing:?}");
+    assert!((composing.y - plain.y - 44.0).abs() < 0.5);
+    assert!(carets[2].is_some());
+    assert_eq!(carets[3], None);
+
+    // The composed text is drawn: past what's typed, the composing row
+    // has ink where the plain row, one row up, has only the field.
+    let differs = (4..30).any(|dx| {
+        (-8..8).any(|dy| {
+            let x = (plain.x as i32 + dx) as u32 * 2;
+            let y = (plain.y + plain.h / 2.0) as i32 + dy;
+            frame.pixel(x, y as u32 * 2) != frame.pixel(x, (y + 44) as u32 * 2)
+        })
+    });
+    assert!(differs);
+}

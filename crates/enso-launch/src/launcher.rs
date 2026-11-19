@@ -623,12 +623,16 @@ impl UiApp for Launcher {
             search.w - icon_width - space::XS,
             search.h,
         );
-        let typed = if self.query.is_empty() {
+        // What an input method is composing follows what's typed.
+        let preedit = canvas.preedit().cloned();
+        let typed = if self.query.is_empty() && preedit.is_none() {
             canvas.text_in(
                 &Text::new(self.placeholder(), title, colors.muted),
                 field,
                 Align::Start,
             );
+            0.0
+        } else if self.query.is_empty() {
             0.0
         } else {
             canvas
@@ -639,13 +643,68 @@ impl UiApp for Launcher {
                 )
                 .w
         };
-        let caret = Rect::new(
-            field.x + typed + 1.0,
-            field.y + (field.h - title * 1.3) / 2.0,
-            2.0,
-            title * 1.3,
-        );
-        canvas.fill(caret, 1.0, accent);
+        let caret_height = title * 1.3;
+        let caret_at = |x: f32| {
+            Rect::new(
+                field.x + x + 1.0,
+                field.y + (field.h - caret_height) / 2.0,
+                2.0,
+                caret_height,
+            )
+        };
+        let mut caret = caret_at(typed);
+        let mut show_caret = true;
+        if let Some(preedit) = &preedit {
+            let measure = |canvas: &mut Canvas<'_>, end: usize| {
+                canvas
+                    .measure(&Text::new(&preedit.text[..end], title, colors.text))
+                    .w
+            };
+            let after = Rect::new(field.x + typed, field.y, field.w - typed, field.h);
+            // What the input method has picked out, under its letters.
+            if let Some(cursor) = preedit.cursor.as_ref().filter(|c| !c.is_empty()) {
+                let start = measure(canvas, cursor.start);
+                let end = measure(canvas, cursor.end);
+                let height = title * 1.4;
+                canvas.fill(
+                    Rect::new(
+                        after.x + start,
+                        field.y + (field.h - height) / 2.0,
+                        end - start,
+                        height,
+                    ),
+                    radius::CONTROL / 2.0,
+                    accent.alpha(opacity::TINT * 2.0),
+                );
+            }
+            let width = canvas
+                .text_in(
+                    &Text::new(&preedit.text, title, colors.text),
+                    after,
+                    Align::Start,
+                )
+                .w;
+            canvas.fill(
+                Rect::new(
+                    after.x,
+                    caret.bottom() - stroke::HAIRLINE,
+                    width,
+                    stroke::HAIRLINE,
+                ),
+                0.0,
+                colors.text,
+            );
+            let at = preedit
+                .cursor
+                .as_ref()
+                .map_or(preedit.text.len(), |c| c.start);
+            caret = caret_at(typed + measure(canvas, at));
+            show_caret = preedit.cursor.as_ref().is_some_and(|c| c.is_empty());
+        }
+        canvas.text_input_at(caret);
+        if show_caret {
+            canvas.fill(caret, 1.0, accent);
+        }
 
         // The rule under the field belongs to the list: it fades in with it.
         let list_open = (list_height / ROW_HEIGHT).min(1.0);
@@ -914,6 +973,35 @@ mod tests {
                 Entry::File(hit) => hit.name(),
             })
             .collect()
+    }
+
+    #[test]
+    fn an_input_method_composes_after_the_query() {
+        let mut launcher = launcher();
+        type_text(&mut launcher, "fi");
+        let later = Instant::now() + Duration::from_secs(2);
+        let mut text = TextEngine::new(&launcher.ctx.config.appearance);
+        let mut carets = Vec::new();
+        let frame = Offscreen::render(&mut text, (800, 520), 2, |canvas| {
+            launcher.draw(canvas, Instant::now());
+            canvas.clear(enso_core::Rgba::TRANSPARENT);
+            launcher.draw(canvas, later);
+            carets.push(canvas.text_input());
+            canvas.clear(enso_core::Rgba::TRANSPARENT);
+            canvas.set_preedit(Some(enso_ui::Preedit {
+                text: "re".into(),
+                cursor: Some(2..2),
+            }));
+            launcher.draw(canvas, later);
+            carets.push(canvas.text_input());
+        });
+        snapshot(&frame, "launch-preedit");
+        let (typed, composing) = (carets[0].unwrap_or_default(), carets[1].unwrap_or_default());
+        assert!(typed.x > 0.0);
+        // The caret, and the candidates with it, sit after what's composed.
+        assert!(composing.x > typed.x + 8.0, "{typed:?} {composing:?}");
+        // Composing isn't typing: the query waits for the commit.
+        assert_eq!(launcher.query, "fi");
     }
 
     #[test]

@@ -14,6 +14,12 @@ places; this file is current. Add to it with each change worth mentioning.
   instead of drawing at the next whole scale and being shrunk to fit. The
   README's roadmap item "fractional scaling for the single-surface runtime"
   is done.
+- **Input methods.** Text fields and the launcher's search take text from
+  an input method (fcitx5, IBus — anything speaking `zwp_text_input_v3`):
+  what is being composed shows at the caret, underlined, with the part
+  being converted highlighted, and the candidate window opens beside the
+  caret. It is only switched on while a text field has focus, and never
+  for a password.
 
 ### enso-keyring
 

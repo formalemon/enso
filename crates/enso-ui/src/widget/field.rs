@@ -393,12 +393,39 @@ impl TextField {
 
     /// Draw the field's text in `rect`: the selection under it, the caret
     /// (when `focused`), and `style.placeholder` when there is no text.
+    ///
+    /// A focused field also shows what an input method is composing, at
+    /// the caret and underlined, and tells the canvas where its caret is
+    /// so the input method's candidates appear beside it.
     pub fn draw(&mut self, canvas: &mut Canvas<'_>, rect: Rect, style: &Style<'_>, focused: bool) {
         let measure = |canvas: &mut Canvas<'_>, text: &str| {
             canvas.measure(&Text::new(text, style.size, style.color)).w
         };
-        let caret_x = measure(canvas, &self.now.text[..self.now.caret]);
-        let width = measure(canvas, &self.now.text);
+        let at = self.now.caret;
+        let preedit = canvas
+            .preedit()
+            .filter(|_| focused)
+            .map(|preedit| (preedit.text.clone(), preedit.cursor.clone()));
+        // What's shown: the text, with what's being composed at the caret.
+        let (shown, composing) = match &preedit {
+            Some((text, _)) => {
+                let mut shown = self.now.text.clone();
+                shown.insert_str(at, text);
+                (shown, Some(at..at + text.len()))
+            }
+            None => (self.now.text.clone(), None),
+        };
+        // The caret is the input method's while it composes: hidden, or
+        // standing in for a highlight, unless it is a plain caret.
+        let (caret, shown_caret) = match (&preedit, &composing) {
+            (Some((_, Some(cursor))), Some(range)) => {
+                (range.start + cursor.start, cursor.is_empty())
+            }
+            (Some((_, None)), Some(range)) => (range.end, false),
+            _ => (at, true),
+        };
+        let caret_x = measure(canvas, &shown[..caret]);
+        let width = measure(canvas, &shown);
         // Slide the text so the caret stays in view, with a little room.
         let room = (rect.w * 0.15).min(24.0);
         if caret_x - self.offset > rect.w - room {
@@ -408,43 +435,66 @@ impl TextField {
         }
         self.offset = self.offset.clamp(0.0, (width - rect.w + room).max(0.0));
         let offset = self.offset;
+        let caret_height = style.size * 1.3;
+        let caret_rect = Rect::new(
+            rect.x + caret_x - offset,
+            rect.y + (rect.h - caret_height) / 2.0,
+            2.0,
+            caret_height,
+        );
+        if focused {
+            canvas.text_input_at(caret_rect);
+        }
 
         canvas.with_clip(rect, |canvas| {
-            if let Some(range) = self.selection().filter(|_| focused) {
-                let start = measure(canvas, &self.now.text[..range.start]);
-                let end = measure(canvas, &self.now.text[..range.end]);
-                let height = style.size * 1.4;
+            let height = style.size * 1.4;
+            let top = rect.y + (rect.h - height) / 2.0;
+            let highlight = |canvas: &mut Canvas<'_>, range: Range<usize>| {
+                let start = measure(canvas, &shown[..range.start]);
+                let end = measure(canvas, &shown[..range.end]);
                 canvas.fill(
-                    Rect::new(
-                        rect.x + start - offset,
-                        rect.y + (rect.h - height) / 2.0,
-                        end - start,
-                        height,
-                    ),
+                    Rect::new(rect.x + start - offset, top, end - start, height),
                     radius::CONTROL / 2.0,
                     style.selection,
                 );
+            };
+            match (&composing, &preedit) {
+                // What the input method has picked out in what it composes.
+                (Some(range), Some((_, Some(cursor)))) if !cursor.is_empty() => {
+                    highlight(canvas, range.start + cursor.start..range.start + cursor.end);
+                }
+                // The selection stays put while something is composed over it.
+                (None, _) => {
+                    if let Some(range) = self.selection().filter(|_| focused) {
+                        highlight(canvas, range);
+                    }
+                }
+                _ => {}
             }
-            if self.now.text.is_empty() {
+            if shown.is_empty() {
                 let placeholder = Text::new(style.placeholder, style.size, style.placeholder_color);
                 canvas.text_in(&placeholder, rect, crate::Align::Start);
             } else {
-                let text = Text::new(&self.now.text, style.size, style.color);
+                let text = Text::new(&shown, style.size, style.color);
                 let height = canvas.measure(&text).h;
                 canvas.text(&text, rect.x - offset, rect.y + (rect.h - height) / 2.0);
             }
-            if focused {
-                let height = style.size * 1.3;
+            if let Some(range) = &composing {
+                let start = measure(canvas, &shown[..range.start]);
+                let end = measure(canvas, &shown[..range.end]);
                 canvas.fill(
                     Rect::new(
-                        rect.x + caret_x - offset,
-                        rect.y + (rect.h - height) / 2.0,
-                        2.0,
-                        height,
+                        rect.x + start - offset,
+                        top + height - stroke::HAIRLINE,
+                        end - start,
+                        stroke::HAIRLINE,
                     ),
-                    1.0,
-                    style.caret,
+                    0.0,
+                    style.color,
                 );
+            }
+            if focused && shown_caret {
+                canvas.fill(caret_rect, 1.0, style.caret);
             }
         });
     }

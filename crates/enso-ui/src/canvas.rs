@@ -13,6 +13,7 @@ use tiny_skia::{
 use crate::{
     geom::{Align, Rect, Size},
     image::Image,
+    ime::Preedit,
     picture::Picture,
     text::{Text, TextEngine},
 };
@@ -31,6 +32,10 @@ pub struct Canvas<'a> {
     /// Where drawing is confined to, if anywhere.
     clip: Option<Clip>,
     text: &'a mut TextEngine,
+    /// What an input method is composing, for the focused field to show.
+    preedit: Option<Preedit>,
+    /// Where the focused text field's caret was drawn, if one was.
+    text_input: Option<Rect>,
 }
 
 /// A clip rectangle: as a mask for shapes, and as physical pixel bounds
@@ -69,7 +74,31 @@ impl<'a> Canvas<'a> {
             opacity: 1.0,
             clip: None,
             text,
+            preedit: None,
+            text_input: None,
         }
+    }
+
+    /// What an input method is composing, shown by the focused text field.
+    /// The runtime sets it before each frame; tests may set it too.
+    pub fn set_preedit(&mut self, preedit: Option<Preedit>) {
+        self.preedit = preedit;
+    }
+
+    pub fn preedit(&self) -> Option<&Preedit> {
+        self.preedit.as_ref()
+    }
+
+    /// Say that a focused text field is in this frame, its caret at
+    /// `caret`: an input method may compose into it, and its candidates
+    /// hang from there. Fields that take passwords never say so.
+    pub fn text_input_at(&mut self, caret: Rect) {
+        self.text_input = Some(caret);
+    }
+
+    /// Where a focused text field's caret was drawn this frame, if one was.
+    pub fn text_input(&self) -> Option<Rect> {
+        self.text_input
     }
 
     /// Canvas size in logical pixels.
