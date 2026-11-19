@@ -85,3 +85,9 @@ lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The boot menu's picture is rendered while enso-boot builds: millions of
+# rays, so it is optimised even in debug builds, where build scripts and
+# what they use otherwise aren't.
+[profile.dev.package.enso-scene]
+opt-level = 3
