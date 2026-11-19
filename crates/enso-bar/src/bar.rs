@@ -61,8 +61,9 @@ const GROUP_PAD: f32 = space::SM;
 const ISLAND_PAD: f32 = space::MD - GROUP_PAD;
 /// Extra space between two workspaces' groups.
 const GROUP_GAP: f32 = space::XS;
-/// How long the pointer rests on the status island before the control
-/// center opens: long enough that passing over it opens nothing.
+/// How long the pointer rests on an island before what it opens — the
+/// control center, what's playing — opens: long enough that passing over
+/// it opens nothing.
 const HOVER_INTENT: Duration = Duration::from_millis(150);
 /// How often the readings nothing announces (network, battery) are looked at.
 const POLL: Duration = Duration::from_secs(5);
@@ -168,6 +169,14 @@ pub struct Bar {
     dropdown: Dropdown,
     /// The notification history, opened by clicking the island.
     history: History,
+    /// The clock island, from the last frame.
+    clock_island: Option<Rect>,
+    /// The pointer is on the clock.
+    clock_hovered: bool,
+    /// When the pointer will have rested on the clock long enough to mean it.
+    playing_due: Option<Instant>,
+    /// What's playing, opened from the clock.
+    playing: Dropdown,
     /// What the notification daemon last reported.
     notices: Notices,
     /// The island was clicked: resting on it opens nothing more until the
@@ -204,8 +213,12 @@ impl Bar {
             status: None,
             status_hovered: false,
             intent_due: None,
-            dropdown: Dropdown::new(),
+            dropdown: Dropdown::control_center(),
             history: History::new(),
+            clock_island: None,
+            clock_hovered: false,
+            playing_due: None,
+            playing: Dropdown::now_playing(),
             notices: Notices::default(),
             clicked: false,
             ringing: None,
@@ -247,6 +260,7 @@ impl Bar {
     fn arm(&self, cx: &mut Cx<'_>) {
         let due = self.clock_due.min(self.poll_due);
         let due = self.intent_due.map_or(due, |intent| intent.min(due));
+        let due = self.playing_due.map_or(due, |intent| intent.min(due));
         cx.wake_in(due.saturating_duration_since(Instant::now()));
     }
 
@@ -281,6 +295,32 @@ impl Bar {
             self.intent_due = Some(Instant::now() + HOVER_INTENT);
         }
         self.arm(cx);
+    }
+
+    /// Follow the pointer for what's playing: tell an open card whether the
+    /// pointer is on the clock, and start (or abandon) the wait before
+    /// opening one.
+    fn follow_clock(&mut self, pointer: Option<(f32, f32)>, cx: &mut Cx<'_>) {
+        self.clock_hover(pointer);
+        self.arm(cx);
+    }
+
+    /// Track the pointer against the clock island, and the wait before what's
+    /// playing opens.
+    fn clock_hover(&mut self, pointer: Option<(f32, f32)>) {
+        let hovered = pointer.is_some_and(|(x, _)| {
+            self.clock_island
+                .is_some_and(|island| x >= island.x && x < island.right())
+        });
+        if hovered != self.clock_hovered {
+            self.clock_hovered = hovered;
+            self.playing.tell(hovered);
+        }
+        if !hovered {
+            self.playing_due = None;
+        } else if self.playing_due.is_none() && self.config.now_playing && !self.playing.is_open() {
+            self.playing_due = Some(Instant::now() + HOVER_INTENT);
+        }
     }
 
     /// Whether resting on the island opens the control center: not when
@@ -510,11 +550,12 @@ impl Bar {
                 .any(|tween| tween.is_animating(now))
     }
 
-    fn draw_clock(&self, canvas: &mut Canvas<'_>, bar: Rect, size: f32) {
+    fn draw_clock(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32) {
         let colors = &self.ctx.theme.colors;
         let text = Text::new(&self.clock, size, colors.text).medium();
         let width = canvas.measure(&text).w + 2.0 * space::LG;
         let island = bar.centered(width, bar.h);
+        self.clock_island = Some(island);
         canvas.pill(island, self.island_color(colors.base));
         canvas.text_in(&text, island, Align::Center);
     }
@@ -721,9 +762,16 @@ impl App for Bar {
                     if self.poll() {
                         cx.redraw();
                     }
-                    // A control center that has closed is cleaned up after
-                    // here, rather than left until the next hover.
+                    // A card that has closed is cleaned up after here,
+                    // rather than left until the next hover.
                     self.dropdown.is_open();
+                    self.playing.is_open();
+                }
+                if self.playing_due.is_some_and(|due| now >= due) {
+                    self.playing_due = None;
+                    if self.clock_hovered && self.config.now_playing {
+                        self.playing.open(self.config.position);
+                    }
                 }
                 if self.intent_due.is_some_and(|due| now >= due) {
                     self.intent_due = None;
@@ -742,6 +790,7 @@ impl App for Bar {
                     cx.redraw();
                 }
                 self.follow_status(Some((x, y)), cx);
+                self.follow_clock(Some((x, y)), cx);
             }
             // Scrolling on the status island turns the volume.
             Event::Pointer(PointerEvent::Scroll { dy, .. }) if self.status_hovered => {
@@ -759,6 +808,7 @@ impl App for Bar {
                     cx.redraw();
                 }
                 self.follow_status(None, cx);
+                self.follow_clock(None, cx);
             }
             Event::Pointer(PointerEvent::Press {
                 x,
@@ -1150,7 +1200,7 @@ mod tests {
     #[test]
     fn resting_opens_the_control_center_and_a_click_the_history() {
         let mut bar = sample("rose-pine-moon");
-        bar.dropdown = Dropdown::with_program("/nonexistent/enso-ctl");
+        bar.dropdown = Dropdown::with_program("enso-ctl", "the island", "/nonexistent/enso-ctl");
         bar.history = History::with_program("/nonexistent/enso-notify");
         assert!(bar.may_open_on_hover());
 
@@ -1168,6 +1218,26 @@ mod tests {
         // Switched off in the config, the island still takes the click.
         bar.config.control_center = false;
         assert!(!bar.may_open_on_hover());
+    }
+
+    #[test]
+    fn resting_on_the_clock_shows_whats_playing() {
+        let mut bar = sample("rose-pine-moon");
+        bar.playing = Dropdown::with_program("enso-play", "the clock", "/nonexistent/enso-play");
+        frame(&mut bar, later());
+        let clock = bar.clock_island.expect("the clock is drawn");
+        // Resting on the clock starts the short wait before it opens…
+        bar.clock_hover(Some((clock.x + clock.w / 2.0, 18.0)));
+        assert!(bar.clock_hovered && bar.playing_due.is_some());
+        // …and moving off abandons it. Either side of the clock is not it.
+        bar.clock_hover(Some((clock.x - 1.0, 18.0)));
+        assert!(!bar.clock_hovered && bar.playing_due.is_none());
+        bar.clock_hover(Some((clock.right() + 1.0, 18.0)));
+        assert!(!bar.clock_hovered);
+        // Switched off in the config, resting there opens nothing.
+        bar.config.now_playing = false;
+        bar.clock_hover(Some((clock.x + 1.0, 18.0)));
+        assert!(bar.clock_hovered && bar.playing_due.is_none());
     }
 
     #[test]

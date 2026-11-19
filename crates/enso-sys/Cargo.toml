@@ -33,6 +33,8 @@ systemd = ["dep:zbus"]
 udisks = ["dep:zbus"]
 # Keeping secrets in the session's keyring, through the Secret Service.
 secrets = ["dep:zbus"]
+# What media players are playing, and their buttons, through MPRIS.
+mpris = ["dep:zbus"]
 # Volume, per output and per application, through PipeWire's PulseAudio socket.
 audio = ["dep:pulseaudio"]
 

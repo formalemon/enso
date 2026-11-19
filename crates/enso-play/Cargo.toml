@@ -1,0 +1,27 @@
+[package]
+name = "enso-play"
+description = "What's playing, under the bar's clock: a card with the cover, a wavy timeline, and the buttons"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+# The players, through MPRIS on the session bus.
+enso-sys = { workspace = true, features = ["mpris"] }
+enso-ui.workspace = true
+# Covers: decoded in pure Rust, as notification pictures are.
+enso-fs.workspace = true
+lexopt.workspace = true
+# Covers that live on the web (Spotify's), fetched once and kept.
+ureq.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

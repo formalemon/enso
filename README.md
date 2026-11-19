@@ -3,7 +3,7 @@
 A small, pure-Rust desktop suite for the [Niri](https://github.com/YaLTeR/niri)
 Wayland compositor: a bar, a control center, a launcher, a notification
 daemon, a wallpaper, a power menu, a lock screen, a password prompt, a
-keyring, and a file manager — sharing one palette, one set of drawn icons,
+keyring, a file manager, and what's playing — sharing one palette, one set of drawn icons,
 and one way of moving.
 
 | Tool | What it is | State |
@@ -17,6 +17,7 @@ and one way of moving.
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
+| `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
 | `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, archives, git with GitHub and GitLab, drag and drop — keyboard and mouse alike; see [the plan](docs/plans/enso-files.md) | working |
 
 What's not built yet is under [Roadmap](#roadmap); what changed in each
@@ -74,6 +75,7 @@ spawn-at-startup "enso-lock" "watch"
 binds {
     Mod+D { spawn "enso-launch"; }   // press again to close
     Mod+C { spawn "enso-ctl"; }
+    Mod+P { spawn "enso-play"; }     // what's playing; again to close
     Mod+Escape { spawn "enso-power"; }   // then l, o, r, or s
     Super+Alt+L { spawn "enso-lock"; }
 
@@ -82,6 +84,9 @@ binds {
     XF86AudioRaiseVolume  allow-when-locked=true { spawn "enso-ctl" "volume" "up"; }
     XF86AudioLowerVolume  allow-when-locked=true { spawn "enso-ctl" "volume" "down"; }
     XF86AudioMute         allow-when-locked=true { spawn "enso-ctl" "volume" "toggle"; }
+    XF86AudioPlay         allow-when-locked=true { spawn "enso-play" "play-pause"; }
+    XF86AudioNext         allow-when-locked=true { spawn "enso-play" "next"; }
+    XF86AudioPrev         allow-when-locked=true { spawn "enso-play" "previous"; }
 }
 ```
 
@@ -112,7 +117,8 @@ crates/
   enso-fs/       listing, file operations, trash, pictures, thumbnails,
                  archives, git, search
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
-  enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/   the binaries
+  enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
+  enso-play/                                                     the binaries
 config.example.toml   every config key with its default
 docs/plans/           the file manager's plan, phase by phase
 contrib/              udev rules: the power profile, and udisks for wheel
@@ -163,6 +169,7 @@ the service itself (`/sys`, sockets, D-Bus), never to a CLI wrapper.
 | `dconf` | `ca.desrt.dconf`, on the session bus | writing desktop settings: the dark-or-light preference | `dconf` |
 | `auth` | `unix_chkpwd`, PAM's own helper | whether a password is the user's | always on, no dependencies |
 | `audio` | PipeWire, over its PulseAudio socket | outputs and microphones (which, level, mute) and each application's volume | `audio` |
+| `mpris` | every media player on the session bus (MPRIS) | what's playing and where in it; play, pause, skip, seek | `mpris` |
 | `net` | `/sys`, `/proc` | online by cable or Wi-Fi, and the signal | always on, no dependencies |
 
 The service backends are opt-in features, so a tool links only the clients
@@ -257,6 +264,31 @@ while one is open leaves it as it is.
 - **Scroll** on it to turn the volume, 5 % a notch.
 
 Without `enso-ctl` or `enso-notify` installed the island is simply a readout.
+
+The clock in the middle shows **what's playing**: rest the pointer on it and
+`enso-play` hangs a card beneath it — when something is playing; with
+nothing, resting there opens nothing. `now_playing = false` under `[bar]`
+turns it off.
+
+**`enso-play`** — one small card for any media player on the session bus
+(MPRIS): a YouTube tab in Firefox, Spotify, mpv. The cover on the left (the
+card is warmed a touch by its colour), the title, and who it's by and in
+what. Under them the timeline: what has played is a wave that rolls slowly
+onwards while it plays and lies down flat when paused, what's left a quiet
+straight line, a small upright thumb between them to drag. Then the times,
+and previous, play or pause, and next — the ones the player can't do are
+faint. With two players or more, dots at the foot choose between them;
+otherwise the card follows whichever is playing.
+
+Opened from the bar it never takes the keyboard and goes when the pointer
+does. `enso-play` alone opens it on purpose, and again closes it; then
+`Space` plays or pauses, `h`/`l` (or arrows) move five seconds, `n`/`p`
+skip, `Tab` turns to the next player, `Esc` closes. For the media keys,
+`enso-play play-pause`, `next`, and `previous` act on whichever player is
+playing, and `enso-play status` says what that is.
+
+Covers Firefox keeps on disk are read where they are; covers on the web
+(Spotify's) are fetched once into `~/.cache/enso/covers`.
 
 **`enso-ctl`** — one card. The first page is the glance and the quick
 controls: the power profile and the CPU's temperature and fan speed (the

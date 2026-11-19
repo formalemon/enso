@@ -154,6 +154,14 @@ pub enum Figure {
     Clock,
     /// A ribbon: a folder kept at hand.
     Bookmark,
+    /// Media: a triangle pointing on.
+    Play,
+    /// Media: two bars.
+    Pause,
+    /// Media: the triangle up against a bar — skip on.
+    Next,
+    /// Media: the same, turned back.
+    Previous,
 }
 
 /// An icon: the figure drawn, and a few letters standing in for it where
@@ -219,4 +227,8 @@ pub mod icon {
     pub const EJECT: Icon = Icon::new(Figure::Eject, "^");
     pub const CLOCK: Icon = Icon::new(Figure::Clock, "@");
     pub const BOOKMARK: Icon = Icon::new(Figure::Bookmark, "*");
+    pub const PLAY: Icon = Icon::new(Figure::Play, "play");
+    pub const PAUSE: Icon = Icon::new(Figure::Pause, "pause");
+    pub const NEXT: Icon = Icon::new(Figure::Next, ">>");
+    pub const PREVIOUS: Icon = Icon::new(Figure::Previous, "<<");
 }

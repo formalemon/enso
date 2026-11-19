@@ -570,6 +570,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "enso-play"
+version = "0.1.0"
+dependencies = [
+ "enso-core",
+ "enso-fs",
+ "enso-sys",
+ "enso-ui",
+ "lexopt",
+ "sha2",
+ "ureq",
+]
+
+[[package]]
 name = "enso-power"
 version = "0.1.0"
 dependencies = [

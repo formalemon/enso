@@ -1,10 +1,12 @@
-//! The control center, opened as a dropdown under the status island.
+//! Cards that hang from the bar: the control center under the status
+//! island, and what's playing under the clock.
 //!
-//! The bar does not draw the panel: it runs `enso-ctl --dropdown` and tells
-//! it, a line at a time on its standard input, whether the pointer is on the
-//! island (`enter`, `leave`). The panel closes itself once the pointer is on
-//! neither the island nor the panel. Without `enso-ctl` installed, hovering
-//! simply does nothing — the bar stays a complete tool on its own.
+//! The bar does not draw them: it runs the tool with `--dropdown` (`enso-ctl`,
+//! `enso-play`) and tells it, a line at a time on its standard input, whether
+//! the pointer is on the island (`enter`, `leave`). The card closes itself
+//! once the pointer is on neither the island nor the card. Without the tool
+//! installed, hovering simply does nothing — the bar stays a complete tool
+//! on its own.
 //!
 //! There is only ever one control center (enso-ctl keeps to one copy), and
 //! it and the notification history take turns: each closes the other as it
@@ -22,6 +24,10 @@ use crate::config::Position;
 
 #[derive(Debug)]
 pub struct Dropdown {
+    /// The tool's name, which it keeps to one copy by.
+    tool: &'static str,
+    /// What it hangs under, for the message when it can't be had.
+    under: &'static str,
     program: PathBuf,
     running: Option<(Child, ChildStdin)>,
     /// The program could not be started; do not keep trying.
@@ -29,15 +35,34 @@ pub struct Dropdown {
 }
 
 impl Dropdown {
-    /// The `enso-ctl` installed next to this bar if there is one (so a build
-    /// tree or a private prefix uses its own), otherwise whichever is on
-    /// `PATH`.
-    pub fn new() -> Self {
-        Self::with_program(enso_core::exe::companion("enso-ctl"))
+    /// The control center: the `enso-ctl` installed next to this bar if
+    /// there is one (so a build tree or a private prefix uses its own),
+    /// otherwise whichever is on `PATH`.
+    pub fn control_center() -> Self {
+        Self::with_program(
+            "enso-ctl",
+            "the status island",
+            enso_core::exe::companion("enso-ctl"),
+        )
     }
 
-    pub fn with_program(program: impl Into<PathBuf>) -> Self {
+    /// What's playing, from `enso-play`, found the same way.
+    pub fn now_playing() -> Self {
+        Self::with_program(
+            "enso-play",
+            "the clock",
+            enso_core::exe::companion("enso-play"),
+        )
+    }
+
+    pub fn with_program(
+        tool: &'static str,
+        under: &'static str,
+        program: impl Into<PathBuf>,
+    ) -> Self {
         Self {
+            tool,
+            under,
             program: program.into(),
             running: None,
             missing: false,
@@ -61,9 +86,9 @@ impl Dropdown {
         if self.is_open() {
             return self.tell(true);
         }
-        // A control center opened from the keyboard is already up: there is
-        // only ever one, so resting here leaves it be.
-        if self.missing || enso_core::ipc::is_listening("enso-ctl") {
+        // One opened from the keyboard is already up: there is only ever
+        // one, so resting here leaves it be.
+        if self.missing || enso_core::ipc::is_listening(self.tool) {
             return;
         }
         let edge = match position {
@@ -83,10 +108,11 @@ impl Dropdown {
                 self.missing = true;
                 if err.kind() == io::ErrorKind::NotFound {
                     eprintln!(
-                        "enso-bar: enso-ctl is not installed, so the status island opens nothing"
+                        "enso-bar: {} is not installed, so {} opens nothing",
+                        self.tool, self.under
                     );
                 } else {
-                    eprintln!("enso-bar: cannot open the control center: {err}");
+                    eprintln!("enso-bar: cannot open {}: {err}", self.tool);
                 }
             }
         }
@@ -176,7 +202,8 @@ mod tests {
 
     #[test]
     fn a_missing_program_is_tried_once_and_then_left_alone() {
-        let mut dropdown = Dropdown::with_program("/nonexistent/enso-ctl");
+        let mut dropdown =
+            Dropdown::with_program("enso-ctl", "the island", "/nonexistent/enso-ctl");
         assert!(!dropdown.is_open());
         dropdown.open(Position::Top);
         assert!(dropdown.missing && !dropdown.is_open());
@@ -202,7 +229,7 @@ mod tests {
     #[test]
     fn a_closed_panel_is_noticed_and_can_be_opened_again() {
         // `cat` stands in for the panel: it stays for as long as it is fed.
-        let mut dropdown = Dropdown::with_program("cat");
+        let mut dropdown = Dropdown::with_program("enso-test", "the island", "cat");
         dropdown.open(Position::Top);
         assert!(!dropdown.missing);
         // It does not know `--dropdown`, so it leaves at once.

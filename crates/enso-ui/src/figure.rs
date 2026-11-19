@@ -658,6 +658,24 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
             s.soft(&[(16.2, 8.0), (20.2, 12.0), (16.2, 16.0)], 0.6, false);
         }),
         Figure::Sleep => moon(p),
+        // The media figures: a soft triangle, drawn, like the eject's, and
+        // two bars. The triangle sits a little right of the middle, so its
+        // weight — not its box — is centred.
+        Figure::Play => p.stroke(true, |s| {
+            s.soft(&[(7.8, 5.2), (18.4, 12.0), (7.8, 18.8)], 1.6, true);
+        }),
+        Figure::Pause => p.stroke(true, |s| {
+            s.line((8.6, 5.6), (8.6, 18.4));
+            s.line((15.4, 5.6), (15.4, 18.4));
+        }),
+        Figure::Next => p.stroke(true, |s| {
+            s.soft(&[(5.4, 6.0), (14.6, 12.0), (5.4, 18.0)], 1.4, true);
+            s.line((18.6, 6.0), (18.6, 18.0));
+        }),
+        Figure::Previous => p.stroke(true, |s| {
+            s.soft(&[(18.6, 6.0), (9.4, 12.0), (18.6, 18.0)], 1.4, true);
+            s.line((5.4, 6.0), (5.4, 18.0));
+        }),
         Figure::CapsLock => p.stroke(true, |s| {
             s.soft(
                 &[
@@ -838,7 +856,7 @@ fn moon(p: &mut Pen<'_, '_>) {
 
 /// Every figure, and each state of those with states: for tests and
 /// contact sheets.
-pub const ALL: [Figure; 42] = [
+pub const ALL: [Figure; 46] = [
     Figure::Search,
     Figure::Apps,
     Figure::Folder,
@@ -881,6 +899,10 @@ pub const ALL: [Figure; 42] = [
     Figure::Eject,
     Figure::Clock,
     Figure::Bookmark,
+    Figure::Play,
+    Figure::Pause,
+    Figure::Next,
+    Figure::Previous,
 ];
 
 #[cfg(test)]

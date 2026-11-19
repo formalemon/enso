@@ -23,6 +23,9 @@ pub struct BarConfig {
     /// Open the control center (`enso-ctl`, when installed) under the status
     /// island while the pointer rests on it.
     pub control_center: bool,
+    /// Show what's playing (`enso-play`, when installed) under the clock
+    /// while the pointer rests on it.
+    pub now_playing: bool,
     /// How solid the islands are, `0.0..=1.0`: a little less than solid lets
     /// the wallpaper show through, just.
     pub opacity: f32,
@@ -35,6 +38,7 @@ impl Default for BarConfig {
             position: Position::Top,
             clock: DEFAULT_CLOCK.to_owned(),
             control_center: true,
+            now_playing: true,
             opacity: 0.9,
         }
     }
