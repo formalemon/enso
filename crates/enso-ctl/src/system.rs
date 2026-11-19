@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 
+use enso_core::{Paths, chosen};
 use enso_sys::{
     audio::{Mixer, Sound},
     bluetooth::{Bluetooth, Bluez},
@@ -137,6 +138,20 @@ pub enum Request {
     BluetoothDiscover(bool),
     BluetoothConnect(String),
     BluetoothDisconnect(String),
+    /// Keep a choice from Settings: `key` in the `[section]` table of the
+    /// state directory's `settings.toml` ([`chosen`]).
+    Keep {
+        section: &'static str,
+        key: &'static str,
+        value: Setting,
+    },
+}
+
+/// A value Settings keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Setting {
+    Seconds(u64),
+    Switch(bool),
 }
 
 /// News from a worker.
@@ -170,12 +185,18 @@ pub struct System {
     wifi: Sender<Request>,
     bluetooth: Sender<Request>,
     sound: Sender<Request>,
+    settings: Sender<Request>,
 }
 
 impl System {
     /// Start the workers. Each reports its domain's state straight away and
     /// then whenever it changes, through `report`, until that returns `false`.
-    pub fn start(report: impl Fn(Update) -> bool + Clone + Send + 'static) -> Self {
+    pub fn start(paths: Paths, report: impl Fn(Update) -> bool + Clone + Send + 'static) -> Self {
+        let (settings, settings_requests) = mpsc::channel();
+        spawn("enso-settings", {
+            let report = report.clone();
+            move || settings_worker(&paths, &settings_requests, &report)
+        });
         let (hardware, hardware_requests) = mpsc::channel();
         let (wifi, wifi_requests) = mpsc::channel();
         let (bluetooth, bluetooth_requests) = mpsc::channel();
@@ -200,6 +221,7 @@ impl System {
             wifi,
             bluetooth,
             sound,
+            settings,
         }
     }
 
@@ -211,7 +233,8 @@ impl System {
             hardware: sender.clone(),
             wifi: sender.clone(),
             bluetooth: sender.clone(),
-            sound: sender,
+            sound: sender.clone(),
+            settings: sender,
         };
         (system, requests)
     }
@@ -236,6 +259,7 @@ impl System {
             | Request::BluetoothDiscover(_)
             | Request::BluetoothConnect(_)
             | Request::BluetoothDisconnect(_) => &self.bluetooth,
+            Request::Keep { .. } => &self.settings,
         };
         // A worker that is gone has already said why, or the panel is closing.
         let _ = worker.send(request);
@@ -245,6 +269,46 @@ impl System {
 fn spawn(name: &str, work: impl FnOnce() + Send + 'static) {
     if let Err(err) = thread::Builder::new().name(name.to_owned()).spawn(work) {
         eprintln!("enso-ctl: cannot start the {name} thread: {err}");
+    }
+}
+
+/// Keeps what's chosen in Settings, in the order it was chosen, so the
+/// interface never waits on the disk. Of a run of changes to one setting —
+/// a switch flipped and flipped back — only the last is written.
+pub(crate) fn settings_worker(
+    paths: &Paths,
+    requests: &Receiver<Request>,
+    report: &impl Fn(Update) -> bool,
+) {
+    while let Ok(first) = requests.recv() {
+        let mut pending: Vec<(&str, &str, Setting)> = Vec::new();
+        for request in std::iter::once(first).chain(requests.try_iter()) {
+            if let Request::Keep {
+                section,
+                key,
+                value,
+            } = request
+            {
+                pending.retain(|(s, k, _)| (*s, *k) != (section, key));
+                pending.push((section, key, value));
+            }
+        }
+        for (section, key, value) in pending {
+            let kept = match value {
+                Setting::Seconds(seconds) => chosen::set(
+                    paths,
+                    section,
+                    key,
+                    i64::try_from(seconds).unwrap_or(i64::MAX),
+                ),
+                Setting::Switch(on) => chosen::set(paths, section, key, on),
+            };
+            if let Err(err) = kept
+                && !report(Update::Failed(format!("can't keep the setting: {err}")))
+            {
+                return;
+            }
+        }
     }
 }
 

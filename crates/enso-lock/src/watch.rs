@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 
-use enso_core::{Context, Paths};
+use enso_core::Paths;
 use enso_sys::logind;
 
 use crate::lock::LockConfig;
@@ -61,8 +61,7 @@ fn follow_settings(paths: &Paths, now: (u64, bool)) {
     let file = paths.config_file();
     let follow = |paths: Paths| {
         move || {
-            let mut ctx = Context::load_from(paths.clone());
-            let config: LockConfig = ctx.section("lock");
+            let config: LockConfig = enso_core::chosen::section(&paths, "lock");
             if watching(&config) != now {
                 let err = enso_core::exe::again().arg("watch").exec();
                 eprintln!("enso-lock: cannot start again with the new settings: {err}");

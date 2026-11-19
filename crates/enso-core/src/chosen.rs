@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{Paths, disk};
+use crate::{Config, Paths, disk};
 
 /// The file, in the state directory.
 pub const FILE: &str = "settings.toml";
@@ -59,6 +59,15 @@ pub(crate) fn overlay(paths: &Paths, sections: &mut toml::Table) -> Result<(), S
         }
     }
     Ok(())
+}
+
+/// One tool's table — `config.toml`'s, with what was chosen over it —
+/// without loading anything else (themes, say): quick enough to call each
+/// time the state directory changes. Whatever can't be read is defaults.
+pub fn section<T: serde::de::DeserializeOwned + Default>(paths: &Paths, name: &str) -> T {
+    let mut config = Config::load(paths).unwrap_or_default();
+    let _ = config.overlay_chosen(paths);
+    config.section(name).unwrap_or_default()
 }
 
 /// Choose `value` for `key` in the `[section]` table, keeping everything
@@ -110,6 +119,9 @@ mod tests {
         // What wasn't chosen is the config file's.
         assert_eq!(lock["clock"].as_str(), Some("%H.%M"));
         assert!(ctx.warnings.is_empty(), "{:?}", ctx.warnings);
+        // The quick way in reads the same.
+        let quick: toml::Table = section(&ctx.paths, "lock");
+        assert_eq!(quick, lock);
         let _ = fs::remove_dir_all(root);
     }
 }

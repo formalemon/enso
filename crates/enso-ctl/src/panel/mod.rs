@@ -49,7 +49,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     cli::{Edge, PanelMode},
-    system::{self, Hardware, Request, System, Update},
+    system::{self, Hardware, Request, Setting, System, Update},
     theme,
 };
 
@@ -79,6 +79,9 @@ const DROP_GAP: f32 = enso_core::style::edge::BELOW_BAR;
 /// Room a dropdown's surface keeps around the card for its shadow.
 const SHADOW_ROOM: f32 = 28.0;
 const PAD: f32 = space::LG;
+/// Room between the card's edge and what's on it — tiles, and the rows'
+/// highlights — and between the tiles and the rows: one line all round.
+const EDGE: f32 = space::SM;
 const TILE_HEIGHT: f32 = 60.0;
 const ROW_HEIGHT: f32 = 44.0;
 const NOTICE_HEIGHT: f32 = 28.0;
@@ -624,11 +627,11 @@ impl Panel {
                 let tiles = if draw::tiles(&self.hardware).is_empty() {
                     0.0
                 } else {
-                    TILE_HEIGHT + space::MD
+                    TILE_HEIGHT + EDGE
                 };
-                PAD + tiles + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM
+                EDGE + tiles + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM
             }
-            Page::Settings => PAD + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM,
+            Page::Settings => EDGE + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM,
             _ => {
                 // An empty list still says why it is empty, on one row.
                 let list = self.visible_rows().max(1) + usize::from(self.prompt_index().is_some());
@@ -642,7 +645,7 @@ impl Panel {
         let longest = MAX_SOUND_ROWS.max(MAX_ROWS + 1);
         let list = space::SM + ROW_HEIGHT + space::XS + longest as f32 * ROW_HEIGHT;
         // Tiles, two sliders, three rows.
-        let main = PAD + TILE_HEIGHT + space::MD + 5.0 * ROW_HEIGHT + DOTS_HEIGHT;
+        let main = EDGE + TILE_HEIGHT + EDGE + 5.0 * ROW_HEIGHT + DOTS_HEIGHT;
         list.max(main) + NOTICE_HEIGHT + space::SM
     }
 
@@ -1174,16 +1177,14 @@ impl Panel {
     /// Read what Settings shows: the config file's `[lock]` and `[notify]`,
     /// with what was chosen here over them.
     fn read_settings(&mut self) {
-        let mut ctx = Context::load_from(self.ctx.paths.clone());
-        self.lock = ctx.section("lock");
-        self.quiet = ctx.section::<Quiet>("notify").do_not_disturb;
+        self.lock = chosen::section(&self.ctx.paths, "lock");
+        self.quiet = chosen::section::<Quiet>(&self.ctx.paths, "notify").do_not_disturb;
     }
 
     /// Do not disturb, on or off, and keep it.
     fn toggle_quiet(&mut self) {
         self.quiet = !self.quiet;
-        let kept = chosen::set(&self.ctx.paths, "notify", "do_not_disturb", self.quiet);
-        self.kept(kept);
+        self.keep("notify", "do_not_disturb", Setting::Switch(self.quiet));
     }
 
     /// Move a time `step` choices along, and keep it.
@@ -1191,34 +1192,30 @@ impl Panel {
         let seconds = timer.step(self.lock.get(timer), step, wrap);
         if seconds != self.lock.get(timer) {
             self.lock.set(timer, seconds);
-            let kept = chosen::set(
-                &self.ctx.paths,
-                "lock",
-                timer.key(),
-                i64::try_from(seconds).unwrap_or(i64::MAX),
-            );
-            self.kept(kept);
+            self.keep("lock", timer.key(), Setting::Seconds(seconds));
         }
     }
 
     /// Lock before sleeping, or don't, and keep it.
     fn toggle_before_sleep(&mut self) {
         self.lock.before_sleep = !self.lock.before_sleep;
-        let kept = chosen::set(
-            &self.ctx.paths,
+        self.keep(
             "lock",
             "before_sleep",
-            self.lock.before_sleep,
+            Setting::Switch(self.lock.before_sleep),
         );
-        self.kept(kept);
     }
 
-    /// A choice is shown at once; say so if it couldn't be written where
-    /// the lock screen and its watcher read it.
-    fn kept(&mut self, kept: std::io::Result<()>) {
-        self.notice = kept
-            .err()
-            .map(|err| sentence(&format!("can't keep the setting: {err}")));
+    /// A choice shows at once; a worker writes it where the lock screen,
+    /// its watcher, and the notification daemon read it, and says so if it
+    /// can't.
+    fn keep(&mut self, section: &'static str, key: &'static str, value: Setting) {
+        self.notice = None;
+        self.request(Request::Keep {
+            section,
+            key,
+            value,
+        });
         self.settle();
     }
 
@@ -1616,7 +1613,7 @@ impl App for Panel {
     }
 
     fn start(&mut self, proxy: Proxy<Message>, cx: &mut Cx<'_>) {
-        self.system = System::start({
+        self.system = System::start(self.ctx.paths.clone(), {
             let proxy = proxy.clone();
             move |update| proxy.send(Message::System(Box::new(update)))
         });
@@ -1648,10 +1645,10 @@ impl App for Panel {
                 Outcome::Changed
             }
             Event::Message(Message::ThemeChanged) => {
+                // Settings are read as the panel opens, not again: what it
+                // keeps itself lands here too, and mustn't move a switch
+                // back while the panel's own write is on its way.
                 self.ctx.reload_theme();
-                // The state directory changed: perhaps the times too.
-                self.read_settings();
-                self.settle();
                 Outcome::Changed
             }
             Event::Message(Message::Owner(hovering)) => {

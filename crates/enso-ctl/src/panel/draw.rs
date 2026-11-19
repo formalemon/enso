@@ -20,7 +20,7 @@ use enso_ui::{
 };
 
 use super::{
-    DOTS_HEIGHT, Dial, Hit, Item, NOTICE_HEIGHT, PAD, Page, Panel, ROW_HEIGHT, SIDE_BY_SIDE,
+    DOTS_HEIGHT, Dial, EDGE, Hit, Item, NOTICE_HEIGHT, PAD, Page, Panel, ROW_HEIGHT, SIDE_BY_SIDE,
     Section, TILE_HEIGHT, Timer, bluetooth_summary, duration, wifi_summary,
 };
 use crate::{
@@ -197,8 +197,8 @@ impl Panel {
         now: Instant,
     ) -> f32 {
         let colors = &look.colors;
-        let inner = card.inset_xy(PAD, 0.0).translate(shift, 0.0);
-        let mut y = card.y + PAD;
+        let inner = card.inset_xy(EDGE, 0.0).translate(shift, 0.0);
+        let mut y = card.y + EDGE;
 
         let tiles = tiles(&self.hardware);
         if !tiles.is_empty() {
@@ -207,7 +207,8 @@ impl Panel {
             for (i, tile) in tiles.iter().enumerate() {
                 let rect = Rect::new(inner.x + i as f32 * (width + gap), y, width, TILE_HEIGHT);
                 canvas.fill(rect, radius::CONTROL, colors.overlay);
-                let content = rect.inset_xy(space::SM + 2.0, space::SM);
+                // Words in line with the rows' icons below.
+                let content = rect.inset_xy(space::SM, space::SM);
                 let top = Rect::new(content.x, content.y, content.w, content.h / 2.0);
                 let bottom = top.translate(0.0, content.h / 2.0);
                 // The reading comes first: its glyph is drawn only if there
@@ -234,7 +235,7 @@ impl Panel {
                     self.hits.push((rect, hit));
                 }
             }
-            y += TILE_HEIGHT + space::MD;
+            y += TILE_HEIGHT + EDGE;
         }
 
         let list = Rect::new(card.x + space::SM + shift, y, card.w - 2.0 * space::SM, 0.0);
@@ -591,7 +592,7 @@ impl Panel {
         let colors = &look.colors;
         let list = Rect::new(
             card.x + space::SM + shift,
-            card.y + PAD,
+            card.y + EDGE,
             card.w - 2.0 * space::SM,
             0.0,
         );

@@ -1099,8 +1099,26 @@ fn error_messages_become_sentences() {
 
 // ---- Screen & sleep ------------------------------------------------------------
 
-/// What enso-lock will read for `[lock]`.
-fn lock_as_read(panel: &Panel) -> LockTimes {
+/// Hand what the panel asked to keep to the settings worker, as the live
+/// panel does, and let it write it all.
+fn keep(panel: &Panel, requests: &Receiver<Request>) {
+    let (sender, kept) = std::sync::mpsc::channel();
+    for request in sent(requests) {
+        assert!(matches!(request, Request::Keep { .. }), "{request:?}");
+        sender.send(request).unwrap();
+    }
+    drop(sender);
+    let failed = std::cell::Cell::new(None);
+    system::settings_worker(&panel.ctx.paths, &kept, &|update| {
+        failed.set(Some(update));
+        true
+    });
+    assert_eq!(failed.into_inner(), None);
+}
+
+/// What enso-lock will read for `[lock]`, once what was asked is kept.
+fn lock_as_read(panel: &Panel, requests: &Receiver<Request>) -> LockTimes {
+    keep(panel, requests);
     Context::load_from(panel.ctx.paths.clone()).section("lock")
 }
 
@@ -1148,7 +1166,7 @@ fn screen_and_sleep_sits_beside_the_first_page() {
 
 #[test]
 fn times_step_and_are_kept_for_the_lock_screen() {
-    let (mut panel, _requests) = panel("screen-times");
+    let (mut panel, requests) = panel("screen-times");
     panel.open(Page::Settings);
     assert_eq!(panel.lock, LockTimes::default());
     panel.selected = item_at(&panel, Item::Timer(Timer::Lock));
@@ -1156,11 +1174,11 @@ fn times_step_and_are_kept_for_the_lock_screen() {
     // Five minutes, one step longer: ten.
     press(&mut panel, Key::Right);
     assert_eq!(panel.lock.idle_after, 600);
-    assert_eq!(lock_as_read(&panel).idle_after, 600);
+    assert_eq!(lock_as_read(&panel, &requests).idle_after, 600);
     // Back down two: two minutes.
     press(&mut panel, Key::Left);
     press(&mut panel, Key::Left);
-    assert_eq!(lock_as_read(&panel).idle_after, 120);
+    assert_eq!(lock_as_read(&panel, &requests).idle_after, 120);
 
     // The screen's time, by its arrow.
     render(&mut panel);
@@ -1168,14 +1186,14 @@ fn times_step_and_are_kept_for_the_lock_screen() {
         matches!(hit, Hit::Step(_, Timer::ScreenOff, 1))
     });
     panel.on_press(x, y);
-    assert_eq!(lock_as_read(&panel).screen_off_after, 60);
+    assert_eq!(lock_as_read(&panel, &requests).screen_off_after, 60);
 
     // The switch.
     press(&mut panel, Key::Down);
     press(&mut panel, Key::Down);
     assert_eq!(panel.items()[panel.selected], Item::BeforeSleep);
     press(&mut panel, Key::Char(' '));
-    assert!(!lock_as_read(&panel).before_sleep);
+    assert!(!lock_as_read(&panel, &requests).before_sleep);
     assert!(panel.notice.is_none());
 
     // What was kept is what a new panel shows.
@@ -1191,7 +1209,7 @@ fn times_step_and_are_kept_for_the_lock_screen() {
 
 #[test]
 fn settings_holds_the_theme_and_do_not_disturb() {
-    let (mut panel, _requests) = panel("settings");
+    let (mut panel, requests) = panel("settings");
     panel.open(Page::Settings);
     assert_eq!(
         panel.items(),
@@ -1218,6 +1236,7 @@ fn settings_holds_the_theme_and_do_not_disturb() {
     assert_eq!(panel.items()[panel.selected], Item::DoNotDisturb);
     press(&mut panel, Key::Char(' '));
     assert!(panel.quiet);
+    keep(&panel, &requests);
     let mut ctx = Context::load_from(panel.ctx.paths.clone());
     assert!(ctx.section::<Quiet>("notify").do_not_disturb);
     // The selection steps over the heading.
@@ -1231,6 +1250,27 @@ fn settings_holds_the_theme_and_do_not_disturb() {
             && panel.card.contains(rect.right() - 1.0, rect.bottom() - 1.0)
     }));
     snapshot(&frame, "ctl-settings");
+}
+
+#[test]
+fn the_worker_writes_only_the_last_of_a_run() {
+    let (panel, requests) = panel("keep-run");
+    // A switch flipped three times before the worker gets to it.
+    let (sender, kept) = std::sync::mpsc::channel();
+    for on in [true, false, true] {
+        sender
+            .send(Request::Keep {
+                section: "notify",
+                key: "do_not_disturb",
+                value: Setting::Switch(on),
+            })
+            .unwrap();
+    }
+    drop(sender);
+    system::settings_worker(&panel.ctx.paths, &kept, &|_| true);
+    let text = std::fs::read_to_string(enso_core::chosen::path(&panel.ctx.paths)).unwrap();
+    assert!(text.contains("do_not_disturb = true"), "{text}");
+    assert!(sent(&requests).is_empty());
 }
 
 #[test]

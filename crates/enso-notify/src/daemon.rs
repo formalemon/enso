@@ -643,8 +643,7 @@ impl App for Daemon {
                 }
                 // Do not disturb, switched in the control center, is kept
                 // in the same directory.
-                let mut ctx = enso_core::Context::load_from(self.ctx.paths.clone());
-                let config: NotifyConfig = ctx.section("notify");
+                let config: NotifyConfig = enso_core::chosen::section(&self.ctx.paths, "notify");
                 self.config.do_not_disturb = config.do_not_disturb;
             }
             Event::Message(Message::History(ask)) => {
