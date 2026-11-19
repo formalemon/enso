@@ -1,12 +1,9 @@
 # enso
 
-> **This README is behind.** It describes the suite as it stood before
-> 2026-11-18; [CHANGES.md](CHANGES.md) lists everything since, newest
-> first, and is the current word until this file catches up.
-
 A small, pure-Rust desktop suite for the [Niri](https://github.com/YaLTeR/niri)
 Wayland compositor: a bar, a control center, a launcher, a notification
-daemon, a wallpaper, a power menu, and a lock screen that share one palette
+daemon, a wallpaper, a power menu, a lock screen, a password prompt, a
+keyring, and a file manager — sharing one palette, one set of drawn icons,
 and one way of moving.
 
 | Tool | What it is | State |
@@ -20,12 +17,29 @@ and one way of moving.
 | `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
-| `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, bulk rename, the trash, drives — keyboard and mouse alike; see [the plan](docs/plans/enso-files.md) | working |
+| `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, archives, git with GitHub and GitLab, drag and drop — keyboard and mouse alike; see [the plan](docs/plans/enso-files.md) | working |
 
-This is the initial scaffold: the architecture, shared libraries, and a thin
-working slice of every tool. See [Roadmap](#roadmap) for what is not built yet.
+What's not built yet is under [Roadmap](#roadmap); what changed in each
+version is in its [release notes](https://github.com/formalemon/enso/releases).
 
-## Quick start
+## Install
+
+Every binary links only the C library — no Wayland, font, or image
+libraries to install — so one build runs on any x86-64 Linux with glibc.
+
+**From a release.** Each [release](https://github.com/formalemon/enso/releases)
+carries `enso-<version>-x86_64-linux.tar.gz`, every tool in one folder, and
+its SHA-256:
+
+```sh
+curl -LO https://github.com/formalemon/enso/releases/download/v0.1.0/enso-v0.1.0-x86_64-linux.tar.gz
+curl -LO https://github.com/formalemon/enso/releases/download/v0.1.0/enso-v0.1.0-x86_64-linux.tar.gz.sha256
+sha256sum -c enso-v0.1.0-x86_64-linux.tar.gz.sha256
+tar xf enso-v0.1.0-x86_64-linux.tar.gz
+cp enso-v0.1.0-x86_64-linux/enso-* ~/.local/bin/
+```
+
+**From source**, with Rust 1.89 or newer:
 
 ```sh
 cargo build --release            # everything
@@ -55,6 +69,7 @@ spawn-at-startup "enso-bar"
 spawn-at-startup "enso-notify"
 spawn-at-startup "enso-wall"
 spawn-at-startup "enso-auth"
+spawn-at-startup "enso-lock" "watch"
 
 binds {
     Mod+D { spawn "enso-launch"; }   // press again to close
@@ -70,6 +85,10 @@ binds {
 }
 ```
 
+Two tools are started by the session bus instead, once told to be:
+`enso-keyring enable` makes it the keyring, and `enso-files portal enable`
+makes it every application's file chooser.
+
 With `enso-bar` and `enso-ctl` installed, resting the pointer on the bar's
 right island opens the control center beneath it; with `enso-notify`
 running, clicking the island opens the notification history there instead.
@@ -84,13 +103,19 @@ in their place.
 
 ```
 crates/
-  enso-core/     palette, themes, config, motion + style tokens   (serde, toml)
+  enso-core/     palette, themes, config, motion + style tokens, atomic writes
     themes/      built-in themes; every *.toml here is embedded at build time
-  enso-ui/       layer-shell and per-output runtimes, software canvas, text, input
-  enso-sys/      direct system interfaces: /sys, iwd, BlueZ, logind, dconf, passwords
-  enso-bar/  enso-ctl/  enso-launch/  enso-notify/
-  enso-wall/  enso-power/  enso-lock/                             the binaries
+  enso-ui/       window, layer-shell and per-output runtimes, software canvas,
+                 text, input, widgets (fields, forms, menus, scrolling)
+  enso-sys/      direct system interfaces: /sys, iwd, BlueZ, logind, dconf,
+                 PipeWire, udisks2, accounts
+  enso-fs/       listing, file operations, trash, pictures, thumbnails,
+                 archives, git, search
+  enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
+  enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/   the binaries
 config.example.toml   every config key with its default
+docs/plans/           the file manager's plan, phase by phase
+contrib/              udev rules: the power profile, and udisks for wheel
 ```
 
 **`enso-core`** knows nothing about Wayland. `Context::load()` resolves
@@ -98,11 +123,25 @@ config, themes, and motion preferences in one call and never fails — a broken
 config file becomes a warning and defaults, not a dead desktop.
 
 **`enso-ui`** is the whole toolkit: implement the `App` trait (`surface`,
-`event`, `draw`) and call `run`. The runtime owns the layer-shell surface,
-buffers, HiDPI scale, keyboard layouts and key repeat, pointer, and frame
-pacing; it redraws only when asked and paces animations with frame callbacks,
-so an idle surface costs nothing. `Offscreen::render` draws any app without a
-compositor, which is how the interfaces are snapshot-tested.
+`event`, `draw`) and call `run`. The surface is a layer-shell one (a bar, a
+toast) or an ordinary window (`SurfaceSpec::window`) that Niri tiles like
+any other, and can belong to another program's window, as a file chooser
+belongs to the browser that asked for it. The runtime owns the surface,
+buffers, scale, keyboard layouts and key repeat, pointer, clipboard, drag
+and drop, and frame pacing; it redraws only when asked and paces
+animations with frame callbacks, so an idle surface costs nothing.
+
+- **Exact pixels at any scale.** On a screen scaled by 1.25 or 1.5, buffers
+  are drawn in its real pixels (`wp_fractional_scale` and `wp_viewporter`),
+  not at the next whole scale and shrunk.
+- **Input methods.** A focused text field shows what an input method
+  (fcitx5, IBus) is composing, underlined at the caret, and the candidates
+  open beside it (`zwp_text_input_v3`). It's only engaged while a field has
+  focus, and never for a password.
+- **Drags show what they carry**, drawn by the app beside the pointer.
+
+`Offscreen::render` draws any app without a compositor, which is how the
+interfaces are snapshot-tested.
 
 Two tools are not one surface but one per screen, and have a sibling runtime:
 implement `Screens` (`role`, `event`, `draw`) and call `run_screens`. A
@@ -158,6 +197,14 @@ loads C plugins, which this suite does not do.
   only the password counts: no fingerprint reader, no `pam_faillock`.
   `enso-auth` doesn't link PAM either: polkit's own helper runs it, so
   there the whole PAM stack applies.
+- **Secrets are wiped** after use (`zeroize`): typed passwords and
+  passphrases, PAM's questions, keyring secrets, tokens.
+- **Files are written whole**: beside the old one, synced, then swapped in
+  (`enso_core::disk`), so a crash never leaves half a setting.
+- **A rebuild doesn't break a running session.** The lock watcher,
+  enso-auth's prompts, and the file picker start themselves again through
+  `/proc/self/exe`, so replacing the binaries under them changes nothing
+  until they're restarted.
 - **`unsafe` is forbidden** across the workspace.
 
 ## The tools up close
@@ -225,8 +272,8 @@ A row opens a page of its own:
   says what choosing it does (`Connect`, `Disconnect`); a new secured network
   asks for its passphrase in a field right under it.
 - **Bluetooth** lists paired devices and, while the page is open, looks for
-  nearby ones. Choosing a new device pairs, trusts, and connects it. Devices
-  that need a PIN typed or confirmed have to be paired once elsewhere.
+  nearby ones. Choosing a new device pairs, trusts, and connects it; one that
+  needs a PIN typed or numbers compared asks through `enso-auth`.
 - **Sound** starts with where sound goes: the output's level, then every
   output there is — laptop speakers, a Bluetooth headset or speaker — with the
   one in use marked; choosing another moves what is playing over to it. Then
@@ -236,9 +283,19 @@ A row opens a page of its own:
 - **Theme** is the picker. Choosing one themes everything `theme set` does:
   see [Theming](#theming).
 
+Beside the first page, a sideways swipe on the touchpad away — or `Tab`,
+the page keys, or the dots at the card's foot — is **Screen & sleep**: how
+long the machine sits idle before the screen locks, how long the lock screen
+waits before turning the screens off and before putting the machine to
+sleep, and whether it locks just before sleeping. Each time steps with its
+arrows (or `h`/`l`). What's chosen there is kept in
+`~/.local/state/enso/settings.toml`, laid over `config.toml`'s `[lock]`
+without touching it, and the lock watcher follows it at once.
+
 Keys: `j`/`k` or arrows move; `Enter` or `l` opens or chooses; `h`, `Esc`, or
-`Backspace` goes back; `h`/`l` adjust a slider; `m` mutes; `Space` flips the
-switch of the row or page; `p` cycles the power profile; `q` closes.
+`Backspace` goes back; `h`/`l` adjust a slider or a time; `Tab` turns to the
+page beside; `m` mutes; `Space` flips the switch of the row or page; `p`
+cycles the power profile; `q` closes.
 
 Opened from a key binding the panel takes the keyboard. Opened from the bar
 it never does — hovering must not steal your typing — except for as long as a
@@ -340,6 +397,11 @@ kinds of entry, because some names are only sometimes junk:
 A directory that marks itself — a `CACHEDIR.TAG`, or the `pyvenv.cfg` of a
 Python virtual environment under any name — is listed but not entered.
 
+**Inside files**: a query starting with a quote (`"green tea`, or
+`"/te+a/` for a pattern) searches the contents of the indexed files, shows
+each match's line, and gives way the moment the query changes.
+`enso-launch --find '"words'` does it from a terminal.
+
 Opening a file uses the freedesktop databases directly — the shared MIME
 database for the type, `mimeapps.list` and `mimeinfo.cache` for the
 application — rather than `xdg-open`. Where nothing is associated, a text
@@ -353,7 +415,8 @@ showing.
   offers that, and dismisses it; other actions are buttons along its bottom
   edge. A right click dismisses without doing anything.
 - **Pictures.** Avatars, album art, and thumbnails sent as pixels
-  (`image-data`) or named as a PNG file are shown beside the text. Icon-theme
+  (`image-data`) or named as a PNG, JPEG, WebP, or GIF file are shown
+  beside the text. Icon-theme
   names are not looked up: the suite carries no icon theme.
 - **Level bars.** A notification with a `value` hint draws it as a bar, and
   one tagged `x-canonical-private-synchronous` replaces the last with the
@@ -398,7 +461,7 @@ enso-wall unset --theme rose-pine-dawn                    # back to the default
 enso-wall list                                            # who gets what, and why
 ```
 
-Pictures are PNG or JPEG. `set` records the choice in
+Pictures are PNG, JPEG, WebP, or GIF. `set` records the choice in
 `~/.local/state/enso/wallpapers.toml`; the same slots can be declared under
 `[wall]` in `config.toml`, and a recorded choice wins over a declared one. A
 running `enso-wall` follows both `set` and `enso-ctl theme set` at once,
@@ -475,6 +538,10 @@ presses the key.
 spawn-at-startup "enso-lock" "watch"
 ```
 
+All four times — `idle_after`, `screen_off_after`, `suspend_after`, and
+`before_sleep` — can be changed from the control center's Screen & sleep
+page as well as in `config.toml`; the watcher picks up a change at once.
+
 Only one lock screen runs at a time: a second, from the key while the first
 is up, steps aside.
 
@@ -542,6 +609,24 @@ its key, and the folders you go to most.
   folder, `Ctrl+C`/`X`/`V` copy, cut, and paste (with other file managers
   too), `Delete` trashes, `Ctrl+Z` undoes, `Ctrl+D` bookmarks, `F4` opens
   a terminal here.
+- **Dragging**, both ways, with any program: what's dragged out goes as
+  `text/uri-list` (and quoted paths, for terminals), with a pill beside the
+  pointer saying what's held; what's dropped in lands in the folder under
+  the pointer — copied, or moved when the drag is from this window.
+- **Archives**: zip and tar (gz, xz, zst, bz2) open as folders; take things
+  out, or make a new one.
+- **Version control**, opt-in (Settings): the branch and its state in the
+  status line, a branch menu with remote branches, fetch, pull, push,
+  clone, the identity to commit as. Signed in to **GitHub** or **GitLab**
+  (gitlab.com or your own) with your own OAuth app's device flow, the
+  token goes in the keyring; clone lists your repositories, publish makes
+  one, and git can ask enso-files for the way in.
+- **Drives** in the sidebar (udisks2), mounted with a click, and **Open
+  with…** for every application that takes the type.
+
+As the file picker, behind the desktop portal, it answers every "Open…"
+and "Save as…" — Firefox, Chromium, Electron, Flatpaks — in the window of
+the program that asked, and remembers each program's folder.
 
 **`enso-keyring`** — where programs keep passwords and tokens: the Secret
 Service (`org.freedesktop.secrets`), which gh, git (with
@@ -768,22 +853,33 @@ cargo fmt --all
 ```
 
 Render tests write PNGs of each interface to `target/snapshots/` — the
-quickest way to see a visual change without restarting anything.
+quickest way to see a visual change without restarting anything. A dozen
+key screens are also held to reference pictures in `crates/*/snapshots/`:
+a test fails when more than a sliver changes, and writes the changes in
+magenta beside the snapshot. `ENSO_BLESS=1 cargo test` makes the new
+pictures the references, for when a change is meant.
+
+Tests that could raise a real prompt (enso-auth, enso-keyring) run without
+a compositor: `env -u WAYLAND_DISPLAY cargo test --workspace`.
+
+**Releasing** is pushing a tag: `git tag v0.2.0 && git push origin v0.2.0`.
+The release workflow builds every tool, packs them with their SHA-256, and
+publishes the release, its notes written from the commits since the last
+one.
 
 ## Roadmap
 
-- **enso-ctl** — Bluetooth pairing that needs a PIN; forgetting networks and
-  devices from the panel (the command line can); more theme targets (other
-  terminals, Kvantum).
-- **enso-launch** — Git's global excludes file and `.git/info/exclude`;
-  searching file contents.
-- **enso-notify** — pictures in formats other than PNG; keeping pictures in
-  the saved history; styled (bold, italic) body text.
+- **enso-ctl** — forgetting networks and devices from the panel (the
+  command line can); more theme targets (other terminals, Kvantum).
+- **enso-launch** — Git's global excludes file and `.git/info/exclude`.
+- **enso-notify** — keeping pictures in the saved history; styled (bold,
+  italic) body text.
 - **enso-bar** — one bar per output.
-- **enso-wall** — a picture per output; picture formats beyond PNG and JPEG;
-  honouring a photograph's EXIF rotation.
+- **enso-wall** — a picture per output; honouring a photograph's EXIF
+  rotation.
 - **enso-lock** — authentication beyond the password (fingerprint), which
   means PAM.
 - **enso-power** — a tile in the control center.
-- **enso-ui** — fractional scaling for the single-surface runtime (the
-  per-output one has it).
+- **enso-files** — the plan's last phase: saved searches, restoring the
+  last session's tabs, checksums, tags, and finding duplicates.
+- **Releases** — builds for aarch64.

@@ -1,0 +1,76 @@
+# Pushing a tag vX.Y.Z builds every tool and publishes a release with them:
+#   enso-vX.Y.Z-x86_64-linux.tar.gz          the binaries, in one folder
+#   enso-vX.Y.Z-x86_64-linux.tar.gz.sha256   its checksum, for `sha256sum -c`
+# The notes list the commits since the tag before; edit them on GitHub after.
+#
+# Built on the oldest Ubuntu runner on offer: a binary linked against an
+# older glibc runs on newer ones (Arch included), not the other way round.
+# The binaries link nothing but the C library, so nothing else is needed.
+
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: The tag matches the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME, but Cargo.toml says $version" >&2
+            exit 1
+          fi
+
+      - name: Build
+        run: cargo build --release --workspace --locked
+
+      - name: Pack
+        run: |
+          name="enso-$GITHUB_REF_NAME-x86_64-linux"
+          mkdir "$name"
+          find target/release -maxdepth 1 -type f -executable -name 'enso-*' \
+            -exec cp {} "$name/" \;
+          cp README.md config.example.toml "$name/"
+          ls -l "$name"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "NAME=$name" >> "$GITHUB_ENV"
+
+      - name: Notes
+        run: |
+          previous=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          {
+            if [ -n "$previous" ]; then
+              echo "Changes since $previous:"
+              echo
+              git log --no-merges --format='- %s' "$previous..$GITHUB_REF_NAME"
+            else
+              echo "The first release."
+            fi
+          } > notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$NAME.tar.gz" "$NAME.tar.gz.sha256" \
+            --title "enso $GITHUB_REF_NAME" \
+            --notes-file notes.md
