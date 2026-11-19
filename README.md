@@ -16,6 +16,7 @@ and one way of moving.
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: the ensō, a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-greet` | Login screen, as a greeter for greetd: the ensō, your name, and a password; Tab for someone else | working |
+| `enso-boot` | Boot menu, for the firmware: Arch or Windows over rice terraces at dusk, in voxels; then the ensō while Arch starts | new |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
@@ -121,7 +122,8 @@ crates/
                  archives, git, search
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
   enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
-  enso-play/  enso-greet/                                        the binaries
+  enso-play/  enso-greet/  enso-boot/                            the binaries
+  enso-scene/    the boot menu's picture: terraces, river, mountains, computed
 config.example.toml   every config key with its default
 contrib/              udev rules: the power profile, and udisks for wheel
 ```
@@ -214,7 +216,10 @@ loads C plugins, which this suite does not do.
   enso-auth's prompts, and the file picker start themselves again through
   `/proc/self/exe`, so replacing the binaries under them changes nothing
   until they're restarted.
-- **`unsafe` is forbidden** across the workspace.
+- **`unsafe` is forbidden** across the workspace, but for one module:
+  `enso-boot`'s `firmware.rs`, where a boot menu has to take the
+  firmware's word (its entry point, and a kernel's command line handed
+  over as a pointer). Each use there says why it is sound.
 
 ## The tools up close
 
@@ -631,6 +636,31 @@ glow every nine seconds, with a light travelling the stroke every fourteen —
 redrawn a few times a second, never every frame. With motion turned off it
 is simply there.
 
+**`enso-boot`** — the boot menu, a program for the firmware. Over a
+picture of rice terraces stepping down to a river at dusk, the river
+winding off to the mountains under the moon, all in voxels and the theme's
+colours, it offers Arch and Windows. Nothing starts until Enter: it never
+picks for you. Choosing Arch puts up the ensō on the base colour, the very
+frame the login screen starts from, and with a quiet boot that is what
+stays on screen until the password is asked for (a moment of black as the
+graphics driver takes over is likely).
+
+The picture is computed (`enso-scene`: a height field of voxels, one ray a
+pixel and more at edges), drawn with the menu's words when enso-boot is
+built for the firmware, and packed into it; at boot it is only unpacked and
+shown. Arch starts as systemd-boot's entry for it says (`/loader/entries`),
+so kernel options are changed in one place for both menus; Windows' own
+boot manager is started from the same partition.
+
+```sh
+rustup target add x86_64-unknown-uefi
+cargo build --release -p enso-boot --target x86_64-unknown-uefi
+cargo run --release -p enso-boot -- install   # prints the steps, as root
+```
+
+systemd-boot stays installed underneath: Esc in the menu, or anything
+going wrong, hands over to it.
+
 **`enso-auth`** — when a program asks for something only an administrator
 may do (mounting an internal disk, changing a system setting, `pkexec`),
 polkit asks the session's *authentication agent* to have someone show who
@@ -965,6 +995,8 @@ one.
   rotation.
 - **enso-lock** — authentication beyond the password (fingerprint), which
   means PAM.
+- **enso-boot** — a picture for other screen sizes than 16:9 at 1080p
+  (others are scaled, not redrawn); entries beyond Arch and Windows.
 - **enso-greet** — a session chooser, once there is a second desktop to
   choose; remembering who logged in last.
 - **enso-power** — a tile in the control center.

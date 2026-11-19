@@ -1,0 +1,45 @@
+[package]
+name = "enso-boot"
+description = "Boot menu: Arch or Windows, over the terraces at dusk; then the ensō while Arch starts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "enso-boot"
+path = "src/main.rs"
+test = true
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { version = "0.41", default-features = false, features = ["alloc", "global_allocator", "panic_handler"] }
+
+[dependencies]
+# The pictures are kept compressed in the program, and opened at boot.
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+
+[build-dependencies]
+enso-core.workspace = true
+enso-ui.workspace = true
+enso-scene = { path = "../enso-scene", version = "0.2.0" }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+
+[dev-dependencies]
+enso-core.workspace = true
+enso-ui = { workspace = true, features = ["png"] }
+enso-scene = { path = "../enso-scene", version = "0.2.0" }
+
+# The workspace's lints, but unsafe code denied rather than forbidden: a
+# boot loader has to take the firmware's word for a few things, and does
+# so in one module (firmware.rs), which says why each time.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
