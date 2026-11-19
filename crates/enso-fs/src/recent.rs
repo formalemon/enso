@@ -154,7 +154,7 @@ mod tests {
       xmlns:bookmark="http://www.freedesktop.org/standards/desktop-bookmarks"
       xmlns:mime="http://www.freedesktop.org/standards/shared-mime-info"
 >
-  <bookmark href="file:///home/ren/a%20b.png" added="2026-11-15T12:59:20Z" modified="2026-11-16T16:39:22Z" visited="2026-11-15T12:59:20Z">
+  <bookmark href="file:///home/kai/a%20b.png" added="2026-11-15T12:59:20Z" modified="2026-11-16T16:39:22Z" visited="2026-11-15T12:59:20Z">
     <info/>
   </bookmark>
   <bookmark href="https://example.com/" added="2026-11-17T00:00:00Z" modified="2026-11-17T00:00:00Z" visited="2026-11-17T00:00:00Z">
@@ -169,7 +169,7 @@ mod tests {
         let mut recent = parse(XBEL);
         recent.sort_by_key(|recent| std::cmp::Reverse(recent.when));
         let paths: Vec<_> = recent.iter().map(|r| r.path.to_str().unwrap()).collect();
-        assert_eq!(paths, ["/home/ren/a b.png", "/tmp/x.tar.gz"]);
+        assert_eq!(paths, ["/home/kai/a b.png", "/tmp/x.tar.gz"]);
     }
 
     #[test]
@@ -180,10 +180,10 @@ mod tests {
         assert!(again.contains(&format!(
             r#"href="file:///tmp/x.tar.gz" added="2026-11-15T18:01:56Z" modified="{now}" visited="{now}""#
         )));
-        let fresh = added(XBEL, "file:///home/ren/new.txt", "text/plain", now);
+        let fresh = added(XBEL, "file:///home/kai/new.txt", "text/plain", now);
         assert!(fresh.ends_with("  </bookmark>\n</xbel>\n"));
         assert_eq!(parse(&fresh).len(), 3);
-        assert_eq!(parse(&fresh)[2].path, Path::new("/home/ren/new.txt"));
+        assert_eq!(parse(&fresh)[2].path, Path::new("/home/kai/new.txt"));
         // From nothing: a whole file.
         let first = added("", "file:///a", "text/plain", now);
         assert!(first.starts_with("<?xml") && first.ends_with("</xbel>\n"));

@@ -93,13 +93,13 @@ mod tests {
     #[test]
     fn reads_lines_and_skips_what_isnt_one() {
         let users = parse_users(
-            "root:x:0:0::/root:/bin/bash\n# a comment\nren:x:1000:1000::/home/ren:/bin/bash\n:x:7:7\n",
+            "root:x:0:0::/root:/bin/bash\n# a comment\nkai:x:1000:1000::/home/kai:/bin/bash\n:x:7:7\n",
         );
         let names: Vec<_> = users.iter().map(|user| (&*user.name, user.uid)).collect();
-        assert_eq!(names, [("root", 0), ("ren", 1000)]);
-        let groups = parse_groups("wheel:x:998:ren,root\nren:x:1000:\nbroken\n");
+        assert_eq!(names, [("root", 0), ("kai", 1000)]);
+        let groups = parse_groups("wheel:x:998:kai,root\nren:x:1000:\nbroken\n");
         assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].members, ["ren", "root"]);
+        assert_eq!(groups[0].members, ["kai", "root"]);
         assert!(groups[1].members.is_empty());
     }
 

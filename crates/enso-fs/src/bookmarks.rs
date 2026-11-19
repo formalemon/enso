@@ -165,26 +165,26 @@ mod tests {
     #[test]
     fn read_change_and_write_back() {
         let text =
-            "file:///home/ren/dev\nfile:///home/ren/My%20Notes Notes\nsftp://kiri/srv Server\n";
+            "file:///home/kai/dev\nfile:///home/kai/My%20Notes Notes\nsftp://kiri/srv Server\n";
         let mut marks = Bookmarks::parse(text);
         let folders = marks.folders();
         assert_eq!(folders.len(), 2, "the server stays, unoffered");
-        assert_eq!(folders[1].path, Path::new("/home/ren/My Notes"));
+        assert_eq!(folders[1].path, Path::new("/home/kai/My Notes"));
         assert_eq!(folders[1].name(), "Notes");
         assert_eq!(folders[0].name(), "dev");
         assert_eq!(marks.to_text(), text, "untouched, it reads back the same");
 
-        assert!(!marks.add(Path::new("/home/ren/dev")));
+        assert!(!marks.add(Path::new("/home/kai/dev")));
         assert!(marks.add(Path::new("/tmp/a b")));
         assert!(marks.shift(Path::new("/tmp/a b"), -1));
         assert!(
-            !marks.shift(Path::new("/home/ren/dev"), -1),
+            !marks.shift(Path::new("/home/kai/dev"), -1),
             "already first"
         );
-        assert!(marks.remove(Path::new("/home/ren/dev")));
+        assert!(marks.remove(Path::new("/home/kai/dev")));
         assert_eq!(
             marks.to_text(),
-            "file:///home/ren/My%20Notes Notes\nfile:///tmp/a%20b\nsftp://kiri/srv Server\n"
+            "file:///home/kai/My%20Notes Notes\nfile:///tmp/a%20b\nsftp://kiri/srv Server\n"
         );
     }
 }

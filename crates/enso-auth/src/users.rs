@@ -59,13 +59,13 @@ mod tests {
     use super::*;
 
     const PASSWD: &str = "root:x:0:0::/root:/bin/bash
-ren:x:1000:1000::/home/ren:/bin/bash
+kai:x:1000:1000::/home/kai:/bin/bash
 guest:x:1001:1001::/home/guest:/bin/bash
 admin:x:1002:998::/home/admin:/bin/bash
 ";
     const GROUP: &str = "root:x:0:root
-wheel:x:998:ren,root
-ren:x:1000:
+wheel:x:998:kai,root
+kai:x:1000:
 ";
 
     fn users() -> Vec<User> {
@@ -81,19 +81,19 @@ ren:x:1000:
         let wheel = [Identity::Group(998)];
         assert_eq!(
             resolve(&wheel, 1000, &users(), &groups()),
-            ["ren", "admin", "root"]
+            ["kai", "admin", "root"]
         );
         // A guest at the screen isn't in wheel, so isn't offered: an
         // administrator has to answer.
         let names = resolve(&wheel, 1001, &users(), &groups());
-        assert_eq!(names, ["ren", "admin", "root"]);
+        assert_eq!(names, ["kai", "admin", "root"]);
         assert!(!names.iter().any(|name| name == "guest"));
         let wanted = [
             Identity::User(0),
             Identity::User(1000),
             Identity::User(1000),
         ];
-        assert_eq!(resolve(&wanted, 1000, &users(), &groups()), ["ren", "root"]);
+        assert_eq!(resolve(&wanted, 1000, &users(), &groups()), ["kai", "root"]);
         assert!(resolve(&[Identity::User(4242)], 1000, &users(), &groups()).is_empty());
     }
 }
