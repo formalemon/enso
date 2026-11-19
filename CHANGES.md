@@ -4,6 +4,17 @@ What changed that you would notice, newest first, a line or two each. The
 README describes the suite as it stood before 2026-11-18 and is behind in
 places; this file is current. Add to it with each change worth mentioning.
 
+## 2026-11-19
+
+### Across the suite
+
+- **Sharp at 1.25 and 1.5.** Windows, bars, toasts, and every other
+  single-surface tool now draw in the screen's real pixels on a
+  fractionally scaled output, as the wallpaper and lock screen already did,
+  instead of drawing at the next whole scale and being shrunk to fit. The
+  README's roadmap item "fractional scaling for the single-surface runtime"
+  is done.
+
 ## 2026-11-18
 
 ### Across the suite

@@ -49,6 +49,16 @@ pub(crate) fn drawn(scale120: u32, viewport: bool) -> u32 {
     }
 }
 
+/// A buffer for a surface `logical` pixels in size at `scale120`: its
+/// size in pixels, and the scale (in 120ths) it is drawn at.
+pub(crate) fn buffer(logical: (u32, u32), scale120: u32, viewport: bool) -> ((u32, u32), u32) {
+    let scale = drawn(scale120, viewport);
+    (
+        (physical(logical.0, scale), physical(logical.1, scale)),
+        scale,
+    )
+}
+
 impl<D: 'static> Dispatch2<WpFractionalScaleManagerV1, D> for Extension {
     fn event(
         &self,
@@ -113,5 +123,18 @@ mod tests {
         assert_eq!(drawn(150, true), 150);
         assert_eq!(drawn(150, false), 240);
         assert_eq!(drawn(120, false), 120);
+    }
+
+    #[test]
+    fn window_buffers() {
+        // A 900×640 window at 1.5 is drawn at exactly 1350×960 through a
+        // viewport, and at 2, then shown scaled down, without one.
+        assert_eq!(buffer((900, 640), 180, true), ((1350, 960), 180));
+        assert_eq!(buffer((900, 640), 180, false), ((1800, 1280), 240));
+        // At 1 nothing changes either way.
+        assert_eq!(buffer((900, 640), 120, true), ((900, 640), 120));
+        assert_eq!(buffer((900, 640), 120, false), ((900, 640), 120));
+        // Odd sizes round as the protocol does.
+        assert_eq!(buffer((901, 641), 150, true), ((1126, 801), 150));
     }
 }

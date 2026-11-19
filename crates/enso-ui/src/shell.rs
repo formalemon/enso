@@ -24,9 +24,18 @@ use calloop::{
     timer::{TimeoutAction, Timer},
 };
 use enso_core::config::Appearance;
-use smithay_client_toolkit::reexports::protocols::xdg::foreign::zv2::client::{
-    zxdg_imported_v2::{self, ZxdgImportedV2},
-    zxdg_importer_v2::ZxdgImporterV2,
+use smithay_client_toolkit::reexports::protocols::{
+    wp::{
+        fractional_scale::v1::client::{
+            wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+            wp_fractional_scale_v1::WpFractionalScaleV1,
+        },
+        viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
+    },
+    xdg::foreign::zv2::client::{
+        zxdg_imported_v2::{self, ZxdgImportedV2},
+        zxdg_importer_v2::ZxdgImporterV2,
+    },
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
@@ -83,6 +92,7 @@ use smithay_client_toolkit::{
 
 use crate::{
     canvas::Canvas,
+    fractional::{self, Extension, ScaleOf, Scaled},
     geom::{Rect, Size},
     input::{Button, KeyEvent, Mods, PointerEvent},
     keymap::Keys,
@@ -640,6 +650,20 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
 
     let spec = app.surface();
     let wl_surface = compositor.create_surface(&qh);
+    // Exact pixels on a fractionally scaled output need both protocols;
+    // without either, whole-number scales are used.
+    let fractional: Option<(WpFractionalScaleManagerV1, WpViewporter)> = globals
+        .bind(&qh, 1..=1, Extension)
+        .ok()
+        .zip(globals.bind(&qh, 1..=1, Extension).ok());
+    let viewport = fractional.map(|(scales, viewporter)| {
+        let viewport = viewporter.get_viewport(&wl_surface, &qh, Extension);
+        let scale = scales.get_fractional_scale(&wl_surface, &qh, ScaleOf(wl_surface.clone()));
+        // The surface keeps its own; the globals aren't needed again.
+        scales.destroy();
+        viewporter.destroy();
+        (viewport, scale)
+    });
     let surface = match &spec.window {
         None => {
             let layer_shell = LayerShell::bind(&globals, &qh)
@@ -738,7 +762,8 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         handle,
         text: TextEngine::new(appearance),
         size: (spec.width.max(1), spec.height.max(1)),
-        scale: 1,
+        scale120: 120,
+        viewport,
         visible: false,
         input_region: None,
         configured: false,
@@ -797,7 +822,10 @@ struct Runtime<A: App> {
     spec: SurfaceSpec,
     /// Logical size from the last configure.
     size: (u32, u32),
-    scale: i32,
+    /// Scale in 120ths, as the fractional-scale protocol counts.
+    scale120: u32,
+    /// Present when buffers are sized by a fractional scale.
+    viewport: Option<(WpViewport, WpFractionalScaleV1)>,
     visible: bool,
     /// Where the surface takes pointer input; `None` is all of it.
     input_region: Option<Rect>,
@@ -1145,9 +1173,10 @@ impl<A: App> Runtime<A> {
 
     fn draw(&mut self) {
         self.dirty = false;
-        let scale = self.scale.max(1);
-        let width = self.size.0 as i32 * scale;
-        let height = self.size.1 as i32 * scale;
+        // Without a viewport the compositor only takes whole-number scales.
+        let ((width, height), scale120) =
+            fractional::buffer(self.size, self.scale120, self.viewport.is_some());
+        let (width, height) = (width as i32, height as i32);
         let (buffer, pixels) =
             match self
                 .pool
@@ -1162,14 +1191,20 @@ impl<A: App> Runtime<A> {
             pixels,
             width as u32,
             height as u32,
-            scale as f32,
+            scale120 as f32 / 120.0,
             true,
             &mut self.text,
         );
         let paint = self.app.draw(&mut canvas, Instant::now());
 
         let surface = self.surface.wl_surface();
-        surface.set_buffer_scale(scale);
+        match &self.viewport {
+            Some((viewport, _)) => {
+                surface.set_buffer_scale(1);
+                viewport.set_destination(self.size.0 as i32, self.size.1 as i32);
+            }
+            None => surface.set_buffer_scale((scale120 / 120) as i32),
+        }
         surface.damage_buffer(0, 0, width, height);
         if paint == Paint::Animating {
             surface.frame(&self.qh, FrameCallbackData(surface.clone()));
@@ -1222,6 +1257,15 @@ impl<A: App> Runtime<A> {
     fn stop_repeat(&mut self) {
         if let Some((_, token)) = self.repeating.take() {
             self.handle.remove(token);
+        }
+    }
+}
+
+impl<A: App> Scaled for Runtime<A> {
+    fn prefer_scale(&mut self, surface: &WlSurface, scale120: u32) {
+        if self.is_own(surface) && scale120 != self.scale120 {
+            self.scale120 = scale120;
+            self.dirty = true;
         }
     }
 }
@@ -1301,8 +1345,10 @@ impl<A: App> CompositorHandler for Runtime<A> {
         surface: &WlSurface,
         factor: i32,
     ) {
-        if self.is_own(surface) && factor != self.scale {
-            self.scale = factor;
+        // The fractional scale, where there is one, is the better answer.
+        let scale120 = factor.max(1) as u32 * 120;
+        if self.is_own(surface) && self.viewport.is_none() && scale120 != self.scale120 {
+            self.scale120 = scale120;
             self.dirty = true;
         }
     }

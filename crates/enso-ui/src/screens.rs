@@ -453,11 +453,9 @@ impl<A: Screens> Runtime<A> {
         let surface = &mut self.surfaces[index];
         surface.dirty = false;
         // Without a viewport the compositor only takes whole-number scales.
-        let scale120 = fractional::drawn(surface.scale120, surface.viewport.is_some());
-        let (width, height) = (
-            physical(surface.size.0, scale120) as i32,
-            physical(surface.size.1, scale120) as i32,
-        );
+        let ((width, height), scale120) =
+            fractional::buffer(surface.size, surface.scale120, surface.viewport.is_some());
+        let (width, height) = (width as i32, height as i32);
         let screen = Screen {
             name: self
                 .outputs
