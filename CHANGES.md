@@ -21,6 +21,13 @@ places; this file is current. Add to it with each change worth mentioning.
   caret. It is only switched on while a text field has focus, and never
   for a password.
 
+### enso-files
+
+- **Settings fit a short window.** Where the window is too short for every
+  line, the lines scroll between the title and the footer — with the
+  wheel, the touchpad, or by moving through them with the keys — instead
+  of running under the Done button.
+
 ### enso-keyring
 
 - **Secrets read back as the spec has them.** `GetSecret` answered with the

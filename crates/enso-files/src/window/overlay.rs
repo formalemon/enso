@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use enso_ui::widget::Menu;
 
-use super::{MenuFor, archives, ops, palette, properties, renamer, vcs};
+use super::{MenuFor, archives, ops, palette, properties, renamer, settings, vcs};
 
 pub(super) enum Overlay {
     /// The keys worth knowing (`?`, `F1`).
@@ -23,8 +23,8 @@ pub(super) enum Overlay {
     /// Making an archive.
     Packing(archives::Packing),
     Properties(properties::Properties),
-    /// Settings, and which line has the keyboard.
-    Settings(usize),
+    /// Settings: which line has the keyboard, and how far it's scrolled.
+    Settings(settings::Panel),
     /// Version control's question or form.
     Vcs(vcs::Vcs),
     /// A name already taken, while copying or moving.
@@ -88,7 +88,7 @@ reach! {
     Renamer(renamer::Renamer) => renamer, renamer_mut, take_renamer;
     Packing(archives::Packing) => packing, packing_mut, take_packing;
     Properties(properties::Properties) => properties, properties_mut, take_properties;
-    Settings(usize) => settings, settings_mut, take_settings;
+    Settings(settings::Panel) => settings, settings_mut, take_settings;
     Vcs(vcs::Vcs) => vcs, vcs_mut, take_vcs;
     Asked(ops::Asked) => asked, asked_mut, take_asked;
     ConfirmDelete(Vec<PathBuf>) => confirm_delete, confirm_delete_mut, take_confirm_delete;

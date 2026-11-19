@@ -115,6 +115,19 @@ fn render(files: &mut Files, size: (u32, u32)) -> Offscreen {
     })
 }
 
+/// Draw until whatever was set moving has stopped.
+fn settle(files: &mut Files, size: (u32, u32)) -> Offscreen {
+    let start = Instant::now() + Duration::from_secs(2);
+    let mut text = TextEngine::new(&files.ctx.config.appearance);
+    Offscreen::render(&mut text, size, 2, |canvas| {
+        files.draw_window(canvas, start);
+        assert_eq!(
+            files.draw_window(canvas, start + Duration::from_secs(2)),
+            Paint::Idle
+        );
+    })
+}
+
 /// The pictures held to a reference in `snapshots/`; the rest are
 /// only written, to look at.
 const CHECKED: &[&str] = &["enso-files", "enso-files-identity"];
@@ -371,8 +384,43 @@ fn renders_settings_and_version_control() {
         own: None,
         forge_git: [false; 2],
     };
-    files.overlay = Some(Overlay::Settings(4));
+    files.overlay = Some(Overlay::Settings(super::settings::Panel::at(4)));
     snapshot(&render(&mut files, (900, 640)), "enso-files-settings");
+    // In a window too short for every line, none runs under the footer.
+    let done = files
+        .hits
+        .iter()
+        .find(|(_, hit)| *hit == Hit::FormCancel)
+        .map(|(rect, _)| *rect)
+        .expect("the panel has its Done button");
+    let lines: Vec<(Rect, usize)> = files
+        .hits
+        .iter()
+        .filter_map(|(rect, hit)| match hit {
+            Hit::Setting(index) if rect.h > 0.0 => Some((*rect, *index)),
+            _ => None,
+        })
+        .collect();
+    let rows = files.setting_rows().len();
+    assert!(lines.len() < rows, "some lines wait below");
+    assert!(lines.iter().all(|(rect, _)| rect.bottom() < done.y));
+    // The last line, given the keyboard, scrolls into view, whole.
+    files.overlay = Some(Overlay::Settings(super::settings::Panel::at(rows - 1)));
+    snapshot(
+        &settle(&mut files, (900, 640)),
+        "enso-files-settings-scrolled",
+    );
+    let last = files
+        .hits
+        .iter()
+        .find(|(_, hit)| *hit == Hit::Setting(rows - 1))
+        .map(|(rect, _)| *rect)
+        .expect("the last line shows");
+    assert!(
+        last.h >= 40.0 && last.bottom() < done.y,
+        "{last:?} {done:?}"
+    );
+    files.overlay = Some(Overlay::Settings(super::settings::Panel::at(4)));
     assert!(
         files
             .hits

@@ -73,14 +73,17 @@ impl Files {
             // Only what's over the window answers the pointer: what's under
             // it is out of reach.
             self.hits.clear();
-            self.draw_overlay(canvas, bounds, now);
+            animating |= self.draw_overlay(canvas, bounds, now);
         }
         Paint::when(animating)
     }
 
-    /// What's over the window.
-    fn draw_overlay(&mut self, canvas: &mut Canvas<'_>, bounds: Rect, now: Instant) {
+    /// What's over the window. Returns whether anything in it is moving.
+    fn draw_overlay(&mut self, canvas: &mut Canvas<'_>, bounds: Rect, now: Instant) -> bool {
         let look = self.look();
+        if self.overlay.settings().is_some() {
+            return self.draw_settings(canvas, bounds, now);
+        }
         match &mut self.overlay {
             None => {}
             Some(Overlay::Menu((menu, _))) => menu.draw(canvas, bounds, &look.menu()),
@@ -90,13 +93,15 @@ impl Files {
             Some(Overlay::Renamer(_)) => self.draw_renamer(canvas, bounds),
             Some(Overlay::Packing(_)) => self.draw_packing(canvas, bounds),
             Some(Overlay::Properties(_)) => self.draw_properties(canvas, bounds),
-            Some(Overlay::Settings(_)) => self.draw_settings(canvas, bounds, now),
+            // Drawn above.
+            Some(Overlay::Settings(_)) => {}
             Some(Overlay::Vcs(_)) => self.draw_vcs(canvas, bounds),
             Some(Overlay::Asked(_) | Overlay::ConfirmDelete(_)) => {
                 self.draw_questions(canvas, bounds);
             }
             Some(Overlay::Replace(_)) => self.draw_confirm(canvas, bounds),
         }
+        false
     }
 
     /// A folder's part of the window: its list (or grid, or columns), and

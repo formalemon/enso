@@ -312,7 +312,7 @@ impl Files {
             Action::ShiftBookmark(path, step) => self.shift_bookmark(&path, step, cx),
             Action::Settings => {
                 self.learn_git();
-                self.overlay = Some(Overlay::Settings(0));
+                self.overlay = Some(Overlay::Settings(super::settings::Panel::default()));
             }
         }
         self.follow_cursor(now);
@@ -1111,7 +1111,7 @@ impl Files {
             }
             Key::Char(',') if mods.ctrl => {
                 self.learn_git();
-                self.overlay = Some(Overlay::Settings(0));
+                self.overlay = Some(Overlay::Settings(super::settings::Panel::default()));
                 cx.redraw();
                 return;
             }
@@ -1273,6 +1273,10 @@ impl Files {
             PointerEvent::Scroll {
                 x, y, dy, wheel, ..
             } => {
+                if self.settings_wheel(x, y, dy, wheel, now) {
+                    cx.redraw();
+                    return;
+                }
                 if !self.list.contains(x, y) {
                     // The split's other side scrolls where it is.
                     if let Some(other) = self.split

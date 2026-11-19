@@ -5,12 +5,15 @@
 
 use enso_core::style::{radius, space, stroke, type_scale};
 use enso_fs::git::{self, Scope};
+use std::time::Instant;
+
+use enso_core::motion::Transition;
 use enso_ui::{
     Align, Canvas, Cx, Key, KeyEvent, Nav, Rect, Text,
-    widget::{Button, Interaction, Kind, Toggle, controls, form},
+    widget::{Button, Interaction, Kind, Scroll, Toggle, controls, form},
 };
 
-use super::overlay::{Overlay, Reach};
+use super::overlay::Reach;
 use super::{Files, Hit};
 use crate::forge::Site;
 use crate::{
@@ -37,6 +40,67 @@ pub(super) enum Row {
     Account(Site),
     /// git pushes and pulls with it.
     AccountGit(Site),
+}
+
+/// The height of a line, and of a section's heading above its first.
+const LINE: f32 = 44.0;
+const HEADING: f32 = 34.0;
+
+/// The panel's state: which line has the keyboard, and how far the lines
+/// are scrolled when the window is too short to show them all.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Panel {
+    focus: usize,
+    scroll: Scroll,
+    /// Bring the focused line into view at the next frame.
+    follow: bool,
+    /// Where the lines were last drawn: the wheel scrolls them there.
+    view: Rect,
+}
+
+impl Panel {
+    /// The panel with the keyboard on line `focus`.
+    #[cfg(test)]
+    pub(super) fn at(focus: usize) -> Self {
+        Self {
+            focus,
+            follow: true,
+            ..Self::default()
+        }
+    }
+
+    fn focus(&mut self, line: usize) {
+        self.focus = line;
+        self.follow = true;
+    }
+}
+
+/// Whether `row` starts a section, and under which heading.
+fn heading(row: Row) -> Option<&'static str> {
+    match row {
+        Row::Hidden => Some("View"),
+        Row::BulkRename => Some("Renaming"),
+        Row::Git => Some("Version control"),
+        _ => None,
+    }
+}
+
+/// Where each line starts, from the top of the first heading, and how
+/// tall they are all together.
+fn layout(rows: &[Row]) -> (Vec<f32>, f32) {
+    let mut y = 0.0;
+    let tops = rows
+        .iter()
+        .map(|&row| {
+            if heading(row).is_some() {
+                y += HEADING;
+            }
+            let top = y;
+            y += LINE;
+            top
+        })
+        .collect();
+    (tops, y)
 }
 
 const VIEWS: [(View, &str); 3] = [
@@ -226,17 +290,17 @@ impl Files {
 
     /// Keys while the panel is open. Returns whether it was.
     pub(super) fn settings_key(&mut self, key: &KeyEvent, cx: &mut Cx<'_>) -> bool {
-        let Some(&focus) = self.overlay.settings() else {
+        let Some(panel) = self.overlay.settings() else {
             return false;
         };
         let rows = self.setting_rows();
-        let focus = focus.min(rows.len() - 1);
+        let focus = panel.focus.min(rows.len() - 1);
+        let mut to = None;
         if let Some(nav) = key.nav(true) {
-            let next = match nav {
+            to = Some(match nav {
                 Nav::Up => focus.checked_sub(1).unwrap_or(rows.len() - 1),
                 Nav::Down => (focus + 1) % rows.len(),
-            };
-            self.overlay = Some(Overlay::Settings(next));
+            });
         } else {
             match key.key {
                 Key::Escape => self.overlay = None,
@@ -248,11 +312,34 @@ impl Files {
                 Key::Right | Key::Char('l') if matches!(rows[focus], Row::Sort | Row::View) => {
                     self.change(rows[focus], 1, cx);
                 }
-                Key::Tab => self.overlay = Some(Overlay::Settings((focus + 1) % rows.len())),
+                Key::Tab => to = Some((focus + 1) % rows.len()),
                 _ => {}
             }
         }
+        if let (Some(line), Some(panel)) = (to, self.overlay.settings_mut()) {
+            panel.focus(line);
+        }
         cx.redraw();
+        true
+    }
+
+    /// The wheel, or fingers on a touchpad, over the panel's lines: scroll
+    /// them. Returns whether the panel is open.
+    pub(super) fn settings_wheel(
+        &mut self,
+        x: f32,
+        y: f32,
+        dy: f32,
+        wheel: bool,
+        now: Instant,
+    ) -> bool {
+        let transition = self.transition(Transition::SELECT);
+        let Some(panel) = self.overlay.settings_mut() else {
+            return false;
+        };
+        if panel.view.contains(x, y) {
+            panel.scroll.scroll(dy, wheel, LINE, transition, now);
+        }
         true
     }
 
@@ -264,7 +351,9 @@ impl Files {
         let rows = self.setting_rows();
         match hit {
             Some(Hit::Setting(index)) => {
-                self.overlay = Some(Overlay::Settings(*index));
+                if let Some(panel) = self.overlay.settings_mut() {
+                    panel.focus(*index);
+                }
                 if let Some(row) = rows.get(*index) {
                     self.change(*row, 0, cx);
                 }
@@ -285,47 +374,77 @@ impl Files {
         true
     }
 
+    /// Draw the panel. Returns whether its lines are still scrolling.
     pub(super) fn draw_settings(
         &mut self,
         canvas: &mut Canvas<'_>,
         bounds: Rect,
-        now: std::time::Instant,
-    ) {
-        let Some(&focus) = self.overlay.settings() else {
-            return;
-        };
+        now: Instant,
+    ) -> bool {
         let rows = self.setting_rows();
+        let transition = self.transition(Transition::SELECT);
         let look = self.look();
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let body = self.font(type_scale::BODY);
         let small = self.font(type_scale::SMALL);
-        let line = 44.0;
-        let sections = 3.0;
-        let height = 64.0 + rows.len() as f32 * line + sections * 34.0 + controls::HEIGHT + 40.0;
+        let line = LINE;
+        let (tops, content) = layout(&rows);
+        let height = 64.0 + content + controls::HEIGHT + 40.0;
         let inner = controls::dialog(canvas, bounds, 560.0, height, &look, 1.0);
         canvas.text(
             &Text::new("Settings", form::title_size(&look), colors.text).medium(),
             inner.x,
             inner.y,
         );
-        let mut y = inner.y + 48.0;
+        // The lines, between the title and the footer: all of them where
+        // the window is tall enough, else as many as fit, scrolled. The
+        // view reaches into the card's margin, where its scrollbar goes.
+        let top = inner.y + 48.0;
+        let view = Rect::new(
+            inner.x - space::SM - stroke::FOCUS,
+            top,
+            inner.w + 2.0 * space::SM + space::LG,
+            inner.bottom() - controls::HEIGHT - space::MD - top,
+        );
+        let Some(panel) = self.overlay.settings_mut() else {
+            return false;
+        };
+        let focus = panel.focus.min(rows.len() - 1);
+        panel.view = view;
+        panel.scroll.set_extent(content, view.h);
+        if std::mem::take(&mut panel.follow) {
+            // The heading over a section's first line comes into view too.
+            let above = if heading(rows[focus]).is_some() {
+                HEADING
+            } else {
+                0.0
+            };
+            panel
+                .scroll
+                .reveal(tops[focus] - above, line + above, transition, now);
+        }
+        let scrolled = panel.scroll.get(now);
+        let animating = panel.scroll.is_animating(now);
+        let scroll = panel.scroll.clone();
         let config = self.config.clone();
         let facts = self.git_facts.clone();
         let (global, own) = (facts.global, facts.own);
+        // Lines first, so a pill on one wins over the line itself.
+        let mut lines = Vec::new();
+        let mut pill_hits = Vec::new();
+        canvas.set_clip(Some(view));
         for (index, row) in rows.iter().enumerate() {
-            if matches!(row, Row::Hidden | Row::BulkRename | Row::Git) {
-                let heading = match row {
-                    Row::Hidden => "View",
-                    Row::BulkRename => "Renaming",
-                    _ => "Version control",
-                };
+            let y = view.y + tops[index] - scrolled;
+            if let Some(heading) = heading(*row) {
                 canvas.text(
                     &Text::new(heading, small, colors.muted).medium(),
                     inner.x,
-                    y + 6.0,
+                    y - HEADING + 6.0,
                 );
-                y += 34.0;
+            }
+            if y + line < view.y || y > view.bottom() {
+                continue;
             }
             let rect = Rect::new(
                 inner.x - space::SM,
@@ -455,7 +574,7 @@ impl Files {
                     };
                     canvas.fill(pill, radius::pill(pill.h), fill);
                     canvas.text_in(&text, pill, Align::Center);
-                    self.hits.push((pill, hit));
+                    pill_hits.push((pill, hit));
                     x = pill.x - space::XS;
                 }
             } else if let Some(note) = &note {
@@ -465,9 +584,25 @@ impl Files {
                     Align::End,
                 );
             }
-            self.hits.insert(0, (rect, Hit::Setting(index)));
-            y += line;
+            lines.push((rect, Hit::Setting(index)));
         }
+        canvas.set_clip(None);
+        // A line half out of view answers only where it shows.
+        let shown = |rect: Rect| {
+            let y = rect.y.max(view.y);
+            let bottom = rect.bottom().min(view.bottom());
+            Rect::new(rect.x, y, rect.w, (bottom - y).max(0.0))
+        };
+        let pills: Vec<(Rect, Hit)> = pill_hits
+            .into_iter()
+            .map(|(rect, hit)| (shown(rect), hit))
+            .collect();
+        self.hits.splice(
+            0..0,
+            lines.into_iter().map(|(rect, hit)| (shown(rect), hit)),
+        );
+        self.hits.extend(pills);
+        scroll.draw_bar(canvas, view, colors.subtle, false, now);
         let path = self.ctx.paths.state_dir.join(settings::FILE);
         let footer = format!("Kept in {}, over config.toml's [files].", path.display());
         canvas.text(
@@ -493,5 +628,6 @@ impl Files {
             },
         );
         self.hits.push((rect, Hit::FormCancel));
+        animating
     }
 }
