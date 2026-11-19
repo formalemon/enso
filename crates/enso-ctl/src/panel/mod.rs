@@ -6,6 +6,12 @@
 //! the volume opens Sound: which output, each application's level, and the
 //! microphone.
 //!
+//! Beside the first page, a swipe away (or Tab, or the dots at the foot),
+//! is Screen & sleep: when the screen locks, when the lock screen turns the
+//! screens off and puts the machine to sleep, and whether it locks before
+//! sleeping. What's chosen there is kept with enso's state, over
+//! `config.toml` ([`enso_core::chosen`]), and the lock watcher follows it.
+//!
 //! This module is the panel's state and behaviour; `draw` paints it. It never
 //! talks to the system itself: it sends [`Request`]s to the workers in
 //! [`crate::system`] and redraws from the [`Update`]s that come back, so
@@ -25,7 +31,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use enso_core::{Context, Transition, Tween, style::space};
+use enso_core::{Context, Transition, Tween, chosen, style::space};
 use enso_sys::{
     audio::Sound,
     bluetooth::{Bluetooth, Device},
@@ -75,6 +81,10 @@ const PAD: f32 = space::LG;
 const TILE_HEIGHT: f32 = 60.0;
 const ROW_HEIGHT: f32 = 44.0;
 const NOTICE_HEIGHT: f32 = 28.0;
+/// The dots at the foot of the pages a swipe moves between.
+const DOTS_HEIGHT: f32 = 18.0;
+/// How far fingers travel across a touchpad to turn the page.
+const SWIPE: f32 = 60.0;
 /// Rows a list shows before it scrolls.
 const MAX_ROWS: usize = 7;
 /// Rows the Sound page shows before it scrolls: it has three short lists.
@@ -111,6 +121,8 @@ pub enum Message {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Main,
+    /// Beside the first page: when to lock, darken, and sleep.
+    Screen,
     Sound,
     Wifi,
     Bluetooth,
@@ -127,6 +139,114 @@ enum Dial {
     App(usize),
     /// The microphone's level.
     Mic,
+}
+
+/// The pages side by side, which a swipe moves between.
+const SIDE_BY_SIDE: [Page; 2] = [Page::Main, Page::Screen];
+
+/// A time on the Screen & sleep page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Timer {
+    /// Idle time before the screen locks.
+    Lock,
+    /// Time on the lock screen before the screens go dark.
+    ScreenOff,
+    /// Time on the lock screen before the machine sleeps.
+    Sleep,
+}
+
+impl Timer {
+    /// Its key in `[lock]`.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Lock => "idle_after",
+            Self::ScreenOff => "screen_off_after",
+            Self::Sleep => "suspend_after",
+        }
+    }
+
+    /// The times to choose between, in seconds, shortest first; `0`, never,
+    /// comes last.
+    fn choices(self) -> &'static [u64] {
+        match self {
+            Self::Lock => &[60, 120, 300, 600, 900, 1800, 0],
+            Self::ScreenOff => &[10, 30, 60, 120, 300, 0],
+            Self::Sleep => &[300, 600, 900, 1800, 3600, 0],
+        }
+    }
+
+    /// The choice `step` places along from `now`, which may be a time
+    /// from the config file that isn't among the choices; `wrap` goes
+    /// round from the last to the first.
+    fn step(self, now: u64, step: isize, wrap: bool) -> u64 {
+        let choices = self.choices();
+        // Never sorts after every time.
+        let rank = |seconds: u64| if seconds == 0 { u64::MAX } else { seconds };
+        let at = choices
+            .iter()
+            .position(|&choice| rank(choice) >= rank(now))
+            .unwrap_or(choices.len() - 1);
+        let exact = choices[at] == now;
+        let last = choices.len() as isize - 1;
+        // Between two choices, `at` is the next one up: a step up lands
+        // there, a step down on the one before it.
+        let to = at as isize + if step > 0 && !exact { step - 1 } else { step };
+        let to = if wrap {
+            to.rem_euclid(last + 1)
+        } else {
+            to.clamp(0, last)
+        };
+        choices[to as usize]
+    }
+}
+
+/// `[lock]`'s times, as the Screen & sleep page shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+struct LockTimes {
+    idle_after: u64,
+    screen_off_after: u64,
+    suspend_after: u64,
+    before_sleep: bool,
+}
+
+impl Default for LockTimes {
+    fn default() -> Self {
+        Self {
+            idle_after: chosen::lock::IDLE_AFTER,
+            screen_off_after: chosen::lock::SCREEN_OFF_AFTER,
+            suspend_after: chosen::lock::SUSPEND_AFTER,
+            before_sleep: chosen::lock::BEFORE_SLEEP,
+        }
+    }
+}
+
+impl LockTimes {
+    fn get(&self, timer: Timer) -> u64 {
+        match timer {
+            Timer::Lock => self.idle_after,
+            Timer::ScreenOff => self.screen_off_after,
+            Timer::Sleep => self.suspend_after,
+        }
+    }
+
+    fn set(&mut self, timer: Timer, seconds: u64) {
+        match timer {
+            Timer::Lock => self.idle_after = seconds,
+            Timer::ScreenOff => self.screen_off_after = seconds,
+            Timer::Sleep => self.suspend_after = seconds,
+        }
+    }
+}
+
+/// A time as the page says it: `30 s`, `5 min`, `1 h`, `Never`.
+fn duration(seconds: u64) -> String {
+    match seconds {
+        0 => "Never".to_owned(),
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s => format!("{} h", s / 3600),
+    }
 }
 
 /// A part of the Sound page.
@@ -156,6 +276,10 @@ enum Item {
     Device(usize),
     /// Index into the themes.
     Theme(usize),
+    /// A time on the Screen & sleep page.
+    Timer(Timer),
+    /// Whether to lock before sleeping.
+    BeforeSleep,
 }
 
 /// What a click lands on.
@@ -178,6 +302,10 @@ enum Hit {
     Back,
     /// The power profile tile.
     Profile,
+    /// One of a time's arrows: a step shorter (`-1`) or longer (`1`).
+    Step(usize, Timer, isize),
+    /// A dot at the foot: go to that page.
+    Dot(Page),
 }
 
 /// A passphrase being typed for a network.
@@ -242,6 +370,12 @@ pub struct Panel {
     bluetooth_switch: Tween<f32>,
     /// On while the microphone is live.
     mic_switch: Tween<f32>,
+    before_sleep_switch: Tween<f32>,
+
+    /// When to lock, darken, and sleep.
+    lock: LockTimes,
+    /// Sideways travel on the touchpad not yet turned into a page.
+    swipe: f32,
 
     /// Dropdown only: the pointer is over the card.
     pointer_inside: bool,
@@ -283,6 +417,9 @@ impl Panel {
             slide: Tween::new(0.0),
             slide_from: 1.0,
             mic_switch: Tween::new(0.0),
+            before_sleep_switch: Tween::new(0.0),
+            lock: LockTimes::default(),
+            swipe: 0.0,
             wifi_switch: Tween::new(0.0),
             bluetooth_switch: Tween::new(0.0),
             pointer_inside: false,
@@ -292,6 +429,10 @@ impl Panel {
             card: Rect::default(),
             hits: Vec::new(),
         };
+        panel.read_lock_times();
+        panel
+            .before_sleep_switch
+            .jump(panel.before_sleep_switch.target());
         // The card opens at its size instead of growing into it.
         panel.height.jump(panel.height_target());
         panel
@@ -395,7 +536,18 @@ impl Panel {
             Page::Wifi => (0..self.networks().len()).map(Item::Network).collect(),
             Page::Bluetooth => (0..self.devices().len()).map(Item::Device).collect(),
             Page::Theme => (0..self.ctx.themes.len()).map(Item::Theme).collect(),
+            Page::Screen => vec![
+                Item::Timer(Timer::Lock),
+                Item::Timer(Timer::ScreenOff),
+                Item::Timer(Timer::Sleep),
+                Item::BeforeSleep,
+            ],
         }
+    }
+
+    /// Whether the page is one of those side by side, with dots.
+    fn side_by_side(&self) -> bool {
+        SIDE_BY_SIDE.contains(&self.page)
     }
 
     /// The id of the selected network or device, to find it again after the
@@ -419,7 +571,7 @@ impl Panel {
     /// Rows of the list that fit at once.
     fn visible_rows(&self) -> usize {
         match self.page {
-            Page::Main => self.items().len(),
+            Page::Main | Page::Screen => self.items().len(),
             Page::Sound => self.items().len().min(MAX_SOUND_ROWS),
             _ => self.items().len().min(MAX_ROWS),
         }
@@ -447,7 +599,16 @@ impl Panel {
                 } else {
                     TILE_HEIGHT + space::MD
                 };
-                PAD + tiles + rows(self.visible_rows()) + notice + space::SM
+                PAD + tiles + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM
+            }
+            Page::Screen => {
+                space::SM
+                    + ROW_HEIGHT
+                    + space::XS
+                    + rows(self.visible_rows())
+                    + notice
+                    + DOTS_HEIGHT
+                    + space::SM
             }
             _ => {
                 // An empty list still says why it is empty, on one row.
@@ -462,7 +623,7 @@ impl Panel {
         let longest = MAX_SOUND_ROWS.max(MAX_ROWS + 1);
         let list = space::SM + ROW_HEIGHT + space::XS + longest as f32 * ROW_HEIGHT;
         // Tiles, two sliders, three rows.
-        let main = PAD + TILE_HEIGHT + space::MD + 5.0 * ROW_HEIGHT;
+        let main = PAD + TILE_HEIGHT + space::MD + 5.0 * ROW_HEIGHT + DOTS_HEIGHT;
         list.max(main) + NOTICE_HEIGHT + space::SM
     }
 
@@ -533,6 +694,8 @@ impl Panel {
             .set(on(self.bluetooth.as_ref().map(|b| b.powered)), toggle, now);
         let live = self.dial(Dial::Mic).map(|(_, muted)| !muted);
         self.mic_switch.set(on(live), toggle, now);
+        self.before_sleep_switch
+            .set(on(Some(self.lock.before_sleep)), toggle, now);
     }
 
     // ---- News from the system ------------------------------------------------
@@ -687,6 +850,7 @@ impl Panel {
             _ => {}
         }
         self.page = page;
+        self.swipe = 0.0;
         self.prompt = None;
         self.notice = None;
         self.offset = 0;
@@ -699,7 +863,7 @@ impl Panel {
                 .iter()
                 .position(|theme| theme.id == self.ctx.theme.id)
                 .unwrap_or(0),
-            Page::Wifi | Page::Bluetooth | Page::Sound => 0,
+            Page::Wifi | Page::Bluetooth | Page::Sound | Page::Screen => 0,
         };
         match page {
             Page::Wifi if self.wifi.as_ref().is_some_and(|w| w.powered) => {
@@ -759,6 +923,8 @@ impl Panel {
             Some(Item::Network(index)) => self.activate_network(index),
             Some(Item::Device(index)) => self.activate_device(index),
             Some(Item::Theme(index)) => self.apply_theme(index),
+            Some(Item::Timer(timer)) => self.step_timer(timer, 1, true),
+            Some(Item::BeforeSleep) => self.toggle_before_sleep(),
             Some(Item::Output(index)) => self.choose_device(false, index),
             Some(Item::Input(index)) => self.choose_device(true, index),
             Some(Item::Slider(_) | Item::Heading(_) | Item::Silence) | None => {}
@@ -972,6 +1138,64 @@ impl Panel {
         });
     }
 
+    /// Read when to lock, darken, and sleep: the config file's `[lock]`,
+    /// with what was chosen here over it.
+    fn read_lock_times(&mut self) {
+        let mut ctx = Context::load_from(self.ctx.paths.clone());
+        self.lock = ctx.section("lock");
+    }
+
+    /// Move a time `step` choices along, and keep it.
+    fn step_timer(&mut self, timer: Timer, step: isize, wrap: bool) {
+        let seconds = timer.step(self.lock.get(timer), step, wrap);
+        if seconds != self.lock.get(timer) {
+            self.lock.set(timer, seconds);
+            let kept = chosen::set(
+                &self.ctx.paths,
+                "lock",
+                timer.key(),
+                i64::try_from(seconds).unwrap_or(i64::MAX),
+            );
+            self.kept(kept);
+        }
+    }
+
+    /// Lock before sleeping, or don't, and keep it.
+    fn toggle_before_sleep(&mut self) {
+        self.lock.before_sleep = !self.lock.before_sleep;
+        let kept = chosen::set(
+            &self.ctx.paths,
+            "lock",
+            "before_sleep",
+            self.lock.before_sleep,
+        );
+        self.kept(kept);
+    }
+
+    /// A choice is shown at once; say so if it couldn't be written where
+    /// the lock screen and its watcher read it.
+    fn kept(&mut self, kept: std::io::Result<()>) {
+        self.notice = kept
+            .err()
+            .map(|err| sentence(&format!("can't keep the setting: {err}")));
+        self.settle();
+    }
+
+    /// Turn to the page beside this one: `1` to the right, `-1` to the left.
+    fn turn(&mut self, step: isize) -> Outcome {
+        let Some(at) = SIDE_BY_SIDE.iter().position(|page| *page == self.page) else {
+            return Outcome::Ignored;
+        };
+        let to = at as isize + step;
+        match usize::try_from(to).ok().and_then(|to| SIDE_BY_SIDE.get(to)) {
+            Some(&page) => {
+                self.open(page);
+                Outcome::Changed
+            }
+            None => Outcome::Ignored,
+        }
+    }
+
     /// Switch to the next power profile.
     fn cycle_profile(&mut self) {
         let Some(profile) = &mut self.hardware.profile else {
@@ -1025,8 +1249,37 @@ impl Panel {
         };
         let item = self.items().get(self.selected).copied();
         let on_main = self.page == Page::Main;
+        // The pages side by side turn with Tab, the page keys, and brackets.
+        if self.side_by_side() {
+            let step = match pressed {
+                Key::Tab if key.mods.shift => Some(-1),
+                Key::Tab | Key::PageDown | Key::Char(']') => Some(1),
+                Key::PageUp | Key::Char('[') => Some(-1),
+                _ => None,
+            };
+            if let Some(step) = step {
+                // At either end Tab goes round; the others stop.
+                let step = if matches!(pressed, Key::Tab) && self.turn(step) == Outcome::Ignored {
+                    -step
+                } else {
+                    step
+                };
+                self.turn(step);
+                return Outcome::Changed;
+            }
+        }
         match (pressed, item) {
             (Key::Char('q'), _) => return Outcome::Close,
+            // A time steps with left and right, and Enter goes round.
+            (Key::Left | Key::Char('h'), Some(Item::Timer(timer))) => {
+                self.step_timer(timer, -1, false);
+            }
+            (Key::Right | Key::Char('l'), Some(Item::Timer(timer))) => {
+                self.step_timer(timer, 1, false);
+            }
+            (Key::Char(' '), Some(Item::BeforeSleep | Item::Timer(_))) => {
+                self.activate(self.selected);
+            }
             (Key::Escape, _) if on_main => return Outcome::Close,
             // On a slider, left and right adjust it — also on a page, where
             // they would otherwise lead back.
@@ -1113,6 +1366,11 @@ impl Panel {
             Some(Hit::Switch(page)) => self.toggle(page),
             Some(Hit::Back) => self.open(Page::Main),
             Some(Hit::Profile) => self.cycle_profile(),
+            Some(Hit::Step(index, timer, step)) => {
+                self.selected = index;
+                self.step_timer(timer, step, false);
+            }
+            Some(Hit::Dot(page)) => self.open(page),
             None if self.card.contains(x, y) => return Outcome::Ignored,
             // A click outside dismisses a panel that covers the screen; a
             // dropdown never sees one.
@@ -1127,7 +1385,7 @@ impl Panel {
             return Outcome::Changed;
         }
         let index = match self.hit(x, y) {
-            Some(Hit::Item(index) | Hit::Slider(index, ..)) => index,
+            Some(Hit::Item(index) | Hit::Slider(index, ..) | Hit::Step(index, ..)) => index,
             _ => return Outcome::Ignored,
         };
         // The pointer selects what it rests on — but not out from under a
@@ -1138,6 +1396,25 @@ impl Panel {
         self.selected = index;
         self.settle();
         Outcome::Changed
+    }
+
+    /// A sideways swipe on the touchpad, or a tilt of the wheel, turns the
+    /// pages that sit side by side.
+    fn on_swipe(&mut self, dx: f32, wheel: bool) -> Outcome {
+        if !self.side_by_side() || self.prompt.is_some() || dx == 0.0 {
+            return Outcome::Ignored;
+        }
+        // A swipe back the other way starts afresh.
+        if self.swipe * dx < 0.0 {
+            self.swipe = 0.0;
+        }
+        self.swipe += dx;
+        if !wheel && self.swipe.abs() < SWIPE {
+            return Outcome::Ignored;
+        }
+        let step = if self.swipe > 0.0 { 1 } else { -1 };
+        self.swipe = 0.0;
+        self.turn(step)
     }
 
     fn on_scroll(&mut self, dy: f32) -> Outcome {
@@ -1321,6 +1598,9 @@ impl App for Panel {
             }
             Event::Message(Message::ThemeChanged) => {
                 self.ctx.reload_theme();
+                // The state directory changed: perhaps the times too.
+                self.read_lock_times();
+                self.settle();
                 Outcome::Changed
             }
             Event::Message(Message::Owner(hovering)) => {
@@ -1362,7 +1642,13 @@ impl App for Panel {
                 self.dragging = None;
                 Outcome::Ignored
             }
-            Event::Pointer(PointerEvent::Scroll { dy, .. }) => self.on_scroll(dy),
+            Event::Pointer(PointerEvent::Scroll { dx, dy, wheel, .. }) => {
+                if dx.abs() > dy.abs() {
+                    self.on_swipe(dx, wheel)
+                } else {
+                    self.on_scroll(dy)
+                }
+            }
             _ => Outcome::Ignored,
         };
         self.finish(outcome, cx);

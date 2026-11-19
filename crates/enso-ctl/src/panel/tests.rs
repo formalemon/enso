@@ -1079,3 +1079,112 @@ fn error_messages_become_sentences() {
     assert_eq!(sentence(" Already done. "), "Already done.");
     assert_eq!(sentence(""), "");
 }
+
+// ---- Screen & sleep ------------------------------------------------------------
+
+/// What enso-lock will read for `[lock]`.
+fn lock_as_read(panel: &Panel) -> LockTimes {
+    Context::load_from(panel.ctx.paths.clone()).section("lock")
+}
+
+#[test]
+fn screen_and_sleep_sits_beside_the_first_page() {
+    let (mut panel, _requests) = panel("screen-turn");
+    // Tab turns to it, and goes round back again.
+    assert_eq!(press(&mut panel, Key::Tab), Outcome::Changed);
+    assert_eq!(panel.page, Page::Screen);
+    assert_eq!(press(&mut panel, Key::Tab), Outcome::Changed);
+    assert_eq!(panel.page, Page::Main);
+
+    // A swipe turns it; a short one, or a wheel's up and down, doesn't.
+    assert_eq!(panel.on_swipe(30.0, false), Outcome::Ignored);
+    assert_eq!(panel.page, Page::Main);
+    assert_eq!(panel.on_swipe(40.0, false), Outcome::Changed);
+    assert_eq!(panel.page, Page::Screen);
+    // Further along the same way there's nothing more.
+    assert_eq!(panel.on_swipe(80.0, false), Outcome::Ignored);
+    assert_eq!(panel.on_swipe(-80.0, false), Outcome::Changed);
+    assert_eq!(panel.page, Page::Main);
+    // The wheel tilted sideways turns a page a notch.
+    assert_eq!(panel.on_swipe(15.0, true), Outcome::Changed);
+    assert_eq!(panel.page, Page::Screen);
+
+    let frame = render(&mut panel);
+    snapshot(&frame, "ctl-screen");
+    assert_eq!(panel.card.h, panel.height_target());
+    assert!(panel.hits.iter().all(|(rect, _)| {
+        panel.card.contains(rect.x, rect.y)
+            && panel.card.contains(rect.right() - 1.0, rect.bottom() - 1.0)
+    }));
+    // The dot of the first page leads back to it.
+    let (x, y) = centre_of(&panel, |hit| *hit == Hit::Dot(Page::Main));
+    assert_eq!(panel.on_press(x, y), Outcome::Changed);
+    assert_eq!(panel.page, Page::Main);
+    render(&mut panel);
+    assert!(
+        panel
+            .hits
+            .iter()
+            .any(|(_, hit)| *hit == Hit::Dot(Page::Screen))
+    );
+}
+
+#[test]
+fn times_step_and_are_kept_for_the_lock_screen() {
+    let (mut panel, _requests) = panel("screen-times");
+    panel.open(Page::Screen);
+    assert_eq!(panel.lock, LockTimes::default());
+    assert_eq!(panel.items()[panel.selected], Item::Timer(Timer::Lock));
+
+    // Five minutes, one step longer: ten.
+    press(&mut panel, Key::Right);
+    assert_eq!(panel.lock.idle_after, 600);
+    assert_eq!(lock_as_read(&panel).idle_after, 600);
+    // Back down two: two minutes.
+    press(&mut panel, Key::Left);
+    press(&mut panel, Key::Left);
+    assert_eq!(lock_as_read(&panel).idle_after, 120);
+
+    // The screen's time, by its arrow.
+    render(&mut panel);
+    let (x, y) = centre_of(&panel, |hit| {
+        matches!(hit, Hit::Step(_, Timer::ScreenOff, 1))
+    });
+    panel.on_press(x, y);
+    assert_eq!(lock_as_read(&panel).screen_off_after, 60);
+
+    // The switch.
+    press(&mut panel, Key::Down);
+    press(&mut panel, Key::Down);
+    assert_eq!(panel.items()[panel.selected], Item::BeforeSleep);
+    press(&mut panel, Key::Char(' '));
+    assert!(!lock_as_read(&panel).before_sleep);
+    assert!(panel.notice.is_none());
+
+    // What was kept is what a new panel shows.
+    let again = Panel::new(
+        Context::load_from(panel.ctx.paths.clone()),
+        CtlConfig::default(),
+        PanelMode::Modal,
+    );
+    assert_eq!(again.lock, panel.lock);
+    let frame = render(&mut panel);
+    snapshot(&frame, "ctl-screen-changed");
+}
+
+#[test]
+fn times_step_between_choices_and_stop_at_the_ends() {
+    // Never comes after the longest time.
+    assert_eq!(Timer::Lock.step(1800, 1, false), 0);
+    assert_eq!(Timer::Lock.step(0, 1, false), 0);
+    assert_eq!(Timer::Lock.step(0, 1, true), 60);
+    assert_eq!(Timer::Lock.step(60, -1, false), 60);
+    // A time from the config file that isn't a choice steps to its
+    // neighbours.
+    assert_eq!(Timer::Lock.step(400, 1, false), 600);
+    assert_eq!(Timer::Lock.step(400, -1, false), 300);
+    assert_eq!(duration(0), "Never");
+    assert_eq!(duration(30), "30 s");
+    assert_eq!(duration(300), "5 min");
+    assert_eq!(duration(3600), "1 h");
+}

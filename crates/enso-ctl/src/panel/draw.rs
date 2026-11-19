@@ -21,8 +21,8 @@ use enso_ui::{
 };
 
 use super::{
-    Dial, Hit, Item, NOTICE_HEIGHT, PAD, Page, Panel, ROW_HEIGHT, Section, TILE_HEIGHT,
-    bluetooth_summary, wifi_summary,
+    DOTS_HEIGHT, Dial, Hit, Item, NOTICE_HEIGHT, PAD, Page, Panel, ROW_HEIGHT, SIDE_BY_SIDE,
+    Section, TILE_HEIGHT, Timer, bluetooth_summary, duration, wifi_summary,
 };
 use crate::{
     cli::{Edge, PanelMode},
@@ -35,6 +35,8 @@ const SWITCH: (f32, f32) = (34.0, 20.0);
 const CHEVRON: f32 = 18.0;
 /// Width kept for a slider's reading.
 const READING: f32 = 40.0;
+/// Width kept for a time between its arrows.
+const TIME: f32 = 56.0;
 
 /// A small labelled reading in the summary row.
 #[derive(Clone, Debug, PartialEq)]
@@ -169,6 +171,7 @@ impl Panel {
         canvas.set_opacity(presence * (1.0 - slide));
         let bottom = match self.page {
             Page::Main => self.paint_main(canvas, card, shift, &look, now),
+            Page::Screen => self.paint_screen(canvas, card, shift, &look, now),
             _ => self.paint_page(canvas, card, shift, &look, now),
         };
         if let Some(notice) = &self.notice {
@@ -186,6 +189,11 @@ impl Panel {
                 );
             }
         }
+        // The dots stay put while the pages slide past them.
+        if self.side_by_side() {
+            canvas.set_opacity(presence);
+            self.paint_dots(canvas, card, &look);
+        }
         canvas.set_opacity(1.0);
 
         Paint::when(
@@ -197,6 +205,7 @@ impl Panel {
                     &self.wifi_switch,
                     &self.bluetooth_switch,
                     &self.mic_switch,
+                    &self.before_sleep_switch,
                 ]
                 .into_iter()
                 .any(|tween| tween.is_animating(now))
@@ -581,7 +590,7 @@ impl Panel {
                         Align::Start,
                     );
                 }
-                Item::Open(_) => {}
+                Item::Open(_) | Item::Timer(_) | Item::BeforeSleep => {}
             }
             // Headings are not for choosing; sliders have targets of their own.
             if Self::selectable(*item) && !matches!(item, Item::Slider(_)) {
@@ -598,6 +607,142 @@ impl Panel {
             }
         }
         bottom
+    }
+
+    /// Screen & sleep: when to lock, darken, and sleep. Returns where its
+    /// content ends.
+    fn paint_screen(
+        &mut self,
+        canvas: &mut Canvas<'_>,
+        card: Rect,
+        shift: f32,
+        look: &Look,
+        now: Instant,
+    ) -> f32 {
+        let colors = &look.colors;
+        let header = Rect::new(
+            card.x + space::SM + shift,
+            card.y + space::SM,
+            card.w - 2.0 * space::SM,
+            ROW_HEIGHT,
+        );
+        canvas.text_in(
+            &Text::new("Screen & sleep", look.base, colors.text).bold(),
+            header.inset_xy(space::SM, 0.0),
+            Align::Start,
+        );
+        let list = Rect::new(header.x, header.bottom() + space::XS, header.w, 0.0);
+        self.paint_highlight(canvas, list, look, now);
+        let items = self.items();
+        let mut bottom = list.y;
+        for (index, item) in items.iter().enumerate() {
+            let row = list.row(index, ROW_HEIGHT, 0.0);
+            if row.bottom() > card.bottom() {
+                break;
+            }
+            let content = row.inset_xy(space::SM, 0.0);
+            let (glyph, title) = match item {
+                Item::Timer(Timer::Lock) => (icon::LOCK, "Lock after"),
+                Item::Timer(Timer::ScreenOff) => (icon::BRIGHTNESS, "Screen off when locked"),
+                Item::Timer(Timer::Sleep) => (icon::POWER, "Sleep when locked"),
+                _ => (icon::SLEEP, "Lock before sleep"),
+            };
+            canvas.icon(glyph, look.icon, colors.subtle, content, Align::Start);
+            let right = match *item {
+                Item::Timer(timer) => self.paint_time(canvas, content, row, index, timer, look),
+                _ => {
+                    let rect = Rect::new(
+                        content.right() - SWITCH.0,
+                        content.y + (content.h - SWITCH.1) / 2.0,
+                        SWITCH.0,
+                        SWITCH.1,
+                    );
+                    paint_switch(canvas, rect, self.before_sleep_switch.get(now), look);
+                    rect.x - space::MD
+                }
+            };
+            let x = content.x + look.icon_width + space::SM;
+            canvas.text_in(
+                &Text::new(title, look.base, colors.text).max_width(right - x),
+                Rect::new(x, content.y, right - x, content.h),
+                Align::Start,
+            );
+            self.hits.push((row, Hit::Item(index)));
+            bottom = row.bottom();
+        }
+        bottom
+    }
+
+    /// A time at the end of its row, between the arrows that step it.
+    /// Returns where the row's words must end.
+    fn paint_time(
+        &mut self,
+        canvas: &mut Canvas<'_>,
+        content: Rect,
+        row: Rect,
+        index: usize,
+        timer: Timer,
+        look: &Look,
+    ) -> f32 {
+        let colors = &look.colors;
+        let seconds = self.lock.get(timer);
+        let choices = timer.choices();
+        let (first, last) = (choices[0], choices[choices.len() - 1]);
+        let later = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
+        let time = Rect::new(later.x - TIME, content.y, TIME, content.h);
+        let sooner = Rect::new(time.x - CHEVRON, content.y, CHEVRON, content.h);
+        // An arrow with nowhere to go is shown faintly.
+        let arrow = |canvas: &mut Canvas<'_>, glyph, rect, live: bool| {
+            let tint = if live {
+                colors.subtle
+            } else {
+                colors.highlight_high
+            };
+            canvas.icon(glyph, look.icon, tint, rect, Align::Center);
+        };
+        arrow(canvas, icon::CHEVRON_LEFT, sooner, seconds != first);
+        arrow(canvas, icon::CHEVRON_RIGHT, later, seconds != last);
+        canvas.text_in(
+            &Text::new(&duration(seconds), look.small, colors.text),
+            time,
+            Align::Center,
+        );
+        // Generous targets, the full height of the row.
+        let target = |rect: Rect| Rect::new(rect.x - space::XS, row.y, rect.w + space::SM, row.h);
+        self.hits
+            .push((target(sooner), Hit::Step(index, timer, -1)));
+        self.hits.push((target(later), Hit::Step(index, timer, 1)));
+        sooner.x - space::SM
+    }
+
+    /// The dots at the foot of the pages that sit side by side: the one
+    /// showing drawn long, in the accent.
+    fn paint_dots(&mut self, canvas: &mut Canvas<'_>, card: Rect, look: &Look) {
+        const DOT: f32 = 6.0;
+        const LONG: f32 = 16.0;
+        const GAP: f32 = 6.0;
+        let width = LONG + (SIDE_BY_SIDE.len() - 1) as f32 * (DOT + GAP);
+        let mut x = card.x + (card.w - width) / 2.0;
+        let y = card.bottom() - space::SM - DOTS_HEIGHT;
+        let middle = y + DOTS_HEIGHT / 2.0;
+        for page in SIDE_BY_SIDE {
+            let current = page == self.page;
+            let w = if current { LONG } else { DOT };
+            let dot = Rect::new(x, middle - DOT / 2.0, w, DOT);
+            let tint = if current {
+                look.accent
+            } else {
+                look.colors.highlight_high
+            };
+            canvas.pill(dot, tint);
+            if !current {
+                self.hits.push((
+                    dot.inset_xy(-GAP, -(DOTS_HEIGHT - DOT) / 2.0),
+                    Hit::Dot(page),
+                ));
+            }
+            x += w + GAP;
+        }
     }
 
     /// Why a list page has nothing to list.

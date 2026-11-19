@@ -80,7 +80,7 @@ fn main() -> ExitCode {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from);
 
     if watch {
-        return match watch::run(&config) {
+        return match watch::run(&config, &ctx.paths) {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("enso-lock: {err}");

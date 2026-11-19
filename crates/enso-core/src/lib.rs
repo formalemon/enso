@@ -14,6 +14,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod chosen;
 pub mod color;
 pub mod config;
 pub mod disk;
@@ -69,6 +70,10 @@ impl Context {
             warnings.push(format!("{err}; using default settings"));
             Config::default()
         });
+        let mut config = config;
+        if let Err(err) = config.overlay_chosen(&paths) {
+            warnings.push(format!("{err}; ignoring what was chosen in the interface"));
+        }
         let themes = Registry::load(&paths);
         warnings.extend_from_slice(themes.warnings());
 

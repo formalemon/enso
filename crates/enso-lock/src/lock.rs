@@ -53,6 +53,8 @@ pub struct LockConfig {
     pub before_sleep: bool,
 }
 
+use enso_core::chosen;
+
 pub const DEFAULT_CLOCK: &str = "%H:%M";
 
 impl Default for LockConfig {
@@ -61,11 +63,11 @@ impl Default for LockConfig {
             clock: DEFAULT_CLOCK.to_owned(),
             date: "%A, %-d %B".to_owned(),
             wallpaper: true,
-            screen_off_after: 30,
-            suspend_after: 0,
+            screen_off_after: chosen::lock::SCREEN_OFF_AFTER,
+            suspend_after: chosen::lock::SUSPEND_AFTER,
             power_saver: true,
-            idle_after: 300,
-            before_sleep: true,
+            idle_after: chosen::lock::IDLE_AFTER,
+            before_sleep: chosen::lock::BEFORE_SLEEP,
         }
     }
 }

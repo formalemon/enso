@@ -157,6 +157,9 @@ confirm = true
 lock_command = ["enso-lock"]
 
 [lock]
+# The times below, and before_sleep, can also be chosen on the control
+# center's Screen & sleep page; those choices are kept in
+# ~/.local/state/enso/settings.toml and win over what's here.
 # The large clock, and the line under it ("" for none). strftime formats.
 clock = "%H:%M"
 date = "%A, %-d %B"

@@ -8,14 +8,20 @@
 //! Idleness is the compositor's to know (`ext-idle-notify`, which does not
 //! count time a film or a call keeps the screen awake); sleep is logind's
 //! to announce, and it waits for the lock to be up before going.
+//!
+//! When the control center changes when to lock, the watcher starts itself
+//! afresh in its own place (the same process, run again), so the new time
+//! counts at once.
 
 use std::{
+    os::unix::process::CommandExt,
     process::Child,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
 
+use enso_core::{Context, Paths};
 use enso_sys::logind;
 
 use crate::lock::LockConfig;
@@ -44,10 +50,44 @@ fn lock(running: &Running) {
     }
 }
 
+/// What the watcher does, from the `[lock]` settings.
+fn watching(config: &LockConfig) -> (u64, bool) {
+    (config.idle_after, config.before_sleep)
+}
+
+/// Run again in this process's place once the settings it watches by have
+/// changed: in the config file, or chosen in the control center.
+fn follow_settings(paths: &Paths, now: (u64, bool)) {
+    let file = paths.config_file();
+    let follow = |paths: Paths| {
+        move || {
+            let mut ctx = Context::load_from(paths.clone());
+            let config: LockConfig = ctx.section("lock");
+            if watching(&config) != now {
+                let err = enso_core::exe::again().arg("watch").exec();
+                eprintln!("enso-lock: cannot start again with the new settings: {err}");
+            }
+            true
+        }
+    };
+    if let Err(err) = enso_ui::watch::watch_dir(&paths.state_dir, follow(paths.clone())) {
+        eprintln!("enso-lock: changes to when to lock wait for a restart: {err}");
+    }
+    if let Some(dir) = file.parent()
+        && let Err(err) = enso_ui::watch::watch_dir(dir, follow(paths.clone()))
+    {
+        eprintln!("enso-lock: changes to config.toml wait for a restart: {err}");
+    }
+}
+
 /// Watch until the session ends.
-pub fn run(config: &LockConfig) -> Result<(), String> {
+pub fn run(config: &LockConfig, paths: &Paths) -> Result<(), String> {
+    follow_settings(paths, watching(config));
     if config.idle_after == 0 && !config.before_sleep {
-        return Err("nothing to watch for: idle_after is 0 and before_sleep is false".to_owned());
+        // Nothing to do until the settings say otherwise.
+        loop {
+            thread::park();
+        }
     }
     let running: Running = Arc::default();
 

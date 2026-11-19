@@ -134,6 +134,12 @@ impl Config {
         })
     }
 
+    /// Lay the settings chosen in the interface ([`crate::chosen`]) over
+    /// the tools' tables.
+    pub(crate) fn overlay_chosen(&mut self, paths: &Paths) -> Result<(), String> {
+        crate::chosen::overlay(paths, &mut self.sections)
+    }
+
     /// A tool's own table, or its defaults when the table is absent.
     pub fn section<T: DeserializeOwned + Default>(&self, name: &str) -> Result<T, Error> {
         match self.sections.get(name) {

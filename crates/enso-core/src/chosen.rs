@@ -1,0 +1,115 @@
+//! Settings chosen in enso's own interface — the control center's Screen &
+//! sleep page — kept apart from `config.toml`, which is yours to write and
+//! may well be a link into your dotfiles.
+//!
+//! They live in the state directory (`settings.toml`), in the same tables
+//! as `config.toml`, and are laid over it key by key as it is read: what
+//! was chosen here wins, everything else comes from the config file.
+
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+use crate::{Paths, disk};
+
+/// The file, in the state directory.
+pub const FILE: &str = "settings.toml";
+
+/// When the screen locks, goes dark, and sleeps: the `[lock]` defaults that
+/// the lock screen and the control center share.
+pub mod lock {
+    /// Seconds without input before the watcher locks the screen.
+    pub const IDLE_AFTER: u64 = 300;
+    /// Seconds without input on the lock screen before the screens go dark.
+    pub const SCREEN_OFF_AFTER: u64 = 30;
+    /// Seconds without input on the lock screen before the machine sleeps;
+    /// `0` never.
+    pub const SUSPEND_AFTER: u64 = 0;
+    /// Lock just before the machine sleeps.
+    pub const BEFORE_SLEEP: bool = true;
+}
+
+pub fn path(paths: &Paths) -> PathBuf {
+    paths.state_dir.join(FILE)
+}
+
+/// What has been chosen, as tables. Missing is nothing chosen.
+fn read(path: &Path) -> Result<toml::Table, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => text
+            .parse::<toml::Table>()
+            .map_err(|err| format!("{}: {err}", path.display())),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(toml::Table::new()),
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
+/// Lay what was chosen over `sections`, key by key within each table.
+pub(crate) fn overlay(paths: &Paths, sections: &mut toml::Table) -> Result<(), String> {
+    for (name, chosen) in read(&path(paths))? {
+        let toml::Value::Table(chosen) = chosen else {
+            continue;
+        };
+        let table = sections
+            .entry(name)
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        if let toml::Value::Table(table) = table {
+            table.extend(chosen);
+        }
+    }
+    Ok(())
+}
+
+/// Choose `value` for `key` in the `[section]` table, keeping everything
+/// else that was chosen.
+pub fn set(
+    paths: &Paths,
+    section: &str,
+    key: &str,
+    value: impl Into<toml::Value>,
+) -> io::Result<()> {
+    let path = path(paths);
+    let mut chosen = read(&path).map_err(io::Error::other)?;
+    let table = chosen
+        .entry(section)
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let toml::Value::Table(table) = table else {
+        return Err(io::Error::other(format!("[{section}] isn't a table")));
+    };
+    table.insert(key.to_owned(), value.into());
+    let text = format!(
+        "# Chosen in enso's interface; laid over config.toml as it is read.\n{}",
+        toml::to_string(&chosen).map_err(io::Error::other)?
+    );
+    disk::write_atomic(&path, text.as_bytes(), 0o644)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Context, test_dir};
+
+    #[test]
+    fn chosen_settings_win_key_by_key() {
+        let root = test_dir("chosen");
+        let paths = Paths::rooted(&root);
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(
+            paths.config_file(),
+            "[lock]\nidle_after = 600\nclock = \"%H.%M\"\n",
+        )
+        .unwrap();
+        set(&paths, "lock", "idle_after", 120).unwrap();
+        set(&paths, "lock", "before_sleep", false).unwrap();
+
+        let mut ctx = Context::load_from(paths);
+        let lock: toml::Table = ctx.section("lock");
+        assert_eq!(lock["idle_after"].as_integer(), Some(120));
+        assert_eq!(lock["before_sleep"].as_bool(), Some(false));
+        // What wasn't chosen is the config file's.
+        assert_eq!(lock["clock"].as_str(), Some("%H.%M"));
+        assert!(ctx.warnings.is_empty(), "{:?}", ctx.warnings);
+        let _ = fs::remove_dir_all(root);
+    }
+}
