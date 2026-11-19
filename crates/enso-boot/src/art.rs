@@ -6,10 +6,10 @@
 //! Used by the build script, and by the tests to look at.
 
 use enso_core::{
-    Context, Paths, Rgba,
+    Context, Paths,
     style::{radius, space, type_scale},
 };
-use enso_ui::{Align, Offscreen, Rect, Text, TextEngine, mark};
+use enso_ui::{Align, Offscreen, Picture, Rect, Text, TextEngine, mark};
 
 /// The screen everything is drawn for: this laptop's, and most.
 pub const SCREEN: (u32, u32) = (1920, 1080);
@@ -31,36 +31,18 @@ pub fn context(font: Option<String>) -> Context {
     ctx
 }
 
-fn rgb(color: Rgba) -> [u8; 3] {
-    [color.r, color.g, color.b]
-}
-
 /// The scene, as opaque RGBA.
-pub fn scene(ctx: &Context, size: (u32, u32)) -> Vec<u8> {
-    let c = &ctx.theme.colors;
-    let palette = enso_scene::Palette {
-        base: rgb(c.base),
-        surface: rgb(c.surface),
-        overlay: rgb(c.overlay),
-        muted: rgb(c.muted),
-        subtle: rgb(c.subtle),
-        text: rgb(c.text),
-        love: rgb(c.love),
-        gold: rgb(c.gold),
-        rose: rgb(c.rose),
-        pine: rgb(c.pine),
-        foam: rgb(c.foam),
-        iris: rgb(c.iris),
-    };
-    enso_scene::render(size.0, size.1, &palette)
+pub fn scene(ctx: &Context, size: (u32, u32)) -> Picture {
+    mark::scene(&ctx.theme.colors, size)
 }
 
-/// The frame Arch starts on: the ensō on the base colour, exactly as the
-/// login screen first shows it.
-pub fn frame(ctx: &Context, text: &mut TextEngine, size: (u32, u32)) -> Offscreen {
+/// The frame Arch starts on: the ensō over the scene, quietened, exactly
+/// as the login screen first shows it.
+pub fn frame(ctx: &Context, text: &mut TextEngine, scene: &Picture) -> Offscreen {
     let colors = ctx.theme.colors.clone();
-    Offscreen::render(text, size, 1, |canvas| {
-        mark::frame(canvas, colors.base, colors.rose);
+    let backdrop = mark::backdrop(scene.clone(), colors.base);
+    Offscreen::render(text, backdrop.size(), 1, |canvas| {
+        mark::frame(canvas, colors.base, colors.rose, Some(&backdrop));
     })
 }
 

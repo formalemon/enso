@@ -23,13 +23,11 @@ miniz_oxide = { version = "0.8", default-features = false, features = ["with-all
 [build-dependencies]
 enso-core.workspace = true
 enso-ui.workspace = true
-enso-scene = { path = "../enso-scene", version = "0.2.0" }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
 [dev-dependencies]
 enso-core.workspace = true
 enso-ui = { workspace = true, features = ["png"] }
-enso-scene = { path = "../enso-scene", version = "0.2.0" }
 
 # The workspace's lints, but unsafe code denied rather than forbidden: a
 # boot loader has to take the firmware's word for a few things, and does

@@ -13,10 +13,12 @@ use std::{
 use enso_core::{
     Context, Transition, Tween,
     style::{icon, space, type_scale},
+    wallpaper::Fit,
 };
 use enso_sys::accounts::User;
 use enso_ui::{
-    Align, Canvas, Cx, Event, Key, KeyEvent, Paint, Proxy, Rect, Role, Screen, Screens, Text,
+    Align, Canvas, Cx, Event, Key, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens,
+    Text,
     mark::{self, Mark, Pace},
     widget::{Look, Note, SecretField, secret},
 };
@@ -119,6 +121,10 @@ pub struct Greet {
     revealed: bool,
     /// The ensō, as the boot left it: whole, then breathing.
     mark: Mark,
+    /// The scene behind it, quietened, as the boot left it too; and fitted
+    /// to the screen if the screen is another size.
+    backdrop: Option<Picture>,
+    fitted: Option<Picture>,
 }
 
 impl std::fmt::Debug for Greet {
@@ -138,6 +144,7 @@ impl Greet {
         users: Vec<User>,
         greetd: Box<dyn Greetd>,
         preview: bool,
+        backdrop: Option<Picture>,
     ) -> Self {
         let mark = Mark::new(ctx.theme.colors.rose, ctx.theme.colors.text);
         let chosen = users
@@ -162,6 +169,8 @@ impl Greet {
             presence: Tween::new(0.0),
             revealed: false,
             mark,
+            backdrop,
+            fitted: None,
         }
     }
 
@@ -488,7 +497,7 @@ impl Screens for Greet {
         }
     }
 
-    fn draw(&mut self, canvas: &mut Canvas<'_>, _screen: &Screen, now: Instant) -> Paint {
+    fn draw(&mut self, canvas: &mut Canvas<'_>, screen: &Screen, now: Instant) -> Paint {
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let base_size = self.ctx.config.appearance.font_size;
@@ -504,6 +513,20 @@ impl Screens for Greet {
 
         // The frame the boot hands over, exactly: then the rest fades in.
         canvas.clear(colors.base);
+        if let Some(backdrop) = &self.backdrop {
+            let size = screen.pixels();
+            if backdrop.size() == size {
+                canvas.picture(backdrop);
+            } else {
+                let fitted = self.fitted.get_or_insert_with(|| {
+                    backdrop.fitted(size.0, size.1, Fit::Cover, colors.base)
+                });
+                if fitted.size() != size {
+                    *fitted = backdrop.fitted(size.0, size.1, Fit::Cover, colors.base);
+                }
+                canvas.picture(fitted);
+            }
+        }
         let (centre, radius) = mark::place(bounds);
         self.mark.draw(canvas, centre, radius, now);
 
@@ -582,7 +605,14 @@ mod tests {
 
     fn greet(config: GreetConfig) -> Greet {
         let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-greet-test"));
-        Greet::new(ctx, config, people(), Box::new(Pretend::default()), false)
+        Greet::new(
+            ctx,
+            config,
+            people(),
+            Box::new(Pretend::default()),
+            false,
+            None,
+        )
     }
 
     fn press(greet: &mut Greet, key: Key, now: Instant) -> Outcome {
@@ -796,6 +826,7 @@ mod tests {
             Vec::new(),
             Box::new(Pretend::default()),
             false,
+            None,
         );
         let now = Instant::now();
         assert_eq!(greet.begin(now), Outcome::Redraw);
@@ -833,7 +864,7 @@ mod tests {
         let mut text = TextEngine::new(&greet.ctx.config.appearance);
         let colors = greet.ctx.theme.colors.clone();
         let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
-            mark::frame(canvas, colors.base, colors.rose);
+            mark::frame(canvas, colors.base, colors.rose, None);
         });
         assert!(frame.rgba == handed.rgba);
         let (frame, paint) = render(&mut greet, settled);
@@ -854,6 +885,31 @@ mod tests {
             later + Duration::from_millis(100),
             "greet-wrong",
         );
+    }
+
+    #[test]
+    fn over_the_backdrop_it_starts_as_the_boot_ends() {
+        let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-greet-test"));
+        let colors = ctx.theme.colors.clone();
+        // At the screen's own pixels, as enable draws it.
+        let backdrop = mark::backdrop(mark::scene(&colors, (1920, 1080)), colors.base);
+        let mut greet = Greet::new(
+            ctx,
+            GreetConfig::default(),
+            people(),
+            Box::new(Pretend::default()),
+            false,
+            Some(backdrop.clone()),
+        );
+        let now = Instant::now();
+        let (first, _) = render(&mut greet, now);
+        let mut text = TextEngine::new(&greet.ctx.config.appearance);
+        let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
+            mark::frame(canvas, colors.base, colors.rose, Some(&backdrop));
+        });
+        assert!(first.rgba == handed.rgba);
+        let (later, _) = render(&mut greet, now + Duration::from_secs(1));
+        later.snapshot(env!("CARGO_MANIFEST_DIR"), "greet-backdrop");
     }
 
     fn frame_named(greet: &mut Greet, now: Instant, name: &str) {

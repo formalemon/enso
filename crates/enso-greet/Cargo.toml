@@ -12,7 +12,8 @@ license.workspace = true
 enso-core.workspace = true
 # Who can log in: /etc/passwd, /etc/shells, /etc/login.defs.
 enso-sys.workspace = true
-enso-ui.workspace = true
+# picture: the backdrop, a PNG; png: writing it.
+enso-ui = { workspace = true, features = ["picture", "png"] }
 serde.workspace = true
 # greetd's IPC is JSON.
 serde_json.workspace = true

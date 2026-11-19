@@ -23,6 +23,8 @@ pub const GREETD_CONFIG: &str = "/etc/greetd/config.toml";
 pub const SYSTEM_DIR: &str = "/etc/enso";
 pub const GREET_CONFIG: &str = "/etc/enso/greet.toml";
 pub const SYSTEM_CONFIG: &str = "/etc/enso/config.toml";
+/// The scene behind the ensō, drawn once by `enable`.
+pub const BACKDROP: &str = "/usr/local/share/enso/greet/backdrop.png";
 /// Fonts every user, the greeter too, can read.
 const SYSTEM_FONTS: &str = "/usr/local/share/fonts";
 
@@ -40,6 +42,9 @@ pub struct Setup {
     /// The interface font, if it is one only this user has: its family and
     /// the folder its files are in.
     pub private_font: Option<(String, PathBuf)>,
+    /// The scene behind the ensō, quietened: drawn here, since drawing it
+    /// takes seconds the login screen shouldn't spend.
+    pub backdrop: enso_ui::Picture,
 }
 
 /// The greeter's niri: nothing in it but enso-greet.
@@ -141,6 +146,8 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     let niri = write("enso-greet.kdl", niri_config(&setup.base))?;
     let greetd = write("config.toml", greetd_config())?;
     let greet = write("greet.toml", greet_config(&setup.user))?;
+    let backdrop = setup.dir.join("backdrop.png");
+    setup.backdrop.save_png(&backdrop)?;
     let system = match &setup.private_font {
         Some((family, _)) => Some(write("enso.toml", system_config(family))?),
         None => None,
@@ -160,6 +167,7 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
         shown(&setup.program)
     );
     let _ = writeln!(out, "  sudo install -Dm644 {} {NIRI_CONFIG}", shown(&niri));
+    let _ = writeln!(out, "  sudo install -Dm644 {} {BACKDROP}", shown(&backdrop));
     let _ = writeln!(
         out,
         "  sudo install -Dm644 {} {GREET_CONFIG}",
@@ -207,7 +215,7 @@ pub fn disable(dir: &Path) -> io::Result<String> {
         "To log in on the console again, as root:\n\n\
          \x20 sudo systemctl disable greetd    # from the next start\n\n\
          And to remove the login screen's files:\n\n\
-         \x20 sudo rm {PROGRAM} {NIRI_CONFIG} {GREET_CONFIG}\n\
+         \x20 sudo rm {PROGRAM} {NIRI_CONFIG} {GREET_CONFIG} {BACKDROP}\n\
 \n\
          {GREETD_CONFIG} can stay: greetd reads it only when enabled.\n\
          {SYSTEM_CONFIG} and any font copied to {SYSTEM_FONTS} are left: remove them\n\
@@ -245,6 +253,7 @@ mod tests {
             base: "#232136".to_owned(),
             private_font: private_font(&fonts, "Google Sans Flex")
                 .map(|dir| ("Google Sans Flex".to_owned(), dir)),
+            backdrop: enso_ui::Picture::solid(4, 3, enso_core::Rgba::rgb(1, 2, 3)),
         };
         assert!(private_font(&fonts, "Inter").is_none());
         let said = enable(&setup).unwrap();
@@ -264,6 +273,9 @@ mod tests {
 
         assert!(said.contains("sudo install -Dm755 /build/enso-greet /usr/local/bin/enso-greet"));
         assert!(said.contains("GoogleSansFlex /usr/local/share/fonts/"));
+        assert!(said.contains(&format!("backdrop.png {BACKDROP}")));
+        let saved = enso_ui::Picture::open(setup.dir.join("backdrop.png")).unwrap();
+        assert!(saved == setup.backdrop);
         assert!(said.contains("sudo systemctl enable greetd && systemctl reboot"));
         assert!(!said.contains("systemctl start greetd"));
 

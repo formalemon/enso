@@ -43,8 +43,9 @@ fn main() {
         };
         fs::write(out.join(name), menu::keep(&picture)).expect("writing a picture");
     };
-    save("scene.bin", width, height, art::scene(&ctx, art::SCREEN));
-    let frame = art::frame(&ctx, &mut text, art::SCREEN);
+    let scene = art::scene(&ctx, art::SCREEN);
+    save("scene.bin", width, height, scene.rgba().to_vec());
+    let frame = art::frame(&ctx, &mut text, &scene);
     save("frame.bin", frame.width, frame.height, frame.rgba);
     for chosen in 0..art::LABELS.len() {
         let card = art::card(&ctx, &mut text, chosen);

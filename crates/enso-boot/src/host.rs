@@ -236,7 +236,8 @@ mod tests {
         let ctx = art::context(None);
         let mut text = TextEngine::new(&ctx.config.appearance);
         let (width, height) = (art::SCREEN.0 / 2, art::SCREEN.1 / 2);
-        let scene = picture(width, height, art::scene(&ctx, (width, height)));
+        let rendered = art::scene(&ctx, (width, height));
+        let scene = picture(width, height, rendered.rgba().to_vec());
         for chosen in 0..art::LABELS.len() {
             let card = art::card(&ctx, &mut text, chosen);
             let card = picture(card.width, card.height, card.rgba);
@@ -249,10 +250,12 @@ mod tests {
             save(&format!("boot-menu-{chosen}"), &screen);
         }
 
-        let frame = art::frame(&ctx, &mut text, (width, height));
+        let frame = art::frame(&ctx, &mut text, &rendered);
         let colors = ctx.theme.colors.clone();
+        let backdrop = enso_ui::mark::backdrop(rendered.clone(), colors.base);
         let greeter = enso_ui::Offscreen::render(&mut text, (width, height), 1, |canvas| {
             canvas.clear(colors.base);
+            canvas.picture(&backdrop);
             let (centre, radius) = enso_ui::mark::place(canvas.bounds());
             enso_ui::mark::Mark::new(colors.rose, colors.text).draw(
                 canvas,

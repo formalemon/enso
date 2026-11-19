@@ -19,10 +19,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use enso_core::{Motion, Rgba, Transition, Tween};
+use enso_core::{Motion, Palette, Rgba, Transition, Tween};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
-use crate::{Canvas, Rect};
+use crate::{Canvas, Picture, Rect};
 
 /// Points along the stroke.
 const STEPS: usize = 720;
@@ -487,11 +487,47 @@ impl Mark {
     }
 }
 
-/// The still frame the boot hands over with: the theme's `base`, and the
-/// mark in `ink` where [`place`] puts it, whole, with its glow at rest.
-/// The greeter's first frame is exactly this.
-pub fn frame(canvas: &mut Canvas<'_>, base: Rgba, ink: Rgba) {
+/// How far the scene behind the ensō is quietened towards the base
+/// colour, and how much it is blurred: there, but not competing.
+const BACKDROP_TINT: f32 = 0.5;
+const BACKDROP_BLUR: u32 = 2;
+
+/// The voxel scene (terraces, river, mountains) in `colors`, `size`
+/// pixels: the boot menu's picture.
+pub fn scene(colors: &Palette, size: (u32, u32)) -> Picture {
+    let rgb = |c: Rgba| [c.r, c.g, c.b];
+    let palette = enso_scene::Palette {
+        base: rgb(colors.base),
+        surface: rgb(colors.surface),
+        overlay: rgb(colors.overlay),
+        muted: rgb(colors.muted),
+        subtle: rgb(colors.subtle),
+        text: rgb(colors.text),
+        love: rgb(colors.love),
+        gold: rgb(colors.gold),
+        rose: rgb(colors.rose),
+        pine: rgb(colors.pine),
+        foam: rgb(colors.foam),
+        iris: rgb(colors.iris),
+    };
+    let rgba = enso_scene::render(size.0, size.1, &palette);
+    Picture::from_rgba(size.0, size.1, rgba).unwrap_or_else(|| Picture::solid(1, 1, colors.base))
+}
+
+/// The scene quietened into a backdrop for the ensō: softened, and half
+/// way to `base`.
+pub fn backdrop(scene: Picture, base: Rgba) -> Picture {
+    scene.blurred(BACKDROP_BLUR).tinted(base, BACKDROP_TINT)
+}
+
+/// The still frame the boot hands over with: `backdrop` (or `base` alone),
+/// and the mark in `ink` where [`place`] puts it, whole, with its glow at
+/// rest. The login screen's first frame is exactly this.
+pub fn frame(canvas: &mut Canvas<'_>, base: Rgba, ink: Rgba, backdrop: Option<&Picture>) {
     canvas.clear(base);
+    if let Some(backdrop) = backdrop {
+        canvas.picture(backdrop);
+    }
     let (centre, radius) = place(canvas.bounds());
     Mark::new(ink, ink).draw(canvas, centre, radius, Instant::now());
 }
@@ -595,7 +631,7 @@ mod tests {
         let ctx = context();
         let colors = ctx.theme.colors.clone();
         let still = render((480, 270), 2, |canvas| {
-            frame(canvas, colors.base, colors.rose)
+            frame(canvas, colors.base, colors.rose, None)
         });
         // The corners are the base, untouched by the glow.
         assert_eq!(
@@ -603,6 +639,17 @@ mod tests {
             [colors.base.r, colors.base.g, colors.base.b, 255]
         );
         still.check(env!("CARGO_MANIFEST_DIR"), "mark");
+
+        // Over the scene, quietened: the login screen's and the boot's.
+        let backdrop = backdrop(scene(&colors, (480, 270)), colors.base);
+        let over = render((480, 270), 1, |canvas| {
+            frame(canvas, colors.base, colors.rose, Some(&backdrop))
+        });
+        assert_ne!(
+            over.pixel(0, 269),
+            [colors.base.r, colors.base.g, colors.base.b, 255]
+        );
+        over.snapshot(env!("CARGO_MANIFEST_DIR"), "mark-backdrop");
 
         // Half painted; and breathing with the light on it.
         let start = Instant::now();

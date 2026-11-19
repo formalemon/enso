@@ -465,7 +465,6 @@ name = "enso-boot"
 version = "0.2.0"
 dependencies = [
  "enso-core",
- "enso-scene",
  "enso-ui",
  "miniz_oxide 0.8.9",
  "uefi",
@@ -651,6 +650,7 @@ dependencies = [
  "cosmic-text",
  "enso-core",
  "enso-fs",
+ "enso-scene",
  "kbvm",
  "rustix",
  "smithay-client-toolkit",

@@ -15,6 +15,7 @@ mod setup;
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
 use enso_core::{Context, Paths};
+use enso_ui::{Picture, mark};
 use niri_ipc::{Action, Request, socket::Socket};
 
 use crate::{
@@ -147,7 +148,17 @@ fn show(greetd: Box<dyn Greetd>, preview: bool) -> ExitCode {
     };
     let users = enso_sys::accounts::login_users();
     let appearance = ctx.config.appearance.clone();
-    match enso_ui::run_screens(Greet::new(ctx, config, users, greetd, preview), &appearance) {
+    // The scene behind the ensō: where root put it, or (previewing) where
+    // `enable` left it for root. Without it, the theme's colour alone.
+    let staged = staging().join("backdrop.png");
+    let places = if preview {
+        vec![staged, PathBuf::from(setup::BACKDROP)]
+    } else {
+        vec![PathBuf::from(setup::BACKDROP)]
+    };
+    let backdrop = places.iter().find_map(|path| Picture::open(path).ok());
+    let greet = Greet::new(ctx, config, users, greetd, preview, backdrop);
+    match enso_ui::run_screens(greet, &appearance) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("enso-greet: {err}");
@@ -187,12 +198,20 @@ fn enable() -> ExitCode {
     let private_font = fonts
         .and_then(|fonts| setup::private_font(&fonts, &family))
         .map(|dir| (family, dir));
+    // The scene in the login screen's own colours (enso's default theme,
+    // as /etc/enso has it), so the boot's last frame and its first agree.
+    println!("Drawing the login screen's backdrop…");
+    let colors = Context::load_from(Paths::rooted("/nonexistent/enso-greet"))
+        .theme
+        .colors;
+    let backdrop = mark::backdrop(mark::scene(&colors, (1920, 1080)), colors.base);
     let setup = setup::Setup {
         dir: staging(),
         program,
         user,
         base: ctx.theme.colors.base.hex(),
         private_font,
+        backdrop,
     };
     match setup::enable(&setup) {
         Ok(said) => {

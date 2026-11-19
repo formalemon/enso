@@ -65,6 +65,20 @@ impl Picture {
             .ok_or_else(|| said(&format!("larger than {MAX_SIDE} pixels on a side")))
     }
 
+    /// Write the picture as a PNG file.
+    #[cfg(feature = "png")]
+    pub fn save_png(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        tiny_skia::PixmapRef::from_bytes(&self.rgba, self.width, self.height)
+            .ok_or_else(|| std::io::Error::other("an empty picture"))?
+            .save_png(path)
+            .map_err(std::io::Error::other)
+    }
+
+    /// The pixels: premultiplied RGBA, row by row.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
     /// Size in pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
