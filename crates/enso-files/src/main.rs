@@ -50,8 +50,9 @@ Opens FOLDER (the current folder, or home when started from elsewhere).
 
 `enso-files portal enable` makes the picker every application's file
 chooser, through the desktop portal, with nothing outside your home
-directory; `portal disable` gives the choosing back; `portal status` says
-which it is.
+directory, and lists Files among the applications, opening folders (unless
+you chose something else for them); `portal disable` gives all that back;
+`portal status` says which it is.
 
 Options:
       --select PATH         Open PATH's folder with PATH selected (again for

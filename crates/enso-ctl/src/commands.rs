@@ -14,10 +14,12 @@ use enso_sys::{
     wifi::{ConnectError, Iwd, Link, Network, Security, Wifi},
 };
 
+use enso_core::{Awake, awake, chosen::Quiet};
+use std::os::unix::process::CommandExt;
 use zeroize::Zeroizing;
 
 use crate::{
-    cli::{BluetoothCommand, Level, Light, ProfileCommand, VolumeChange, WifiCommand},
+    cli::{BluetoothCommand, Level, Light, ProfileCommand, Switch, VolumeChange, WifiCommand},
     system,
 };
 
@@ -42,12 +44,16 @@ pub fn power(out: &mut impl Write) -> Outcome {
                 BatteryStatus::NotCharging => "plugged in, not charging",
                 BatteryStatus::Unknown => "unknown",
             };
-            let mut details = vec![status.to_owned()];
+            let mut details = vec![if battery.is_held() {
+                format!("kept at {}%", battery.limit.unwrap_or(100))
+            } else {
+                status.to_owned()
+            }];
             if let Some(minutes) = battery.minutes_left {
-                let what = if battery.status == BatteryStatus::Charging {
-                    "until full"
-                } else {
-                    "left"
+                let what = match (battery.status, battery.limit) {
+                    (BatteryStatus::Charging, Some(limit)) => format!("until {limit}%"),
+                    (BatteryStatus::Charging, None) => "until full".to_owned(),
+                    _ => "left".to_owned(),
                 };
                 details.push(format!("{} {what}", system::duration(minutes)));
             }
@@ -148,9 +154,18 @@ pub fn volume(app: Option<&str>, change: VolumeChange, out: &mut impl Write) -> 
     let result = match change {
         VolumeChange::Level(level) => {
             let target = next_volume(now, level);
-            match app {
+            let set = match app {
                 Some(app) => mixer.set_app_volume(&app.name, target),
                 None => mixer.set_volume(target),
+            };
+            // Turning it up means wanting to hear it: a muted output (or
+            // application) is unmuted, as every desktop's volume keys do.
+            match set {
+                Ok(()) if muted && unmutes(level) => match app {
+                    Some(app) => mixer.set_app_muted(&app.name, false),
+                    None => mixer.set_muted(false),
+                },
+                other => other,
             }
         }
         VolumeChange::Mute(_) | VolumeChange::ToggleMute => {
@@ -203,7 +218,15 @@ pub fn mic(change: VolumeChange, out: &mut impl Write) -> Outcome {
     }
     let input = sound.input.ok_or("there is no microphone")?;
     match change {
-        VolumeChange::Level(level) => mixer.set_input_volume(next_volume(input.volume, level)),
+        VolumeChange::Level(level) => mixer
+            .set_input_volume(next_volume(input.volume, level))
+            .and_then(|()| {
+                if input.muted && unmutes(level) {
+                    mixer.set_input_muted(false)
+                } else {
+                    Ok(())
+                }
+            }),
         VolumeChange::Mute(mute) => mixer.set_input_muted(mute),
         VolumeChange::ToggleMute => mixer.set_input_muted(!input.muted),
     }
@@ -278,6 +301,15 @@ fn print_devices(devices: &[SoundDevice], out: &mut impl Write) -> Outcome {
 
 /// Where a volume at `now` percent goes for `level`. Steps stop at 100;
 /// setting it outright may go no further either.
+/// Whether a change of level asks to be heard: up, or set above nothing.
+fn unmutes(level: Level) -> bool {
+    match level {
+        Level::Up(_) => true,
+        Level::Set(percent) => percent > 0,
+        Level::Show | Level::Down(_) => false,
+    }
+}
+
 fn next_volume(now: u8, level: Level) -> u8 {
     const STEP: u8 = 5;
     let now = now.min(100);
@@ -625,6 +657,137 @@ fn print_bluetooth(bluetooth: &Bluetooth, out: &mut impl Write) -> Outcome {
         )
         .map_err(io_error)?;
     }
+    Ok(())
+}
+
+/// The time of day `at` (seconds since the epoch) falls at, here: `15:30`.
+pub fn clock_at(at: u64) -> String {
+    i64::try_from(at)
+        .ok()
+        .and_then(|at| jiff::Timestamp::from_second(at).ok())
+        .map(|at| {
+            at.to_zoned(jiff::tz::TimeZone::system())
+                .strftime("%H:%M")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// `enso-ctl dnd …`: Do not disturb.
+pub fn quiet(switch: Switch, out: &mut impl Write) -> Outcome {
+    let paths = enso_core::Paths::from_env();
+    let now = awake::unix_now();
+    let quiet = Quiet::read(&paths);
+    let (on, until) = match switch {
+        Switch::Show => {
+            let said = match quiet.ends(now) {
+                Some(at) => format!("on until {}", clock_at(at)),
+                None if quiet.is_on(now) => "on".to_owned(),
+                None => "off".to_owned(),
+            };
+            return writeln!(out, "{said}").map_err(io_error);
+        }
+        Switch::On => (true, 0),
+        Switch::Off => (false, 0),
+        Switch::Toggle => (!quiet.is_on(now), 0),
+        Switch::For(seconds) => (true, now + seconds),
+    };
+    Quiet::set(&paths, on, until).map_err(|err| format!("cannot keep the setting: {err}"))?;
+    match (on, until) {
+        (false, _) => writeln!(out, "off"),
+        (true, 0) => writeln!(out, "on"),
+        (true, until) => writeln!(out, "on until {}", clock_at(until)),
+    }
+    .map_err(io_error)
+}
+
+/// `enso-ctl awake …`: keeping the machine from locking when left alone.
+pub fn keep_awake(switch: Switch, out: &mut impl Write) -> Outcome {
+    let paths = enso_core::Paths::from_env();
+    let now = awake::unix_now();
+    let current = Awake::read(&paths);
+    let next = match switch {
+        Switch::Show => {
+            let said = match current.ends(now) {
+                Some(at) => format!("on until {}", clock_at(at)),
+                None if current.is_on(now) => "on".to_owned(),
+                None => "off".to_owned(),
+            };
+            return writeln!(out, "{said}").map_err(io_error);
+        }
+        Switch::On => Awake::On,
+        Switch::Off => Awake::Off,
+        Switch::Toggle if current.is_on(now) => Awake::Off,
+        Switch::Toggle => Awake::On,
+        Switch::For(seconds) => Awake::Until(now + seconds),
+    };
+    next.write(&paths)
+        .map_err(|err| format!("cannot keep the setting: {err}"))?;
+    match next {
+        Awake::Off => writeln!(out, "off"),
+        Awake::On => writeln!(out, "on"),
+        Awake::Until(at) => writeln!(out, "on until {}", clock_at(at)),
+    }
+    .map_err(io_error)
+}
+
+/// Set in the copy that stays behind to keep the clipboard.
+const HOLDING: &str = "ENSO_CTL_HOLDING";
+
+/// `enso-ctl copy TEXT`: put it on the clipboard, and keep it there from a
+/// copy of this program left in the background, as long as it's what was
+/// copied last.
+pub fn copy(text: &str) -> Outcome {
+    if std::env::var_os(HOLDING).is_some() {
+        return enso_ui::clipboard::hold(enso_ui::clipboard::text(text))
+            .map_err(|err| err.to_string());
+    }
+    enso_core::exe::again()
+        .args(std::env::args_os().skip(1))
+        .env(HOLDING, "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(drop)
+        .map_err(|err| format!("cannot keep the text on the clipboard: {err}"))
+}
+
+/// `enso-ctl colour`: pick a colour from the screen (niri's picker), copy
+/// its hex, and say so.
+pub fn colour(out: &mut impl Write) -> Outcome {
+    use niri_ipc::{Request, Response, socket::Socket};
+
+    let reply = Socket::connect()
+        .and_then(|mut socket| socket.send(Request::PickColor))
+        .map_err(|err| format!("cannot reach niri: {err}"))?;
+    let picked = match reply {
+        Ok(Response::PickedColor(picked)) => picked,
+        Ok(other) => return Err(format!("unexpected reply from niri: {other:?}")),
+        Err(err) => return Err(err),
+    };
+    // Escape: nothing picked, nothing to say.
+    let Some(picked) = picked else {
+        return Ok(());
+    };
+    let [r, g, b] = picked
+        .rgb
+        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let hex = format!("#{r:02x}{g:02x}{b:02x}");
+    writeln!(out, "{hex}").map_err(io_error)?;
+    enso_core::exe::again()
+        .args(["copy", &hex])
+        .env(HOLDING, "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|err| format!("cannot keep the colour on the clipboard: {err}"))?;
+    let _ = enso_sys::notify::send(
+        "Colour",
+        &format!("{hex} copied"),
+        &format!("rgb({r}, {g}, {b})"),
+    );
     Ok(())
 }
 

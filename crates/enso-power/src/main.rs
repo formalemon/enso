@@ -51,8 +51,8 @@ Logging out, restarting, and shutting down ask for a second press.
 Running enso-power while it is open closes it.
 
 Configuration is optional: the [power] table of ~/.config/enso/config.toml.
-  actions      = [\"lock\", \"logout\", \"restart\", \"shutdown\"]
-                               what is offered, in order; \"suspend\" too
+  actions      = [\"lock\", \"suspend\", \"logout\", \"restart\", \"shutdown\"]
+                               what is offered, in order
   confirm      = true          ask before the three that end the session
   lock_command = [\"enso-lock\"] what \"lock\" runs
 ";

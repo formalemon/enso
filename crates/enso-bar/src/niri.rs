@@ -3,8 +3,13 @@
 //! A background thread follows the event stream and reports a fresh snapshot
 //! whenever something the bar draws changes. Outside Niri the bar simply has
 //! no workspace island.
+//!
+//! Beside the workspaces it reports what's [`Around`] them: whether the
+//! screen is being shared, the keyboard layout, and what each window is
+//! called. Those change more often (a title per page, per command) and are
+//! sent apart, so a new title never redraws the bar for nothing.
 
-use std::{io, thread, time::Duration};
+use std::{collections::HashMap, io, thread, time::Duration};
 
 use niri_ipc::{
     Action, Event, Request, Response, WorkspaceReferenceArg,
@@ -35,10 +40,31 @@ pub struct Workspace {
     pub windows: Vec<Window>,
 }
 
+/// What else the bar learns from Niri.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Around {
+    /// Sessions sharing the screen or a window right now, by id: what the
+    /// sharing mark stops.
+    pub casts: Vec<u64>,
+    /// The keyboard layout, shortened (`US`, `RU`) — only when there is
+    /// more than one to tell apart.
+    pub layout: Option<String>,
+    /// What each window is called, by id: its title, or else its app.
+    pub titles: HashMap<u64, String>,
+}
+
+/// One report from the stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seen {
+    Workspaces(Vec<Workspace>),
+    Around(Around),
+}
+
 /// Follow workspace and window changes on a background thread, calling
-/// `on_change` with each new snapshot (ordered by output, then index).
-/// Reconnects if Niri restarts; stops when `on_change` returns `false`.
-pub fn watch(mut on_change: impl FnMut(Vec<Workspace>) -> bool + Send + 'static) {
+/// `on_change` with each new snapshot (ordered by output, then index), and
+/// with what's around them as that changes. Reconnects if Niri restarts;
+/// stops when `on_change` returns `false`.
+pub fn watch(mut on_change: impl FnMut(Seen) -> bool + Send + 'static) {
     let spawned = thread::Builder::new()
         .name("enso-niri".to_owned())
         .spawn(move || {
@@ -57,7 +83,7 @@ pub fn watch(mut on_change: impl FnMut(Vec<Workspace>) -> bool + Send + 'static)
 }
 
 /// Stream events until the listener goes away (`Ok`) or the socket fails.
-fn follow(on_change: &mut impl FnMut(Vec<Workspace>) -> bool) -> io::Result<()> {
+fn follow(on_change: &mut impl FnMut(Seen) -> bool) -> io::Result<()> {
     let mut socket = Socket::connect()?;
     match socket.send(Request::EventStream)? {
         Ok(Response::Handled) => {}
@@ -68,6 +94,7 @@ fn follow(on_change: &mut impl FnMut(Vec<Workspace>) -> bool) -> io::Result<()> 
     let mut state = EventStreamState::default();
     let mut have_windows = false;
     let mut last = None;
+    let mut last_around = None;
     loop {
         let event = read_event()?;
         have_windows |= matches!(event, Event::WindowsChanged { .. });
@@ -86,11 +113,78 @@ fn follow(on_change: &mut impl FnMut(Vec<Workspace>) -> bool) -> io::Result<()> 
         // bar shows, and so cost it nothing.
         if last.as_ref() != Some(&snapshot) {
             last = Some(snapshot.clone());
-            if !on_change(snapshot) {
+            if !on_change(Seen::Workspaces(snapshot)) {
+                return Ok(());
+            }
+        }
+        let around = around(&state);
+        if last_around.as_ref() != Some(&around) {
+            last_around = Some(around.clone());
+            if !on_change(Seen::Around(around)) {
                 return Ok(());
             }
         }
     }
+}
+
+/// What's around the workspaces, from Niri's state.
+fn around(state: &EventStreamState) -> Around {
+    let mut casts: Vec<u64> = state
+        .casts
+        .casts
+        .values()
+        .map(|cast| cast.session_id)
+        .collect();
+    casts.sort_unstable();
+    casts.dedup();
+    let layout = state
+        .keyboard_layouts
+        .keyboard_layouts
+        .as_ref()
+        .filter(|layouts| layouts.names.len() > 1)
+        .and_then(|layouts| layouts.names.get(usize::from(layouts.current_idx)))
+        .map(|name| short_layout(name));
+    let titles = state
+        .windows
+        .windows
+        .values()
+        .filter_map(|window| {
+            let title = window
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .or(window.app_id.as_deref())?;
+            Some((window.id, title.to_owned()))
+        })
+        .collect();
+    Around {
+        casts,
+        layout,
+        titles,
+    }
+}
+
+/// A layout's name as two or three letters: what's in brackets if that's
+/// short (`English (US)` is `US`), else the first two letters.
+fn short_layout(name: &str) -> String {
+    let bracketed = name
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(inside, _)| inside.trim())
+        .filter(|inside| (2..=3).contains(&inside.chars().count()));
+    match bracketed {
+        Some(short) => short.to_uppercase(),
+        None => name.chars().take(2).collect::<String>().to_uppercase(),
+    }
+}
+
+/// Stop sharing the screen: every session in `casts`.
+pub fn stop_casts(casts: &[u64]) -> io::Result<()> {
+    for &session_id in casts {
+        act(Action::StopCast { session_id })?;
+    }
+    Ok(())
 }
 
 /// Reduce Niri's state to the bar's view of it: workspaces ordered by output

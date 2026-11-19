@@ -63,6 +63,9 @@ pub struct Notification {
     /// A level to show as a bar, in percent — volume and brightness
     /// pop-ups send one.
     pub progress: Option<u8>,
+    /// Only for now (the `transient` hint): shown as a toast, never kept
+    /// in the history or counted by the bell.
+    pub transient: bool,
 }
 
 impl Notification {

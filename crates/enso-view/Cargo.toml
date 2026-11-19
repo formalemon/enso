@@ -1,0 +1,21 @@
+[package]
+name = "enso-view"
+description = "An image viewer: the pictures in a folder, one at a time, to step through, zoom, turn, copy, make the wallpaper, or throw away"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-ui.workspace = true
+enso-fs.workspace = true
+lexopt.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

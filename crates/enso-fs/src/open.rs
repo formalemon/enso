@@ -56,6 +56,93 @@ pub fn uri(uri: &str) -> io::Result<()> {
     spawn_detached(&argv, None)
 }
 
+/// Put desktop entry `id` (`text`) among the user's applications, and make
+/// it what opens each of `mimes` the user hasn't chosen anything for. A
+/// tool sets itself up this way (`enso-files portal enable`); what it
+/// writes is its own to take back with [`abandon`]. Returns the types taken.
+pub fn adopt(id: &str, text: &str, mimes: &[&str]) -> io::Result<Vec<String>> {
+    let database = Database::from_env();
+    let dir = database
+        .app_dirs
+        .first()
+        .ok_or_else(|| io::Error::other("no applications directory"))?;
+    fs::create_dir_all(dir)?;
+    fs::write(dir.join(id), text)?;
+    let file = database.user_mimeapps()?;
+    let mut list = fs::read_to_string(&file).unwrap_or_default();
+    let mut taken = Vec::new();
+    for mime in mimes {
+        if chosen(&list, mime).is_none() {
+            list = set_in_group(&list, "[Default Applications]", mime, id);
+            taken.push((*mime).to_owned());
+        }
+    }
+    if !taken.is_empty() {
+        if let Some(parent) = file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&file, list)?;
+    }
+    Ok(taken)
+}
+
+/// Undo [`adopt`]: the entry goes, and so does each default naming it.
+pub fn abandon(id: &str) -> io::Result<()> {
+    let database = Database::from_env();
+    if let Some(dir) = database.app_dirs.first() {
+        match fs::remove_file(dir.join(id)) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+            _ => {}
+        }
+    }
+    let file = database.user_mimeapps()?;
+    let Ok(list) = fs::read_to_string(&file) else {
+        return Ok(());
+    };
+    let kept = without_default(&list, id);
+    if kept != list {
+        fs::write(&file, kept)?;
+    }
+    Ok(())
+}
+
+/// What the `[Default Applications]` group of `list` says opens `mime`.
+fn chosen<'a>(list: &'a str, mime: &str) -> Option<&'a str> {
+    let mut in_group = false;
+    for line in list.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_group = line == "[Default Applications]";
+        } else if in_group
+            && let Some((key, value)) = line.split_once('=')
+            && key.trim() == mime
+        {
+            return Some(value.trim());
+        }
+    }
+    None
+}
+
+/// `list` without the defaults that are `id` alone.
+fn without_default(list: &str, id: &str) -> String {
+    let mut in_group = false;
+    let mut out = String::with_capacity(list.len());
+    for line in list.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_group = trimmed == "[Default Applications]";
+        } else if in_group
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(_, value)| value.trim().trim_end_matches(';') == id)
+        {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// Where the MIME and application databases live.
 #[derive(Clone, Debug, Default)]
 pub struct Database {
@@ -184,6 +271,15 @@ impl Database {
         }
         fs::write(&file, text)?;
         Ok(mime)
+    }
+
+    /// The user's own `mimeapps.list`, the one choices are written to.
+    fn user_mimeapps(&self) -> io::Result<PathBuf> {
+        Ok(self
+            .config_dirs
+            .first()
+            .ok_or_else(|| io::Error::other("no config directory"))?
+            .join("mimeapps.list"))
     }
 
     /// The name desktop entry `id` gives itself.
@@ -413,6 +509,18 @@ fn looks_like_text(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adopting_leaves_the_users_choices_alone() {
+        let list = "[Default Applications]\nimage/png=org.gnome.Loupe.desktop\ninode/directory=enso-files.desktop\n\n[Added Associations]\ntext/plain=enso-files.desktop\n";
+        assert_eq!(chosen(list, "image/png"), Some("org.gnome.Loupe.desktop"));
+        assert_eq!(chosen(list, "image/jpeg"), None);
+        let kept = without_default(list, "enso-files.desktop");
+        assert!(!kept.contains("inode/directory"));
+        // Only the defaults, not other groups, and not others' choices.
+        assert!(kept.contains("text/plain=enso-files.desktop"));
+        assert!(kept.contains("image/png=org.gnome.Loupe.desktop"));
+    }
 
     #[test]
     fn defaults_are_set_without_touching_the_rest() {

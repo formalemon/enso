@@ -457,6 +457,7 @@ dependencies = [
  "jiff",
  "lexopt",
  "niri-ipc",
+ "rustix",
  "serde",
 ]
 
@@ -469,6 +470,17 @@ dependencies = [
  "enso-ui",
  "miniz_oxide 0.8.9",
  "uefi",
+]
+
+[[package]]
+name = "enso-clip"
+version = "0.2.0"
+dependencies = [
+ "enso-core",
+ "enso-fs",
+ "enso-ui",
+ "rustix",
+ "smithay-client-toolkit",
 ]
 
 [[package]]
@@ -486,10 +498,23 @@ dependencies = [
  "enso-core",
  "enso-sys",
  "enso-ui",
+ "jiff",
  "lexopt",
+ "niri-ipc",
  "rustix",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "enso-dusk"
+version = "0.2.0"
+dependencies = [
+ "enso-core",
+ "jiff",
+ "rustix",
+ "serde",
+ "smithay-client-toolkit",
 ]
 
 [[package]]
@@ -572,6 +597,7 @@ dependencies = [
  "enso-fs",
  "enso-ui",
  "lexopt",
+ "niri-ipc",
  "serde",
 ]
 
@@ -595,6 +621,7 @@ version = "0.2.0"
 dependencies = [
  "enso-core",
  "enso-fs",
+ "enso-sys",
  "enso-ui",
  "lexopt",
  "serde",
@@ -659,6 +686,16 @@ dependencies = [
  "smithay-client-toolkit",
  "tiny-skia",
  "zeroize",
+]
+
+[[package]]
+name = "enso-view"
+version = "0.2.0"
+dependencies = [
+ "enso-core",
+ "enso-fs",
+ "enso-ui",
+ "lexopt",
 ]
 
 [[package]]

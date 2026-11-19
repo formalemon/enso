@@ -54,9 +54,14 @@ control_center = true
 # (a YouTube tab, Spotify, any MPRIS player), what's playing under it while
 # the pointer rests there, and a click on it to play or pause.
 now_playing = true
+# The month under the clock while the pointer rests there and nothing plays.
+calendar = true
 # How solid the islands are, from 0.0 to 1.0: a little under 1.0 lets the
 # wallpaper show through, just. What sits on them stays solid.
 opacity = 0.9
+# The screens to have a bar, by name (`niri msg outputs`); none listed: every
+# screen, each with its own workspaces, coming and going as they're plugged in.
+outputs = []
 
 [launch]
 width = 560
@@ -134,6 +139,9 @@ history_keep = true
 # them) instead of showing; critical ones still show. The control center's
 # Settings page switches it too.
 do_not_disturb = false
+# When Do not disturb ends by itself, in seconds since 1970 (0: when it's
+# turned off). The control center sets this for "for an hour" and the like.
+do_not_disturb_until = 0
 
 [ctl]
 width = 340
@@ -155,10 +163,26 @@ fit = "cover"
 # [wall.themes]
 # rose-pine-dawn = "~/Pictures/walls/morning.png"
 
+[dusk]
+# enso-dusk, the night light: the screens warm from sunset to sunrise, over
+# `fade` minutes centred on each, worked out from the timezone's place.
+# How warm at night, in kelvin (6500 changes nothing; lower is warmer).
+warmth = 3500
+# Warm from sunset to sunrise by itself; false leaves it to `enso-dusk on`.
+follow_sun = true
+fade = 30
+# Where the sun is reckoned for, if not the timezone's city:
+# latitude = 22.57
+# longitude = 88.36
+# A theme for the day and one for the night, switched at sunrise and sunset
+# (both, or neither). A theme chosen otherwise is left alone.
+day_theme = ""
+night_theme = ""
+
 [power]
 # What the menu offers, left to right: "lock", "suspend", "logout" (leave
 # Niri), "restart", "shutdown".
-actions = ["lock", "logout", "restart", "shutdown"]
+actions = ["lock", "suspend", "logout", "restart", "shutdown"]
 # Ask for a second press before logging out, restarting, or shutting down.
 confirm = true
 # What "lock" runs, with its arguments.

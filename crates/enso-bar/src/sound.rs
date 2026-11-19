@@ -1,8 +1,10 @@
-//! The output's volume, for the status island's speaker.
+//! The output's volume and the microphone, for the status island.
 //!
-//! A background thread follows the sound server and reports the level
-//! whenever it changes. Without a sound server the island simply has no
-//! speaker.
+//! A background thread follows the sound server and reports what it hears
+//! whenever that changes: the output's level (what the island shows as it
+//! turns, and what scrolling steps from), and whether anyone is listening
+//! to the microphone. Without a sound server the island simply has none of
+//! it.
 
 use std::{thread, time::Duration};
 
@@ -15,30 +17,57 @@ pub struct Level {
     pub muted: bool,
 }
 
-/// Follow the output's volume on a background thread, calling `on_change`
-/// with each new level (`None` while there is no output). Keeps trying if
-/// the sound server is not up yet, or goes away; stops when `on_change`
-/// returns `false`.
-pub fn watch(mut on_change: impl FnMut(Option<Level>) -> bool + Send + 'static) {
+/// The microphone, as far as the island cares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mic {
+    /// Some application is listening to it.
+    pub listened: bool,
+    pub muted: bool,
+    /// Its level, in percent.
+    pub volume: u8,
+}
+
+/// Everything the sound server says that the bar shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Heard {
+    /// The output's level (`None`: no output).
+    pub output: Option<Level>,
+    pub mic: Mic,
+}
+
+/// Follow the sound server on a background thread, calling `on_change`
+/// with what it hears each time that changes. Keeps trying if the sound
+/// server is not up yet, or goes away; stops when `on_change` returns
+/// `false`.
+pub fn watch(mut on_change: impl FnMut(Heard) -> bool + Send + 'static) {
     let spawned = thread::Builder::new()
         .name("enso-sound".to_owned())
         .spawn(move || {
             let mut last = None;
-            let mut report = |level: Option<Level>| {
-                if last == Some(level) {
+            let mut report = |heard: Heard| {
+                if last == Some(heard) {
                     return true;
                 }
-                last = Some(level);
-                on_change(level)
+                last = Some(heard);
+                on_change(heard)
             };
             loop {
                 if let Ok(mixer) = Mixer::connect() {
                     let level = || {
-                        let output = mixer.state().ok()?.output?;
-                        Some(Level {
-                            volume: output.volume,
-                            muted: output.muted,
-                        })
+                        let Ok(sound) = mixer.state() else {
+                            return Heard::default();
+                        };
+                        Heard {
+                            output: sound.output.map(|output| Level {
+                                volume: output.volume,
+                                muted: output.muted,
+                            }),
+                            mic: sound.input.map_or(Mic::default(), |input| Mic {
+                                listened: !sound.recording.is_empty(),
+                                muted: input.muted,
+                                volume: input.volume,
+                            }),
+                        }
                     };
                     let mut listening = report(level());
                     if listening {
@@ -52,7 +81,7 @@ pub fn watch(mut on_change: impl FnMut(Option<Level>) -> bool + Send + 'static) 
                         return;
                     }
                 }
-                if !report(None) {
+                if !report(Heard::default()) {
                     return;
                 }
                 thread::sleep(Duration::from_secs(5));

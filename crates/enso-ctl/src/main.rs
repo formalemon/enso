@@ -58,9 +58,13 @@ fn main() -> ExitCode {
         Command::SoundDevice { input, name } => {
             commands::sound_device(input, name.as_deref(), &mut out)
         }
-        Command::Panel(mode) => {
+        Command::Quiet(switch) => commands::quiet(switch, &mut out),
+        Command::Awake(switch) => commands::keep_awake(switch, &mut out),
+        Command::Copy(text) => commands::copy(&text),
+        Command::Colour => commands::colour(&mut out),
+        Command::Panel(mode, page) => {
             drop(out);
-            open_panel(mode)
+            open_panel(mode, page)
         }
     };
 
@@ -73,14 +77,17 @@ fn main() -> ExitCode {
     }
 }
 
-fn open_panel(mode: cli::PanelMode) -> Result<(), String> {
+fn open_panel(mode: cli::PanelMode, page: Option<panel::Page>) -> Result<(), String> {
     // One control center at a time. Asked for again from the keyboard, the
     // one that is open closes — the key toggles it; asked for by resting on
-    // the bar, the one that is open is left as it is.
+    // the bar, the one that is open is left as it is; asked for a page, the
+    // one that is open turns to it.
     let _only = match ipc::only(panel::NAME) {
         ipc::Only::Mine(guard) => guard,
         ipc::Only::Taken => {
-            if mode == cli::PanelMode::Modal {
+            if let Some(page) = page {
+                ipc::tell(panel::NAME, &format!("page {}", page.name()));
+            } else if mode == cli::PanelMode::Modal {
                 ipc::tell(panel::NAME, "close");
             }
             return Ok(());
@@ -94,5 +101,6 @@ fn open_panel(mode: cli::PanelMode) -> Result<(), String> {
     let config = ctx.section("ctl");
     ctx.report_warnings("enso-ctl");
     let appearance = ctx.config.appearance.clone();
-    enso_ui::run(panel::Panel::new(ctx, config, mode), &appearance).map_err(|err| err.to_string())
+    enso_ui::run(panel::Panel::new(ctx, config, mode).asking(page), &appearance)
+        .map_err(|err| err.to_string())
 }

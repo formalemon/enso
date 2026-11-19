@@ -12,6 +12,8 @@ license.workspace = true
 enso-core.workspace = true
 enso-fs.workspace = true
 enso-ui.workspace = true
+# The open windows, to go to one rather than open another.
+niri-ipc.workspace = true
 serde.workspace = true
 lexopt.workspace = true
 

@@ -23,6 +23,7 @@
 //!   skipping, and seeking them (feature `mpris`).
 //! - [`net`] — whether the machine is online and how, read from `/sys` and
 //!   `/proc`. No dependencies, always available.
+//! - [`notify`] — sending a desktop notification (feature `notify`).
 //!
 //! The D-Bus backends are blocking: every call waits for the service's
 //! answer, so interfaces call them from a worker thread. Each also has a
@@ -40,7 +41,8 @@ pub mod auth;
     feature = "systemd",
     feature = "udisks",
     feature = "secrets",
-    feature = "mpris"
+    feature = "mpris",
+    feature = "notify"
 ))]
 // logind, dconf, and systemd only make calls, and only the last two are on
 // the session bus: short of every feature, some of this is unused.
@@ -66,6 +68,8 @@ pub mod dconf;
 pub mod logind;
 #[cfg(feature = "mpris")]
 pub mod mpris;
+#[cfg(feature = "notify")]
+pub mod notify;
 #[cfg(feature = "secrets")]
 pub mod secrets;
 #[cfg(feature = "systemd")]
@@ -82,6 +86,7 @@ pub mod wifi;
     feature = "dconf",
     feature = "systemd",
     feature = "udisks",
-    feature = "mpris"
+    feature = "mpris",
+    feature = "notify"
 ))]
 pub use bus::Error;

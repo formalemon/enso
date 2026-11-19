@@ -77,23 +77,42 @@ pub fn run(command: &str) -> ExitCode {
     let done = match command {
         "enable" => {
             let exe = enso_core::exe::installed();
-            enable(&places, &exe, &desktops()).map(|()| {
+            enable(&places, &exe, &desktops()).and_then(|()| {
+                let taken = enso_fs::open::adopt(ENTRY, &entry(&exe), &["inode/directory"])?;
                 println!("enso-files is the file chooser now.");
+                if !taken.is_empty() {
+                    println!("Folders open in it too.");
+                }
+                Ok(())
+            }).map(|()| {
                 println!("  portal files  {}", places.portals.display());
                 println!("  service       {}", places.service.display());
                 println!("  drop-in       {}", places.dropin.display());
                 println!("`enso-files portal disable` gives the choosing back.");
             })
         }
-        "disable" => disable(&places).map(|()| {
+        "disable" => disable(&places).and_then(|()| enso_fs::open::abandon(ENTRY)).map(|()| {
             println!("Files are chosen as before enso-files: its portal set-up is gone.");
         }),
         "status" => {
             status(&places);
             return ExitCode::SUCCESS;
         }
+        // Run by the portal itself as it starts (the drop-in's
+        // ExecStartPre): the system's portal files linked afresh, so one
+        // installed since — xdg-desktop-portal-gnome, for sharing the
+        // screen — is seen without enabling again.
+        "refresh" => {
+            return match link_portals(&places, &desktops()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("enso-files: cannot refresh the portal files: {err}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         other => {
-            eprintln!("enso-files: `portal {other}`? It's enable, disable, or status.");
+            eprintln!("enso-files: `portal {other}`? It's enable, disable, status, or refresh.");
             return ExitCode::from(2);
         }
     };
@@ -103,6 +122,29 @@ pub fn run(command: &str) -> ExitCode {
     }
     restart();
     ExitCode::SUCCESS
+}
+
+/// Its desktop entry: the launcher lists it as Files, and folders opened
+/// anywhere (the launcher's Ctrl+Enter, a browser's "show in folder") open
+/// in it, unless something else was chosen for them.
+const ENTRY: &str = "enso-files.desktop";
+
+fn entry(exe: &Path) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Files\n\
+         GenericName=File Manager\n\
+         Comment=Browse, find, and tidy your files\n\
+         Keywords=folder;explorer;manager;browse;\n\
+         Exec={} %f\n\
+         Icon=system-file-manager\n\
+         Terminal=false\n\
+         Categories=System;FileTools;FileManager;\n\
+         MimeType=inode/directory;\n\
+         StartupWMClass=enso-files\n",
+        exe.display()
+    )
 }
 
 /// The desktops the portal routes for: `$XDG_CURRENT_DESKTOP`, lower-cased.
@@ -116,8 +158,35 @@ fn desktops() -> Vec<String> {
 }
 
 fn enable(places: &Places, exe: &Path, desktops: &[String]) -> io::Result<()> {
-    // The portal files: the system's as links, renewed each time so
-    // packages that came or went are seen; and enso's own.
+    link_portals(places, desktops)?;
+
+    let service = format!(
+        "[D-BUS Service]\nName={NAME}\nExec={} --service\n",
+        exe.display()
+    );
+    write_new(&places.service, &service)?;
+    // "Show in folder" — unless something else already answers it.
+    if !places.file_manager.exists() || is_ours(&places.file_manager) {
+        let file_manager = format!(
+            "[D-BUS Service]\nName={FILE_MANAGER}\nExec={} --service\n",
+            exe.display()
+        );
+        write_new(&places.file_manager, &file_manager)?;
+    }
+    // The portal links the system's portal files again each time it
+    // starts, so a portal package installed later is seen.
+    let dropin = format!(
+        "# Written by `enso-files portal enable`; `enso-files portal disable` removes it.\n\
+         [Service]\nEnvironment=XDG_DESKTOP_PORTAL_DIR={}\nExecStartPre=-{} portal refresh\n",
+        places.portals.display(),
+        exe.display()
+    );
+    write_new(&places.dropin, &dropin)
+}
+
+/// The portal files — the system's as links, renewed so packages that came
+/// or went are seen, and enso's own — and the routing.
+fn link_portals(places: &Places, desktops: &[String]) -> io::Result<()> {
     fs::create_dir_all(&places.portals)?;
     for entry in fs::read_dir(&places.portals)? {
         let path = entry?.path();
@@ -154,26 +223,7 @@ fn enable(places: &Places, exe: &Path, desktops: &[String]) -> io::Result<()> {
             .unwrap_or_default();
         fs::write(places.portals.join(&name), route(&base))?;
     }
-
-    let service = format!(
-        "[D-BUS Service]\nName={NAME}\nExec={} --service\n",
-        exe.display()
-    );
-    write_new(&places.service, &service)?;
-    // "Show in folder" — unless something else already answers it.
-    if !places.file_manager.exists() || is_ours(&places.file_manager) {
-        let file_manager = format!(
-            "[D-BUS Service]\nName={FILE_MANAGER}\nExec={} --service\n",
-            exe.display()
-        );
-        write_new(&places.file_manager, &file_manager)?;
-    }
-    let dropin = format!(
-        "# Written by `enso-files portal enable`; `enso-files portal disable` removes it.\n\
-         [Service]\nEnvironment=XDG_DESKTOP_PORTAL_DIR={}\n",
-        places.portals.display()
-    );
-    write_new(&places.dropin, &dropin)
+    Ok(())
 }
 
 /// Whether a service file is one `enable` wrote.
@@ -188,9 +238,20 @@ fn write_new(path: &Path, text: &str) -> io::Result<()> {
     fs::write(path, text)
 }
 
+/// What only GNOME's portal does on niri: sharing the screen, screenshots
+/// for programs that ask, and remote desktop — niri speaks GNOME's own
+/// screen-casting interface, which xdg-desktop-portal-gnome turns into
+/// these.
+const SCREEN: [&str; 3] = [
+    "org.freedesktop.impl.portal.ScreenCast",
+    "org.freedesktop.impl.portal.Screenshot",
+    "org.freedesktop.impl.portal.RemoteDesktop",
+];
+
 /// A `portals.conf` that says what `base` says, with file choosers sent to
 /// enso. Without a `[preferred]` section, everything else goes to GTK's
-/// portal, the usual fallback.
+/// portal, the usual fallback — and the screen to GNOME's, the one portal
+/// that shares a niri screen. (niri's own routing already says gnome first.)
 fn route(base: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut in_preferred = false;
@@ -219,6 +280,7 @@ fn route(base: &str) -> String {
         lines.push("[preferred]".to_owned());
         lines.push("default=gtk;".to_owned());
         lines.push(format!("{FILE_CHOOSER}=enso"));
+        lines.extend(SCREEN.iter().map(|interface| format!("{interface}=gnome;")));
     }
     let mut text = "# Written by `enso-files portal enable`: the routing this desktop had,\n\
                     # with file choosers sent to enso-files.\n"
@@ -282,6 +344,15 @@ fn status(places: &Places) {
         places.dropin.display(),
         has(&places.dropin)
     );
+    let gnome = places.system.join("portals/gnome.portal").exists();
+    println!(
+        "Sharing the screen {}",
+        if gnome {
+            "goes through xdg-desktop-portal-gnome."
+        } else {
+            "needs xdg-desktop-portal-gnome, which isn't installed."
+        }
+    );
 }
 
 /// Make the change take: the bus rereads its services, systemd its units,
@@ -333,6 +404,16 @@ mod tests {
             system,
             user_config: root.join("config/xdg-desktop-portal"),
         }
+    }
+
+    #[test]
+    fn with_no_routing_the_screen_goes_to_gnome() {
+        let routed = route("");
+        assert!(routed.contains("org.freedesktop.impl.portal.ScreenCast=gnome;"));
+        assert!(routed.contains("org.freedesktop.impl.portal.Screenshot=gnome;"));
+        // Routing of one's own is kept as it is.
+        let own = route("[preferred]\ndefault=gtk;\n");
+        assert!(!own.contains("ScreenCast"));
     }
 
     #[test]

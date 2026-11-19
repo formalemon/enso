@@ -15,7 +15,7 @@
 //! Firefox reads it when it starts, so a switch shows on the next start.
 //! Pages are not touched: they are the web's to colour.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use enso_core::Palette;
 
@@ -45,7 +45,8 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
         .flat_map(|root| files(root, &["css"], 2))
         .filter(|path| path.parent().is_some_and(|dir| dir.ends_with("chrome")))
         .collect();
-    Ok(if mentions(&sheets, "/*", &format!("enso/{FILE}")) {
+    let imported = sheets.iter().any(|sheet| imports(sheet, &file));
+    Ok(if imported || mentions(&sheets, "/*", &format!("enso/{FILE}")) {
         Outcome::done("colours updated; shown when Firefox next starts")
     } else {
         Outcome::done("colours written").step(
@@ -57,6 +58,33 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
             [format!("@import url(\"{}\");", file_url(&file))],
         )
     })
+}
+
+/// Whether `sheet` imports `target` by any name: a relative `enso.css`
+/// linked to it beside the sheet counts as much as its full path.
+fn imports(sheet: &Path, target: &Path) -> bool {
+    let (Ok(text), Some(dir), Ok(target)) = (
+        std::fs::read_to_string(sheet),
+        sheet.parent(),
+        target.canonicalize(),
+    ) else {
+        return false;
+    };
+    text.lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("@import"))
+        .filter_map(|line| {
+            let start = line.find(['"', '\''])?;
+            let quote = line[start..].chars().next()?;
+            let rest = &line[start + 1..];
+            Some(rest[..rest.find(quote)?].to_owned())
+        })
+        .any(|url| {
+            let path = url.strip_prefix("file://").unwrap_or(&url);
+            dir.join(path)
+                .canonicalize()
+                .is_ok_and(|path| path == target)
+        })
 }
 
 /// A `userChrome.css` that colours the browser's interface from the palette.

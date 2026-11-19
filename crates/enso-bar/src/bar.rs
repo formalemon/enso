@@ -23,7 +23,7 @@ use std::{
 };
 
 use enso_core::{
-    Context, Easing, Figure, Notices, Rgba, Transition, Tween,
+    Awake, Context, Easing, Figure, Notices, Rgba, Transition, Tween, awake,
     style::{edge, space, type_scale},
 };
 use enso_sys::{
@@ -39,9 +39,11 @@ use crate::{
     config::{BarConfig, DEFAULT_CLOCK, Position},
     dropdown::{Dropdown, History},
     icons::{self, Charge},
+    light,
     music::Music,
-    niri::{self, Workspace},
-    sound::{self, Level},
+    niri::{self, Around, Seen, Workspace},
+    osd::{Gauge, Osd},
+    sound::{self, Heard, Level, Mic},
     water,
 };
 
@@ -73,8 +75,13 @@ const POLL: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 pub enum Message {
     Workspaces(Vec<Workspace>),
-    /// The output's volume changed (`None`: no output).
-    Sound(Option<Level>),
+    /// Sharing, the keyboard layout, the windows' titles.
+    Around(Around),
+    /// The sound server's news: the output's level, the microphone.
+    Heard(Heard),
+    /// The screen's brightness, or the keyboard's light, changed to this
+    /// many percent.
+    Light(light::Lamp, u8),
     ThemeChanged,
     /// Whether anything is playing, from enso-play.
     Playing(bool),
@@ -83,12 +90,25 @@ pub enum Message {
 /// How slowly the clock's water fills and drains.
 const POUR: Transition = Transition::new(900, Easing::InOutCubic);
 
+/// The widest a window's name gets in the clock island.
+const MAX_TITLE: f32 = 420.0;
+
 /// How long the bell rings when something new arrives.
 const RING: Duration = Duration::from_millis(900);
 
 /// One thing the status island shows, left to right.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Item {
+    /// The screen (or a window) is being shared; a click stops it.
+    Share,
+    /// Someone is listening to the microphone; `true` while it's muted.
+    Mic(bool),
+    /// The output is muted.
+    Muted,
+    /// Kept awake: the idle lock is held off.
+    Awake,
+    /// The keyboard layout, when there are several.
+    Layout,
     Network(Link),
     Battery(Charge),
     Bell,
@@ -199,9 +219,42 @@ pub struct Bar {
     clicked: bool,
     /// When the bell began ringing, if it is.
     ringing: Option<Instant>,
+    /// The level the island shows as it changes.
+    osd: Osd,
+    /// The microphone, as last heard.
+    mic: Mic,
+    /// The sound server has been heard from: from then on a change is news.
+    heard: bool,
+    /// The screen's brightness, once known.
+    light: Option<u8>,
+    /// The keyboard's light, in percent, as last heard.
+    keyboard_light: Option<u8>,
+    /// Sharing, the keyboard layout, the windows' titles.
+    around: Around,
+    /// Keeping awake, as chosen.
+    awake: Awake,
+    /// Do not disturb is on: the bell is quietened.
+    quiet: bool,
+    /// The window whose dot is under the pointer: the clock says its name.
+    pointed: Option<u64>,
+    /// The clock island's width, gliding as what it says changes length.
+    clock_width: Option<Tween<f32>>,
+    /// The sharing mark, from the last frame: a click there stops sharing.
+    share: Option<Rect>,
+    /// The calendar, opened from the clock when nothing plays.
+    calendar: Dropdown,
+    /// Something is playing, as enso-play last said.
+    is_playing: bool,
 }
 
 impl Bar {
+    /// The bar for screen `output`: its workspaces, on it.
+    #[must_use]
+    pub fn on(mut self, output: String) -> Self {
+        self.output = Some(output);
+        self
+    }
+
     pub fn new(ctx: Context, config: BarConfig) -> Self {
         let strip = Rect::new(0.0, 0.0, 0.0, config.height as f32).inset_xy(EDGE, INSET);
         let mut bar = Self {
@@ -241,11 +294,80 @@ impl Bar {
             notices: Notices::default(),
             clicked: false,
             ringing: None,
+            osd: Osd::new(),
+            mic: Mic::default(),
+            heard: false,
+            light: None,
+            keyboard_light: None,
+            around: Around::default(),
+            awake: Awake::Off,
+            quiet: false,
+            pointed: None,
+            clock_width: None,
+            share: None,
+            calendar: Dropdown::calendar(),
+            is_playing: false,
         };
         bar.notices = Notices::read(&bar.ctx.paths);
+        bar.read_settings();
         bar.refresh_clock();
         bar.poll();
         bar
+    }
+
+    /// Re-read what's chosen elsewhere that the island shows: keeping awake,
+    /// and Do not disturb. Returns whether either changed.
+    fn read_settings(&mut self) -> bool {
+        let awake = Awake::read(&self.ctx.paths);
+        let quiet = enso_core::chosen::Quiet::read(&self.ctx.paths).is_on(awake::unix_now());
+        let changed = awake != self.awake || quiet != self.quiet;
+        self.awake = awake;
+        self.quiet = quiet;
+        changed
+    }
+
+    /// The sound server's news: the output's level for scrolling, and —
+    /// after the first word, which is only how things are — the level the
+    /// island shows when it changes.
+    fn hear(&mut self, heard: Heard) {
+        let now = Instant::now();
+        let motion = self.ctx.motion;
+        if self.heard {
+            if let Some(level) = heard.output
+                && self.sound != Some(level)
+                && self.sound.is_some()
+            {
+                self.osd
+                    .show(Gauge::Volume, level.volume, level.muted, now, &motion);
+            } else if heard.mic.muted != self.mic.muted && heard.mic != Mic::default() {
+                self.osd.show(
+                    Gauge::Microphone,
+                    heard.mic.volume,
+                    heard.mic.muted,
+                    now,
+                    &motion,
+                );
+            }
+        }
+        self.heard = true;
+        self.sound = heard.output;
+        self.mic = heard.mic;
+    }
+
+    /// A light changed: show it, unless this is the first reading.
+    fn brighten(&mut self, lamp: light::Lamp, percent: u8) {
+        let (before, gauge) = match lamp {
+            light::Lamp::Screen => (&mut self.light, Gauge::Brightness),
+            light::Lamp::Keyboard => (&mut self.keyboard_light, Gauge::Keyboard),
+        };
+        let shown = before.is_some_and(|before| before != percent);
+        *before = Some(percent);
+        if shown {
+            // A keyboard light turned all the way down is off.
+            let off = gauge == Gauge::Keyboard && percent == 0;
+            self.osd
+                .show(gauge, percent, off, Instant::now(), &self.ctx.motion);
+        }
     }
 
     /// Re-read the network and battery. Returns whether either changed.
@@ -281,6 +403,7 @@ impl Bar {
         let due = self.intent_due.map_or(due, |intent| intent.min(due));
         let due = self.playing_due.map_or(due, |intent| intent.min(due));
         let due = self.water_due.map_or(due, |tick| tick.min(due));
+        let due = self.osd.due().map_or(due, |hide| hide.min(due));
         cx.wake_in(due.saturating_duration_since(Instant::now()));
     }
 
@@ -335,10 +458,16 @@ impl Bar {
         if hovered != self.clock_hovered {
             self.clock_hovered = hovered;
             self.playing.tell(hovered);
+            self.calendar.tell(hovered);
         }
+        let opens = self.config.now_playing || self.config.calendar;
         if !hovered {
             self.playing_due = None;
-        } else if self.playing_due.is_none() && self.config.now_playing && !self.playing.is_open() {
+        } else if self.playing_due.is_none()
+            && opens
+            && !self.playing.is_open()
+            && !self.calendar.is_open()
+        {
             self.playing_due = Some(Instant::now() + HOVER_INTENT);
         }
     }
@@ -499,6 +628,20 @@ impl Bar {
         })
     }
 
+    /// Note which window's dot is under the pointer, for the clock to name.
+    /// Returns whether that changed.
+    fn point(&mut self, pointer: Option<(f32, f32)>) -> bool {
+        let pointed = pointer.and_then(|(x, y)| {
+            self.hits.iter().find_map(|(rect, target)| match target {
+                Target::Window(id) if rect.contains(x, y) => Some(*id),
+                _ => None,
+            })
+        });
+        let changed = pointed != self.pointed;
+        self.pointed = pointed;
+        changed
+    }
+
     /// Track the pointer (`None` once it leaves the bar) and open or close
     /// the island to match. Returns whether that changed, i.e. a redraw is due.
     fn hover(&mut self, pointer: Option<(f32, f32)>) -> bool {
@@ -576,10 +719,39 @@ impl Bar {
                 .any(|tween| tween.is_animating(now))
     }
 
-    fn draw_clock(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32, now: Instant) {
+    /// What the clock island says: the time — or, while the pointer is on
+    /// a window's dot, what that window is.
+    fn clock_says(&self) -> &str {
+        self.pointed
+            .and_then(|id| self.around.titles.get(&id))
+            .map_or(&self.clock, String::as_str)
+    }
+
+    /// Returns whether the island is still changing width.
+    fn draw_clock(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32, now: Instant) -> bool {
         let colors = self.ctx.theme.colors.clone();
-        let text = Text::new(&self.clock, size, colors.text).medium();
-        let width = canvas.measure(&text).w + 2.0 * space::LG;
+        let says = self.clock_says().to_owned();
+        let longest = (bar.w / 3.0).min(MAX_TITLE);
+        let natural = canvas
+            .measure(
+                &Text::new(&says, size, colors.text)
+                    .medium()
+                    .max_width(longest),
+            )
+            .w
+            + 2.0 * space::LG;
+        let reflow = self.ctx.motion.apply(Transition::REFLOW);
+        let tween = self.clock_width.get_or_insert_with(|| Tween::new(natural));
+        if tween.target() != natural {
+            tween.set(natural, reflow, now);
+        }
+        let width = tween.get(now);
+        let moving = tween.is_animating(now);
+        // Laid out at the width it is heading for, and clipped to the
+        // island as it grows: the words never squeeze or spill.
+        let text = Text::new(&says, size, colors.text)
+            .medium()
+            .max_width((natural - 2.0 * space::LG).max(1.0));
         let island = bar.centered(width, bar.h);
         self.clock_island = Some(island);
         canvas.pill(island, self.island_color(colors.base));
@@ -597,7 +769,11 @@ impl Bar {
                 foam: colors.rose.mix(colors.text, 0.45),
             },
         );
-        canvas.text_in(&text, island, Align::Center);
+        let inside = island.inset_xy(space::SM, 0.0);
+        canvas.with_clip(inside, |canvas| {
+            canvas.text_in(&text, island, Align::Center);
+        });
+        moving
     }
 
     /// The battery, if there is one: on power it fills in foam, and as it
@@ -619,12 +795,29 @@ impl Bar {
         })
     }
 
-    /// What the status island shows, left to right: the network where there
-    /// is such, the battery where there is one, and the bell, always — so
-    /// there is always an island to rest on. The volume is not shown (the
-    /// control center has it), but scrolling on the island still turns it.
+    /// What the status island shows, left to right: what's out of the
+    /// ordinary, while it lasts; the network where there is such, the
+    /// battery where there is one, and the bell, always — so there is always
+    /// an island to rest on. The volume shows only as it changes (see
+    /// [`Osd`]), and scrolling on the island turns it.
     fn status_items(&self) -> Vec<Item> {
-        let mut items = Vec::with_capacity(3);
+        let mut items = Vec::with_capacity(8);
+        // What's out of the ordinary comes first, and only while it is.
+        if !self.around.casts.is_empty() {
+            items.push(Item::Share);
+        }
+        if self.mic.listened {
+            items.push(Item::Mic(self.mic.muted));
+        }
+        if self.sound.is_some_and(|level| level.muted) {
+            items.push(Item::Muted);
+        }
+        if self.awake.is_on(awake::unix_now()) {
+            items.push(Item::Awake);
+        }
+        if self.around.layout.is_some() {
+            items.push(Item::Layout);
+        }
         items.extend(self.link.map(Item::Network));
         items.extend(self.charge().map(Item::Battery));
         items.push(Item::Bell);
@@ -640,7 +833,12 @@ impl Bar {
         match item {
             Item::Bell if self.notices.unseen > 0 => colors.text,
             Item::Battery(charge) => charge.fill,
-            Item::Network(_) | Item::Bell => colors.subtle,
+            // Being heard or seen is worth noticing.
+            Item::Share | Item::Mic(false) => colors.love,
+            Item::Layout => colors.text,
+            Item::Network(_) | Item::Bell | Item::Mic(true) | Item::Muted | Item::Awake => {
+                colors.subtle
+            }
         }
     }
 
@@ -661,15 +859,38 @@ impl Bar {
         (icons::ring(t), true)
     }
 
-    /// The status island: Wi-Fi (or a cable), the battery,
-    /// and the bell, every one drawn at the bar's scale. Returns whether it
+    /// The figure an item is drawn with, if it is one.
+    fn figure(&self, item: Item) -> Option<Figure> {
+        match item {
+            Item::Share => Some(Figure::Screencast),
+            Item::Mic(muted) => Some(if muted {
+                Figure::MicrophoneOff
+            } else {
+                Figure::Microphone
+            }),
+            Item::Muted => Some(Figure::SpeakerMuted),
+            Item::Awake => Some(Figure::Cup),
+            Item::Network(link) => Some(network(link)),
+            Item::Bell => Some(if self.quiet {
+                Figure::BellOff
+            } else {
+                Figure::Bell
+            }),
+            Item::Battery(_) | Item::Layout => None,
+        }
+    }
+
+    /// The status island: what's out of the ordinary, Wi-Fi (or a cable),
+    /// the battery, and the bell, every one drawn at the bar's scale — or,
+    /// for a moment after a level changes, that level. Returns whether it
     /// is still animating.
     fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, now: Instant) -> bool {
         self.status = None;
+        self.share = None;
         let scale = icons::Scale::new(bar.h);
         let battery = icons::Battery::new(scale);
         let items = self.status_items();
-        let colors = &self.ctx.theme.colors;
+        let colors = self.ctx.theme.colors.clone();
 
         let figures = items.iter().find_map(|item| match item {
             Item::Battery(charge) => Some(charge.percent.to_string()),
@@ -678,16 +899,31 @@ impl Bar {
         let label = figures
             .as_deref()
             .map(|figures| Text::new(figures, battery.figures(), colors.text).bold());
-        let width_of = |item: &Item, canvas: &mut Canvas<'_>| match item {
-            Item::Network(link) => scale.width(network(*link)),
-            Item::Bell => scale.width(Figure::Bell),
-            Item::Battery(charge) => label.as_ref().map_or(0.0, |label| {
-                battery.width(canvas.measure(label).w, charge.plugged)
-            }),
-        };
-        let widths: Vec<f32> = items.iter().map(|item| width_of(item, canvas)).collect();
-        let width =
+        let layout = self
+            .around
+            .layout
+            .as_deref()
+            .map(|name| Text::new(name, battery.figures(), self.tint(Item::Layout)).bold());
+        let widths: Vec<f32> = items
+            .iter()
+            .map(|item| match (item, self.figure(*item)) {
+                (_, Some(figure)) => scale.width(figure),
+                (Item::Battery(charge), None) => label.as_ref().map_or(0.0, |label| {
+                    battery.width(canvas.measure(label).w, charge.plugged)
+                }),
+                (_, None) => layout
+                    .as_ref()
+                    .map_or(0.0, |layout| canvas.measure(layout).w.ceil()),
+            })
+            .collect();
+        let resting =
             widths.iter().sum::<f32>() + (items.len() - 1) as f32 * scale.gap() + 2.0 * scale.pad();
+
+        // A level just changed: the island widens to the left to show it.
+        let size = self.ctx.config.appearance.font_size * type_scale::SMALL;
+        let shown = self.osd.presence(now);
+        let level_width = self.osd.width(canvas, scale, size).max(resting);
+        let width = resting + (level_width - resting) * shown;
         let island = Rect::new(bar.right() - width, bar.y, width, bar.h);
         self.status = Some(island);
 
@@ -698,36 +934,69 @@ impl Bar {
         let (swing, ringing) = self.swing(now);
         let accent = self.ctx.accent();
 
+        if shown > 0.0 {
+            let osd = &self.osd;
+            canvas.with_opacity(shown, |canvas| {
+                let look = crate::osd::Look {
+                    scale,
+                    size,
+                    colors: &colors,
+                    accent,
+                };
+                osd.draw(canvas, island, look, now);
+            });
+        }
+
         let icon_h = scale.icon();
-        let mut x = island.x + scale.pad();
-        for (item, width) in items.into_iter().zip(widths) {
-            let tint = self.tint(item);
-            let ink = icons::Ink {
-                on: tint.mix(colors.text, glow * 0.5),
-                ground,
-            };
-            let slot = Rect::new(x, island.y, width, island.h);
-            let icon = Rect::new(
-                x,
-                island.y + ((island.h - icon_h) / 2.0).round(),
-                width,
-                icon_h,
-            );
-            match item {
-                Item::Network(link) => icons::draw(canvas, network(link), icon, ink),
-                Item::Battery(charge) => {
-                    if let Some(label) = &label {
-                        battery.draw(canvas, slot, charge, label, glow, colors);
+        let mut x = island.right() - resting + scale.pad();
+        let mut share = None;
+        canvas.with_opacity(1.0 - shown, |canvas| {
+            for (item, width) in items.into_iter().zip(widths) {
+                let tint = self.tint(item);
+                let ink = icons::Ink {
+                    on: tint.mix(colors.text, glow * 0.5),
+                    ground,
+                };
+                let slot = Rect::new(x, island.y, width, island.h);
+                let icon = Rect::new(
+                    x,
+                    island.y + ((island.h - icon_h) / 2.0).round(),
+                    width,
+                    icon_h,
+                );
+                match (item, self.figure(item)) {
+                    (Item::Bell, Some(figure)) => {
+                        let dot = (self.notices.unseen > 0).then_some(accent);
+                        if figure == Figure::Bell {
+                            icons::bell(canvas, icon, swing, dot, ink);
+                        } else {
+                            icons::draw(canvas, figure, icon, ink);
+                        }
+                    }
+                    (Item::Share, Some(figure)) => {
+                        share = Some(slot.inset_xy(-scale.gap() / 2.0, 0.0));
+                        icons::draw(canvas, figure, icon, ink);
+                    }
+                    (_, Some(figure)) => icons::draw(canvas, figure, icon, ink),
+                    (Item::Battery(charge), None) => {
+                        if let Some(label) = &label {
+                            battery.draw(canvas, slot, charge, label, glow, &colors);
+                        }
+                    }
+                    (_, None) => {
+                        if let Some(layout) = &layout {
+                            canvas.text_in(layout, slot, Align::Center);
+                        }
                     }
                 }
-                Item::Bell => {
-                    let dot = (self.notices.unseen > 0).then_some(accent);
-                    icons::bell(canvas, icon, swing, dot, ink);
-                }
+                x += width + scale.gap();
             }
-            x += width + scale.gap();
+        });
+        // Only once the island has its icons back is the mark a button.
+        if shown < 0.5 {
+            self.share = share;
         }
-        self.status_glow.is_animating(now) || ringing
+        self.status_glow.is_animating(now) || ringing || self.osd.is_animating(now)
     }
 }
 
@@ -751,15 +1020,21 @@ impl App for Bar {
         SurfaceSpec {
             height: self.config.height,
             exclusive_zone: self.config.height as i32,
+            output: self.output.clone(),
             ..SurfaceSpec::new("enso-bar", Layer::Top, edge | Anchor::LEFT | Anchor::RIGHT)
         }
     }
 
     fn start(&mut self, proxy: Proxy<Message>, cx: &mut Cx<'_>) {
         let workspaces = proxy.clone();
-        niri::watch(move |snapshot| workspaces.send(Message::Workspaces(snapshot)));
+        niri::watch(move |seen| match seen {
+            Seen::Workspaces(snapshot) => workspaces.send(Message::Workspaces(snapshot)),
+            Seen::Around(around) => workspaces.send(Message::Around(around)),
+        });
         let volume = proxy.clone();
-        sound::watch(move |level| volume.send(Message::Sound(level)));
+        sound::watch(move |heard| volume.send(Message::Heard(heard)));
+        let light = proxy.clone();
+        light::watch(move |lamp, percent| light.send(Message::Light(lamp, percent)));
         if self.config.now_playing {
             let music = proxy.clone();
             self.music
@@ -781,9 +1056,33 @@ impl App for Bar {
                 self.set_workspaces(workspaces);
                 cx.redraw();
             }
-            // Kept for scrolling on the island; nothing shows it.
-            Event::Message(Message::Sound(level)) => self.sound = level,
+            Event::Message(Message::Around(around)) => {
+                // Titles change all the time; only what shows is redrawn for.
+                let shown = |around: &Around, pointed: Option<u64>| {
+                    (
+                        around.casts.is_empty(),
+                        around.layout.clone(),
+                        pointed.and_then(|id| around.titles.get(&id).cloned()),
+                    )
+                };
+                let redraw = shown(&self.around, self.pointed) != shown(&around, self.pointed);
+                self.around = around;
+                if redraw {
+                    cx.redraw();
+                }
+            }
+            Event::Message(Message::Heard(heard)) => {
+                self.hear(heard);
+                self.arm(cx);
+                cx.redraw();
+            }
+            Event::Message(Message::Light(lamp, percent)) => {
+                self.brighten(lamp, percent);
+                self.arm(cx);
+                cx.redraw();
+            }
             Event::Message(Message::Playing(playing)) => {
+                self.is_playing = playing;
                 let now = Instant::now();
                 let target = if playing { 1.0 } else { 0.0 };
                 if self.water.target() != target {
@@ -803,7 +1102,8 @@ impl App for Bar {
                     self.ringing = Some(Instant::now());
                 }
                 self.notices = notices;
-                if self.ctx.reload_theme() || changed {
+                let chosen = self.read_settings();
+                if self.ctx.reload_theme() || changed || chosen {
                     cx.redraw();
                 }
             }
@@ -813,8 +1113,15 @@ impl App for Bar {
                     self.refresh_clock();
                     cx.redraw();
                 }
+                if self.osd.tick(now, &self.ctx.motion) {
+                    cx.redraw();
+                }
                 if now >= self.poll_due {
-                    if self.poll() {
+                    // Kept awake, or quiet, for a while: the cup goes, and
+                    // the bell rings again, once that's up.
+                    let awake = self.awake.is_on(awake::unix_now());
+                    let read = self.read_settings();
+                    if self.poll() || read || awake != self.status_items().contains(&Item::Awake) {
                         cx.redraw();
                     }
                     // A card that has closed is cleaned up after here,
@@ -828,8 +1135,14 @@ impl App for Bar {
                 }
                 if self.playing_due.is_some_and(|due| now >= due) {
                     self.playing_due = None;
-                    if self.clock_hovered && self.config.now_playing {
-                        self.playing.open(self.config.position);
+                    // What's playing while something plays; otherwise the
+                    // month.
+                    if self.clock_hovered {
+                        if self.is_playing && self.config.now_playing {
+                            self.playing.open(self.config.position);
+                        } else if self.config.calendar {
+                            self.calendar.open(self.config.position);
+                        }
                     }
                 }
                 if self.intent_due.is_some_and(|due| now >= due) {
@@ -848,6 +1161,9 @@ impl App for Bar {
                 if self.hover(Some((x, y))) {
                     cx.redraw();
                 }
+                if self.point(Some((x, y))) {
+                    cx.redraw();
+                }
                 self.follow_status(Some((x, y)), cx);
                 self.follow_clock(Some((x, y)), cx);
             }
@@ -863,7 +1179,7 @@ impl App for Bar {
             }
             Event::Pointer(PointerEvent::Leave) => {
                 self.scroll.reset();
-                if self.hover(None) {
+                if self.hover(None) | self.point(None) {
                     cx.redraw();
                 }
                 self.follow_status(None, cx);
@@ -874,6 +1190,15 @@ impl App for Bar {
                 y,
                 button: Button::Left,
             }) => {
+                if let Some(share) = self.share
+                    && share.contains(x, y)
+                {
+                    // The sharing mark: stop sharing, and nothing else.
+                    if let Err(err) = niri::stop_casts(&self.around.casts) {
+                        eprintln!("enso-bar: cannot stop sharing the screen: {err}");
+                    }
+                    return;
+                }
                 if self.status_hovered {
                     self.click_status();
                 }
@@ -900,9 +1225,9 @@ impl App for Bar {
         let size = self.ctx.config.appearance.font_size * type_scale::SMALL;
 
         let animating = self.draw_workspaces(canvas, strip, now);
-        self.draw_clock(canvas, strip, size, now);
+        let reflowing = self.draw_clock(canvas, strip, size, now);
         let glowing = self.draw_status(canvas, strip, now);
-        Paint::when(animating || glowing)
+        Paint::when(animating || reflowing || glowing)
     }
 }
 
@@ -979,6 +1304,7 @@ mod tests {
             status: BatteryStatus::Discharging,
             power_mw: None,
             minutes_left: None,
+            limit: None,
         });
         bar.link = Some(Link::Wifi { bars: 3 });
         bar.sound = Some(Level {
@@ -1297,8 +1623,13 @@ mod tests {
         assert!(!bar.clock_hovered && bar.playing_due.is_none());
         bar.clock_hover(Some((clock.right() + 1.0, 18.0)));
         assert!(!bar.clock_hovered);
-        // Switched off in the config, resting there opens nothing.
+        // Without what's playing, the calendar still waits to open…
         bar.config.now_playing = false;
+        bar.clock_hover(Some((clock.x + 1.0, 18.0)));
+        assert!(bar.clock_hovered && bar.playing_due.is_some());
+        // …and with both switched off, resting there opens nothing.
+        bar.clock_hover(None);
+        bar.config.calendar = false;
         bar.clock_hover(Some((clock.x + 1.0, 18.0)));
         assert!(bar.clock_hovered && bar.playing_due.is_none());
     }
@@ -1377,6 +1708,96 @@ mod tests {
         assert_eq!(bar.swing(start + Duration::from_millis(80)), (0.0, false));
     }
 
+    /// What's out of the ordinary shows while it is, ahead of the rest.
+    #[test]
+    fn unusual_states_show_while_they_last() {
+        let mut bar = sample("rose-pine-moon");
+        let before = bar.status_items().len();
+        bar.around.casts = vec![7];
+        bar.mic = Mic {
+            listened: true,
+            muted: false,
+            volume: 70,
+        };
+        bar.sound = Some(Level {
+            volume: 60,
+            muted: true,
+        });
+        bar.around.layout = Some("RU".into());
+        let items = bar.status_items();
+        assert_eq!(
+            items[..4],
+            [Item::Share, Item::Mic(false), Item::Muted, Item::Layout]
+        );
+        assert_eq!(items.len(), before + 4);
+        // Sharing and a live microphone are in love; the rest stay quiet.
+        let colors = bar.ctx.theme.colors.clone();
+        assert_eq!(bar.tint(Item::Share), colors.love);
+        assert_eq!(bar.tint(Item::Mic(true)), colors.subtle);
+        let (frame, _) = frame(&mut bar, later());
+        assert!(bar.share.is_some(), "the sharing mark is a button");
+        snapshot(&frame, "bar-unusual");
+
+        // Do not disturb quietens the bell.
+        bar.quiet = true;
+        assert_eq!(bar.figure(Item::Bell), Some(Figure::BellOff));
+    }
+
+    /// A change of level widens the island to show it, then it folds back;
+    /// the first word from the sound server is only how things are.
+    #[test]
+    fn the_island_shows_a_level_as_it_changes() {
+        let mut bar = sample("rose-pine-moon");
+        bar.heard = false;
+        bar.sound = None;
+        let heard = |volume, muted| Heard {
+            output: Some(Level { volume, muted }),
+            mic: Mic::default(),
+        };
+        bar.hear(heard(40, false));
+        assert_eq!(bar.osd.due(), None, "the first reading shows nothing");
+        frame(&mut bar, later());
+        let resting = bar.status.unwrap().w;
+
+        bar.hear(heard(45, false));
+        assert!(bar.osd.due().is_some());
+        let (shown, _) = frame(&mut bar, later());
+        assert!(bar.status.unwrap().w > resting, "the island widens");
+        snapshot(&shown, "bar-level");
+
+        // Brightness too, but not its first reading.
+        bar.brighten(light::Lamp::Screen, 50);
+        bar.brighten(light::Lamp::Screen, 55);
+        assert!(bar.osd.due().is_some());
+        // The keyboard's light the same way, on its own reading.
+        bar.brighten(light::Lamp::Keyboard, 0);
+        bar.brighten(light::Lamp::Keyboard, 33);
+        assert!(bar.osd.due().is_some());
+    }
+
+    /// Resting on a window's dot, the clock says what the window is.
+    #[test]
+    fn the_clock_names_the_window_under_the_pointer() {
+        let mut bar = sample("rose-pine-moon");
+        frame(&mut bar, later());
+        bar.around.titles.insert(22, "Quiet Hours — Firefox".into());
+        let dot = bar
+            .hits
+            .iter()
+            .find(|(_, target)| *target == Target::Window(22))
+            .unwrap()
+            .0;
+        let (x, y) = dot.center();
+        assert!(bar.point(Some((x, y))));
+        assert_eq!(bar.clock_says(), "Quiet Hours — Firefox");
+        // It glides to its new width.
+        assert_eq!(frame(&mut bar, later()).1, Paint::Animating);
+        let (named, _) = frame(&mut bar, later() + Duration::from_secs(1));
+        snapshot(&named, "bar-window-named");
+        assert!(bar.point(None));
+        assert_eq!(bar.clock_says(), bar.clock);
+    }
+
     #[test]
     fn the_status_island_shows_network_battery_and_bell() {
         let mut bar = sample("rose-pine-moon");
@@ -1389,6 +1810,12 @@ mod tests {
                     Item::Network(_) => "wifi",
                     Item::Battery(_) => "battery",
                     Item::Bell => "bell",
+                    Item::Share => "share",
+                    Item::Mic(true) => "mic off",
+                    Item::Mic(false) => "mic",
+                    Item::Muted => "muted",
+                    Item::Awake => "awake",
+                    Item::Layout => "layout",
                 })
                 .collect()
         };

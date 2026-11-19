@@ -22,6 +22,23 @@ pub struct App {
     pub command: Vec<String>,
     /// Must run inside a terminal emulator.
     pub terminal: bool,
+    /// Asked for again, it should open another window rather than go to the
+    /// one it has: a terminal (`Categories=TerminalEmulator`).
+    pub fresh: bool,
+    /// What its windows call themselves (`StartupWMClass`), when the entry
+    /// says: how a running window is matched to it.
+    pub wm_class: Option<String>,
+    /// The other things it offers to start with (`[Desktop Action …]`):
+    /// a new private window, a new document.
+    pub actions: Vec<Shortcut>,
+}
+
+/// One of an application's desktop actions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shortcut {
+    pub name: String,
+    /// Command line with field codes removed.
+    pub command: Vec<String>,
 }
 
 /// Every visible application, sorted by name. Earlier directories win, so a
@@ -139,9 +156,19 @@ fn desktop_id(dir: &Path, path: &Path) -> String {
 
 /// Parse a desktop entry; `None` if it is not an application to show.
 fn parse(id: &str, text: &str, desktops: &[String]) -> Option<App> {
-    let mut in_entry = false;
+    /// Which group the lines belong to.
+    enum Group {
+        Entry,
+        /// A `[Desktop Action id]`: the last of `actions`.
+        Action,
+        Other,
+    }
+    let mut group = Group::Other;
     let (mut name, mut generic, mut comment, mut exec) = (None, None, None, None);
-    let (mut keywords, mut terminal) = (Vec::new(), false);
+    let (mut keywords, mut terminal, mut wm_class) = (Vec::new(), false, None);
+    let mut fresh = false;
+    let mut listed: Vec<String> = Vec::new();
+    let mut actions: Vec<(String, Option<String>, Option<String>)> = Vec::new();
     let list = |value: &str| -> Vec<String> {
         value
             .split(';')
@@ -152,16 +179,40 @@ fn parse(id: &str, text: &str, desktops: &[String]) -> Option<App> {
 
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
+            group = if line == "[Desktop Entry]" {
+                Group::Entry
+            } else if let Some(id) = line
+                .strip_prefix("[Desktop Action ")
+                .and_then(|rest| rest.strip_suffix(']'))
+            {
+                actions.push((id.to_owned(), None, None));
+                Group::Action
+            } else {
+                Group::Other
+            };
             continue;
         }
-        if !in_entry || line.starts_with('#') {
+        if line.starts_with('#') {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
         let (key, value) = (key.trim_end(), value.trim_start());
+        match &group {
+            Group::Other => continue,
+            Group::Action => {
+                if let Some(action) = actions.last_mut() {
+                    match key {
+                        "Name" => action.1 = Some(unescape(value)),
+                        "Exec" => action.2 = Some(value.to_owned()),
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+            Group::Entry => {}
+        }
         match key {
             "Type" if value != "Application" => return None,
             "NoDisplay" | "Hidden" if value == "true" => return None,
@@ -173,9 +224,23 @@ fn parse(id: &str, text: &str, desktops: &[String]) -> Option<App> {
             "Keywords" => keywords = list(value),
             "Exec" => exec = Some(value.to_owned()),
             "Terminal" => terminal = value == "true",
+            "Categories" => fresh = list(value).iter().any(|c| c == "TerminalEmulator"),
+            "StartupWMClass" => wm_class = Some(value.to_owned()).filter(|class| !class.is_empty()),
+            "Actions" => listed = list(value),
             _ => {}
         }
     }
+    // Only the actions the entry lists, in its order, with a name and a
+    // command each.
+    let actions = listed
+        .iter()
+        .filter_map(|id| {
+            let (_, name, exec) = actions.iter().find(|(action, ..)| action == id)?;
+            let command = parse_exec(exec.as_deref()?, None);
+            let name = name.clone()?;
+            (!command.is_empty()).then_some(Shortcut { name, command })
+        })
+        .collect();
 
     let command = parse_exec(&exec?, None);
     if command.is_empty() {
@@ -188,6 +253,9 @@ fn parse(id: &str, text: &str, desktops: &[String]) -> Option<App> {
         keywords,
         command,
         terminal,
+        fresh,
+        wm_class,
+        actions,
     })
 }
 
@@ -297,12 +365,40 @@ pub fn spawn_detached(argv: &[String], cwd: Option<&Path>) -> io::Result<()> {
 impl App {
     /// Start the application detached from the launcher.
     pub fn launch(&self, terminal: &str) -> io::Result<()> {
+        self.run(&self.command, terminal)
+    }
+
+    /// Start one of its desktop actions (`index` into [`App::actions`]).
+    pub fn launch_action(&self, index: usize, terminal: &str) -> io::Result<()> {
+        let action = self
+            .actions
+            .get(index)
+            .ok_or_else(|| io::Error::other("no such action"))?;
+        self.run(&action.command, terminal)
+    }
+
+    fn run(&self, command: &[String], terminal: &str) -> io::Result<()> {
         let mut argv: Vec<String> = Vec::new();
         if self.terminal {
             argv.extend([terminal.to_owned(), "-e".to_owned()]);
         }
-        argv.extend(self.command.iter().cloned());
+        argv.extend(command.iter().cloned());
         spawn_detached(&argv, None)
+    }
+
+    /// Whether a window with this Wayland app id is one of this
+    /// application's: by its window class, its desktop id (or that id's
+    /// last part, `org.gnome.Nautilus` for `nautilus`), or its name.
+    pub fn owns_window(&self, app_id: &str) -> bool {
+        let app_id = app_id.to_lowercase();
+        let id = self.id.to_lowercase();
+        self.wm_class
+            .as_deref()
+            .is_some_and(|class| class.eq_ignore_ascii_case(&app_id))
+            || id == app_id
+            || id.rsplit('.').next() == Some(app_id.as_str())
+            || app_id.rsplit('.').next() == Some(id.as_str())
+            || self.name.to_lowercase() == app_id
     }
 }
 
@@ -326,8 +422,30 @@ Exec=/usr/lib/firefox/firefox --new-window %u
 ";
 
     #[test]
+    fn parses_listed_actions_and_the_window_class() {
+        let entry = format!("{FIREFOX}\n[Desktop Action private]\nName=New Private Window\nExec=firefox --private-window %u\n")
+            .replace("Terminal=false", "Terminal=false\nActions=private;new-window;missing;\nStartupWMClass=firefox");
+        let app = parse("org.mozilla.firefox", &entry, &[]).unwrap();
+        let names: Vec<&str> = app.actions.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["New Private Window", "New Window"]);
+        assert_eq!(app.actions[0].command, ["firefox", "--private-window"]);
+        assert_eq!(app.wm_class.as_deref(), Some("firefox"));
+        assert!(app.owns_window("firefox"));
+        assert!(!app.owns_window("Alacritty"));
+        // Without the class, the id's last part will do.
+        let plain = parse(
+            "org.gnome.Nautilus",
+            "[Desktop Entry]\nType=Application\nName=Files\nExec=nautilus\n",
+            &[],
+        )
+        .unwrap();
+        assert!(plain.owns_window("org.gnome.Nautilus") && plain.owns_window("nautilus"));
+    }
+
+    #[test]
     fn parses_the_main_entry_only() {
         let app = parse("firefox", FIREFOX, &[]).unwrap();
+        assert!(app.actions.is_empty(), "only actions the entry lists count");
         assert_eq!(app.name, "Firefox");
         assert_eq!(app.description.as_deref(), Some("Web Browser"));
         assert_eq!(app.keywords, ["Internet", "WWW", "Browser"]);

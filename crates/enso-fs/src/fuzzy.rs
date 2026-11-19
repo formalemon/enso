@@ -19,6 +19,24 @@ impl Pattern {
         }
     }
 
+    /// Where in `candidate` the query's characters are found, as character
+    /// indices, earliest first — for showing what matched. `None` if it
+    /// does not match.
+    pub fn positions(&self, candidate: &str) -> Option<Vec<usize>> {
+        let mut wanted = self.chars.iter().peekable();
+        let mut found = Vec::with_capacity(self.chars.len());
+        for (index, ch) in candidate.chars().enumerate() {
+            let Some(&&next) = wanted.peek() else {
+                break;
+            };
+            if ch.to_lowercase().eq(std::iter::once(next)) {
+                found.push(index);
+                wanted.next();
+            }
+        }
+        wanted.peek().is_none().then_some(found)
+    }
+
     /// Score `candidate` (higher is better), or `None` if it does not
     /// match. Matching ignores case; an empty pattern matches everything.
     pub fn score(&self, candidate: &str) -> Option<i32> {

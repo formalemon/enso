@@ -18,6 +18,7 @@ use enso_core::{
 use enso_sys::{
     auth,
     logind::{self, Machine},
+    power::Battery,
 };
 use enso_ui::{
     Align, Canvas, Cx, Event, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens, Text,
@@ -164,7 +165,13 @@ pub struct Lock {
     fitted: Vec<Picture>,
     /// The ensō above the clock: painted in as the lock appears.
     mark: Mark,
+    /// The battery, read with the clock: said at the foot of the screen
+    /// once it runs low, so a laptop left locked doesn't die unnoticed.
+    battery: Option<Battery>,
 }
+
+/// At or below this, on battery, the lock screen says so.
+const LOW_BATTERY: u8 = 20;
 
 impl Lock {
     pub fn new(ctx: Context, config: LockConfig) -> Self {
@@ -196,6 +203,7 @@ impl Lock {
             backdrop_shown: Tween::new(0.0),
             fitted: Vec::new(),
             mark,
+            battery: None,
         };
         lock.refresh_clock();
         lock
@@ -209,6 +217,7 @@ impl Lock {
             .or_else(|_| format(DEFAULT_CLOCK))
             .unwrap_or_default();
         self.date = format(&self.config.date).unwrap_or_default();
+        self.battery = enso_sys::power::Sysfs::system().battery();
         let into_minute = Duration::new(
             now.second().unsigned_abs().into(),
             now.subsec_nanosecond().unsigned_abs(),
@@ -239,6 +248,25 @@ impl Lock {
             Phase::Checking => Some(("Checking…".to_owned(), false)),
             _ => None,
         }
+    }
+
+    /// What to say about a battery running low, and in what colour.
+    fn low_battery(&self) -> Option<(String, enso_core::Rgba)> {
+        let battery = self.battery.as_ref()?;
+        if battery.is_plugged_in() || battery.percent > LOW_BATTERY {
+            return None;
+        }
+        let colors = &self.ctx.theme.colors;
+        let left = battery
+            .minutes_left
+            .map(|minutes| format!(" · about {minutes} min left"))
+            .unwrap_or_default();
+        let color = if battery.percent <= 10 {
+            colors.love
+        } else {
+            colors.gold
+        };
+        Some((format!("Battery {}%{left}", battery.percent), color))
     }
 
     /// Forget what was typed, overwriting it first.
@@ -652,6 +680,15 @@ impl Screens for Lock {
             base_size * type_scale::SMALL,
             Align::Center,
         );
+        // Low on battery: said at the foot, quietly until it's urgent.
+        if let Some((words, color)) = self.low_battery() {
+            let foot = Rect::new(0.0, bounds.bottom() - space::XXL - 22.0, bounds.w, 22.0);
+            canvas.text_in(
+                &Text::new(&words, base_size * type_scale::SMALL, color),
+                foot,
+                Align::Center,
+            );
+        }
         canvas.set_opacity(1.0);
 
         Paint::when(
@@ -677,7 +714,33 @@ mod tests {
         });
         lock.time = "09:41".to_owned();
         lock.date = "Monday, 16 November".to_owned();
+        // Pictures mustn't depend on this machine's battery.
+        lock.battery = None;
         lock
+    }
+
+    #[test]
+    fn a_low_battery_is_said_at_the_foot() {
+        use enso_sys::power::BatteryStatus;
+        let mut lock = lock();
+        let battery = |percent, status| Battery {
+            name: "BAT1".into(),
+            percent,
+            status,
+            power_mw: None,
+            minutes_left: Some(25),
+            limit: None,
+        };
+        lock.battery = Some(battery(64, BatteryStatus::Discharging));
+        assert_eq!(lock.low_battery(), None);
+        lock.battery = Some(battery(14, BatteryStatus::Charging));
+        assert_eq!(lock.low_battery(), None);
+        lock.battery = Some(battery(14, BatteryStatus::Discharging));
+        let (words, color) = lock.low_battery().unwrap();
+        assert_eq!(words, "Battery 14% · about 25 min left");
+        assert_eq!(color, lock.ctx.theme.colors.gold);
+        lock.battery = Some(battery(8, BatteryStatus::Discharging));
+        assert_eq!(lock.low_battery().unwrap().1, lock.ctx.theme.colors.love);
     }
 
     fn press(lock: &mut Lock, key: Key, now: Instant) -> Outcome {

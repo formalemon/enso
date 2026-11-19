@@ -98,6 +98,7 @@ fn fullest(figure: Figure) -> Figure {
         Figure::Speaker(_) | Figure::SpeakerMuted => Figure::Speaker(3),
         Figure::Battery | Figure::BatteryCharging => Figure::Battery,
         Figure::Microphone | Figure::MicrophoneOff => Figure::Microphone,
+        Figure::Bell | Figure::BellOff => Figure::Bell,
         other => other,
     }
 }
@@ -403,7 +404,60 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
             );
             s.soft(&[(13.8, 3.0), (13.8, 7.7), (18.5, 7.7)], 1.2, false);
         }),
-        Figure::Bell => bell(p),
+        Figure::Bell => bell(p, true),
+        Figure::BellOff => {
+            // The bell, faint, struck through: there, but not ringing.
+            bell(p, false);
+            p.stroke(true, |s| {
+                s.line((4.0, 3.5), (20.0, 20.5));
+            });
+        }
+        Figure::Cup => {
+            p.stroke(true, |s| {
+                // The cup, its handle, and two wisps of steam.
+                s.soft(
+                    &[(4.0, 9.6), (4.0, 20.0), (16.0, 20.0), (16.0, 9.6)],
+                    2.6,
+                    false,
+                );
+                s.line((4.0, 9.6), (16.0, 9.6));
+                s.move_to((16.0, 12.0))
+                    .line_to((17.4, 12.0))
+                    .arc_to((17.4, 14.6), 2.6, -90.0, 180.0)
+                    .line_to((16.0, 17.2));
+                s.move_to((8.0, 6.6))
+                    .cubic_to((6.8, 5.4), (9.2, 4.2), (8.0, 3.0));
+                s.move_to((12.0, 6.6))
+                    .cubic_to((10.8, 5.4), (13.2, 4.2), (12.0, 3.0));
+            });
+        }
+        Figure::Display => {
+            p.stroke(true, |s| {
+                s.rounded(2.6, 4.4, 18.8, 12.6, 2.4);
+                s.line((8.6, 20.6), (15.4, 20.6));
+                s.line((12.0, 17.0), (12.0, 20.6));
+            });
+        }
+        Figure::Sliders => {
+            p.stroke(true, |s| {
+                // Two tracks, their knobs at different places.
+                s.line((3.5, 8.0), (9.0, 8.0));
+                s.line((14.6, 8.0), (20.5, 8.0));
+                s.circle((11.8, 8.0), 2.6);
+                s.line((3.5, 16.0), (9.6, 16.0));
+                s.line((15.2, 16.0), (20.5, 16.0));
+                s.circle((12.4, 16.0), 2.6);
+            });
+        }
+        Figure::Screencast => {
+            p.stroke(true, |s| {
+                s.rounded(2.6, 4.4, 18.8, 12.6, 2.4);
+                s.line((8.6, 20.6), (15.4, 20.6));
+            });
+            p.fill(true, |s| {
+                s.circle((12.0, 10.7), 2.6);
+            });
+        }
         Figure::Close => p.stroke(true, |s| {
             s.line((6.5, 6.5), (17.5, 17.5));
             s.line((17.5, 6.5), (6.5, 17.5));
@@ -753,7 +807,7 @@ fn speaker(p: &mut Pen<'_, '_>, waves: Option<u8>) {
 
 /// A plump bell on a flared rim, a knob above and a clapper below: solid,
 /// so it reads at the smallest size. It swings about its knob.
-fn bell(p: &mut Pen<'_, '_>) {
+fn bell(p: &mut Pen<'_, '_>, lit: bool) {
     p.frame.pivot = (12.0, 3.2);
     // The outline in fractions of the bell's height across from its
     // middle, and down from its top: each curve is three points after the
@@ -789,7 +843,7 @@ fn bell(p: &mut Pen<'_, '_>) {
         (0.0, 0.13),
     ];
     let at = |(u, v): (f32, f32)| (12.0 + u * 20.0, 1.6 + v * 20.0);
-    p.fill(true, |s| {
+    p.fill(lit, |s| {
         s.move_to(at(BODY[0]));
         for curve in BODY[1..].chunks(3) {
             s.cubic_to(at(curve[0]), at(curve[1]), at(curve[2]));
@@ -800,7 +854,7 @@ fn bell(p: &mut Pen<'_, '_>) {
     // The clapper swings a little further than the bell.
     let swing = p.frame.swing;
     p.frame.swing = swing * 1.6;
-    p.fill(true, |s| {
+    p.fill(lit, |s| {
         s.circle(at((0.0, 0.92)), 1.7);
     });
     p.frame.swing = swing;
@@ -856,7 +910,7 @@ fn moon(p: &mut Pen<'_, '_>) {
 
 /// Every figure, and each state of those with states: for tests and
 /// contact sheets.
-pub const ALL: [Figure; 46] = [
+pub const ALL: [Figure; 51] = [
     Figure::Search,
     Figure::Apps,
     Figure::Folder,
@@ -903,6 +957,11 @@ pub const ALL: [Figure; 46] = [
     Figure::Pause,
     Figure::Next,
     Figure::Previous,
+    Figure::BellOff,
+    Figure::Cup,
+    Figure::Screencast,
+    Figure::Display,
+    Figure::Sliders,
 ];
 
 #[cfg(test)]

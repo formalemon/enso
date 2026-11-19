@@ -17,6 +17,8 @@ serde.workspace = true
 lexopt.workspace = true
 niri-ipc.workspace = true
 jiff.workspace = true
+# Waiting on the backlight's level, which the kernel announces.
+rustix.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

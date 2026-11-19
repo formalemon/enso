@@ -10,13 +10,17 @@ license.workspace = true
 
 [dependencies]
 enso-core.workspace = true
-enso-sys = { workspace = true, features = ["iwd", "bluez", "logind", "audio", "dconf", "systemd"] }
+enso-sys = { workspace = true, features = ["iwd", "bluez", "logind", "audio", "dconf", "systemd", "notify"] }
 enso-ui.workspace = true
 serde.workspace = true
 lexopt.workspace = true
 # Reading a Wi-Fi passphrase from the terminal without echoing it.
 rustix = { workspace = true, features = ["termios"] }
 zeroize.workspace = true
+# Picking a colour from the screen.
+niri-ipc.workspace = true
+# "Until 15:30": when Do not disturb, or keeping awake, ends.
+jiff.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

@@ -4,6 +4,7 @@
 //! soon as the last toast has glided away.
 
 use std::{
+    collections::HashSet,
     path::PathBuf,
     sync::{
         Arc,
@@ -23,8 +24,10 @@ use enso_ui::{
 use serde::Deserialize;
 
 use crate::{
+    battery::{self, Say},
     center::{Center, Click, Look, Saved},
     dbus,
+    local::{self, Local},
     stack::{CloseReason, DEFAULT_ACTION, Notification, Stack, StackOptions, Toast, Urgency},
 };
 
@@ -49,6 +52,9 @@ pub struct NotifyConfig {
     /// Do not disturb: notifications go quietly to the history instead of
     /// showing as toasts — all but critical ones, which still show.
     pub do_not_disturb: bool,
+    /// When Do not disturb ends by itself, in seconds since the Unix epoch;
+    /// `0` when it lasts until turned off. The control center sets it.
+    pub do_not_disturb_until: u64,
 }
 
 impl Default for NotifyConfig {
@@ -62,8 +68,19 @@ impl Default for NotifyConfig {
             history_size: 50,
             history_keep: true,
             do_not_disturb: false,
+            do_not_disturb_until: 0,
         }
     }
+}
+
+/// Whether Do not disturb holds at `now` (seconds since the epoch): on, and
+/// not past its end, if it was given one.
+pub fn quiet(config: &NotifyConfig, now: u64) -> bool {
+    enso_core::chosen::Quiet {
+        do_not_disturb: config.do_not_disturb,
+        do_not_disturb_until: config.do_not_disturb_until,
+    }
+    .is_on(now)
 }
 
 /// Room left of and below the column for its shadows.
@@ -218,6 +235,8 @@ pub struct Daemon {
     told: Option<Notices>,
     /// Space above the first card (see [`top_gap`]).
     top: f32,
+    /// Toasts up that are only for now: neither kept nor counted.
+    passing: HashSet<u32>,
 }
 
 impl Daemon {
@@ -242,6 +261,7 @@ impl Daemon {
             failed,
             pointer: None,
             buttons: Vec::new(),
+            passing: HashSet::new(),
         }
     }
 
@@ -309,7 +329,7 @@ impl Daemon {
     /// Whether `note` waits quietly in the history: while Do not disturb
     /// is on, everything but what's critical.
     fn holds_back(&self, note: &Notification) -> bool {
-        self.config.do_not_disturb && note.urgency != Urgency::Critical
+        quiet(&self.config, enso_core::awake::unix_now()) && note.urgency != Urgency::Critical
     }
 
     fn toast_height(&self, note: &Notification, cx: &mut Cx<'_>) -> f32 {
@@ -432,10 +452,58 @@ impl Daemon {
 
     /// Tell the sender an action was chosen, then let the toast go.
     fn invoke(&mut self, id: u32, key: &str, cx: &mut Cx<'_>) {
-        if let Some(connection) = &self.connection {
-            dbus::emit_action(connection, id, key);
+        match Local::parse(key) {
+            // enso's own: done here, and the sender hears only of the
+            // dismissal.
+            Some(local) => self.act(local, cx),
+            None => {
+                if let Some(connection) = &self.connection {
+                    dbus::emit_action(connection, id, key);
+                }
+            }
         }
         self.dismiss(id, cx);
+    }
+
+    /// Do one of enso's own actions.
+    fn act(&mut self, local: Local, cx: &mut Cx<'_>) {
+        let terminal = self.ctx.config.appearance.terminal_program();
+        match local {
+            Local::Copy(text) => cx.copy(enso_ui::Clip::text(&text)),
+            Local::Open(path) => {
+                if let Err(err) = enso_fs::open::open(&path, &terminal) {
+                    eprintln!("enso-notify: cannot open {}: {err}", path.display());
+                }
+            }
+            Local::Show(path) => {
+                let connection = self.connection.clone();
+                // Off to the side: the file manager may take a moment to start.
+                let _ = std::thread::Builder::new()
+                    .name("enso-show".to_owned())
+                    .spawn(move || {
+                        let shown = connection.is_some_and(|connection| {
+                            dbus::show_in_files(&connection, &path).is_ok()
+                        });
+                        if !shown && let Some(folder) = path.parent() {
+                            // No file manager answers: open the folder itself.
+                            if let Err(err) = enso_fs::open::open(folder, &terminal) {
+                                eprintln!("enso-notify: cannot open {}: {err}", folder.display());
+                            }
+                        }
+                    });
+            }
+            Local::Sleep => {
+                let _ = std::thread::Builder::new()
+                    .name("enso-sleep".to_owned())
+                    .spawn(|| {
+                        if let Err(err) =
+                            enso_sys::logind::machine(enso_sys::logind::Machine::Suspend)
+                        {
+                            eprintln!("enso-notify: cannot put the machine to sleep: {err}");
+                        }
+                    });
+            }
+        }
     }
 
     fn dismiss(&mut self, id: u32, cx: &mut Cx<'_>) {
@@ -584,6 +652,11 @@ impl App for Daemon {
     fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
         dbus::serve(proxy.clone());
         listen(proxy.clone());
+        let warn = proxy.clone();
+        battery::watch(move |say| match say {
+            Say::Warn(note) => warn.send(Message::Notify(note)),
+            Say::Withdraw(id) => warn.send(Message::Close(id)),
+        });
         self.tell();
         if let Err(err) = watch_dir(&self.ctx.paths.state_dir, move || {
             proxy.send(Message::ThemeChanged)
@@ -601,7 +674,20 @@ impl App for Daemon {
                 self.failed.store(true, Ordering::Relaxed);
                 cx.exit();
             }
+            Event::Message(Message::Notify(note)) if note.transient => {
+                // Only for now: a toast if one can be shown, and otherwise
+                // nothing — it is never kept, so it can't wait anywhere.
+                if self.center.is_showing() || self.holds_back(&note) {
+                    self.closed(note.id, CloseReason::Expired);
+                } else {
+                    self.passing.insert(note.id);
+                    let height = self.toast_height(&note, cx);
+                    self.stack.push(note, height, now);
+                }
+                self.sync(cx);
+            }
             Event::Message(Message::Notify(note)) => {
+                self.passing.remove(&note.id);
                 for dropped in self.center.record(note.clone(), now) {
                     self.closed(dropped, CloseReason::Expired);
                 }
@@ -627,6 +713,7 @@ impl App for Daemon {
             }
             Event::Message(Message::Close(id)) => {
                 // Withdrawn by its sender: no longer news.
+                self.passing.remove(&id);
                 let live = self.center.is_live(id);
                 let forgotten = self.center.forget(id, now);
                 let closed = self.stack.close(id, now);
@@ -645,6 +732,7 @@ impl App for Daemon {
                 // in the same directory.
                 let config: NotifyConfig = enso_core::chosen::section(&self.ctx.paths, "notify");
                 self.config.do_not_disturb = config.do_not_disturb;
+                self.config.do_not_disturb_until = config.do_not_disturb_until;
             }
             Event::Message(Message::History(ask)) => {
                 let open = match ask {
@@ -659,6 +747,10 @@ impl App for Daemon {
                     // A notification that offers something to open is not
                     // over when its toast leaves: it waits in the history,
                     // and its sender hears when it leaves that.
+                    if self.passing.remove(&id) {
+                        self.closed(id, CloseReason::Expired);
+                        continue;
+                    }
                     if !self.center.is_live(id) {
                         self.closed(id, CloseReason::Expired);
                     }
@@ -742,11 +834,16 @@ impl App for Daemon {
                     .stack
                     .get(id)
                     .is_some_and(Notification::has_default_action);
+                let own_default = self.stack.get(id).and_then(local::default_of);
                 match (button, key) {
                     (Button::Left, Some(key)) => self.invoke(id, &key, cx),
                     // Clicking the toast itself is "open it", if the sender
-                    // offers that; otherwise it just goes away.
+                    // offers that (or enso does: a screenshot opens);
+                    // otherwise it just goes away.
                     (Button::Left, None) if has_default => self.invoke(id, DEFAULT_ACTION, cx),
+                    (Button::Left, None) if own_default.is_some() => {
+                        self.invoke(id, own_default.as_deref().unwrap_or_default(), cx);
+                    }
                     // Any other button dismisses without doing anything.
                     _ => self.dismiss(id, cx),
                 }

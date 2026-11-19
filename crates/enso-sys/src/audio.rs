@@ -106,6 +106,10 @@ pub struct Sound {
     pub input: Option<Input>,
     /// Every microphone there is, by name.
     pub inputs: Vec<Device>,
+    /// Applications listening to a microphone right now, by name: what the
+    /// bar's "in use" mark is about. A meter on an output's own sound (its
+    /// monitor) isn't a microphone, and doesn't count.
+    pub recording: Vec<String>,
 }
 
 /// A connection to the sound server.
@@ -206,12 +210,24 @@ impl Mixer {
             }
         }
         apps.sort_by_key(|app| app.name.to_lowercase());
+
+        let microphones: Vec<u32> = sources.iter().map(|source| source.index).collect();
+        let listening: protocol::SourceOutputInfoList =
+            link.ask(Command::GetSourceOutputInfoList)?;
+        let mut recording: Vec<String> = listening
+            .iter()
+            .filter(|stream| !stream.corked && microphones.contains(&stream.source_index))
+            .map(|stream| stream_name(&stream.props, &stream.name))
+            .collect();
+        recording.sort_by_key(|name| name.to_lowercase());
+        recording.dedup();
         Ok(Sound {
             output,
             outputs,
             apps,
             input,
             inputs,
+            recording,
         })
     }
 
@@ -309,6 +325,7 @@ impl Mixer {
             SubscriptionMask::SINK
                 | SubscriptionMask::SOURCE
                 | SubscriptionMask::SINK_INPUT
+                | SubscriptionMask::SOURCE_OUTPUT
                 | SubscriptionMask::SERVER,
         ))?;
         loop {
@@ -475,6 +492,11 @@ impl Link {
 /// What to call the application behind a stream: its name, else its
 /// program, else whatever the stream is called.
 fn app_name(input: &protocol::SinkInputInfo) -> String {
+    stream_name(&input.props, &input.name)
+}
+
+/// The same for any stream, from its properties and its own name.
+fn stream_name(props: &protocol::Props, name: &CStr) -> String {
     let text = |bytes: &[u8]| {
         let text = String::from_utf8_lossy(bytes.strip_suffix(&[0]).unwrap_or(bytes));
         let text = text.trim();
@@ -482,8 +504,8 @@ fn app_name(input: &protocol::SinkInputInfo) -> String {
     };
     [Prop::ApplicationName, Prop::ApplicationProcessBinary]
         .into_iter()
-        .find_map(|prop| input.props.get(prop).and_then(text))
-        .or_else(|| text(input.name.to_bytes()))
+        .find_map(|prop| props.get(prop).and_then(text))
+        .or_else(|| text(name.to_bytes()))
         .unwrap_or_else(|| "Unknown".to_owned())
 }
 

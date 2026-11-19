@@ -46,6 +46,16 @@ impl Dropdown {
         )
     }
 
+    /// The month, under the clock while nothing plays: this very bar, run
+    /// again as a card (`enso-bar --dropdown`).
+    pub fn calendar() -> Self {
+        Self::with_program(
+            crate::calendar::NAME,
+            "the clock",
+            enso_core::exe::companion("enso-bar"),
+        )
+    }
+
     /// What's playing, from `enso-play`, found the same way.
     pub fn now_playing() -> Self {
         Self::with_program(

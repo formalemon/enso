@@ -14,6 +14,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod awake;
 pub mod chosen;
 pub mod color;
 pub mod config;
@@ -31,6 +32,7 @@ pub mod wallpaper;
 
 use std::{fmt, io, path::Path, path::PathBuf};
 
+pub use awake::Awake;
 pub use color::Rgba;
 pub use config::Config;
 pub use motion::{Easing, Lerp, Motion, Transition, Tween};

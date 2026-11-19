@@ -13,6 +13,9 @@ enso-core.workspace = true
 enso-ui.workspace = true
 # Pictures that notifications name by file: PNG, JPEG, WebP, GIF.
 enso-fs.workspace = true
+# The battery, read from /sys for the low-battery warnings; and logind, for
+# their "Sleep now".
+enso-sys = { workspace = true, features = ["logind"] }
 serde.workspace = true
 # The history, kept across restarts.
 toml.workspace = true

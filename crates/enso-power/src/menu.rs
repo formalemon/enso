@@ -42,6 +42,7 @@ impl Default for PowerConfig {
         Self {
             actions: vec![
                 Action::Lock,
+                Action::Suspend,
                 Action::Logout,
                 Action::Restart,
                 Action::Shutdown,
@@ -569,6 +570,19 @@ mod tests {
         Menu::with_runner(ctx, config, None, record)
     }
 
+    /// The menu without Sleep: the four these tests were written around.
+    fn four() -> PowerConfig {
+        PowerConfig {
+            actions: vec![
+                Action::Lock,
+                Action::Logout,
+                Action::Restart,
+                Action::Shutdown,
+            ],
+            ..PowerConfig::default()
+        }
+    }
+
     fn press(menu: &mut Menu, key: Key) -> Outcome {
         menu.key(KeyEvent {
             key,
@@ -589,7 +603,7 @@ mod tests {
 
     #[test]
     fn locking_is_one_press_and_shutting_down_is_two() {
-        let mut menu = menu(PowerConfig::default());
+        let mut menu = menu(four());
 
         // `s` goes to "Shut down" and asks; nothing has happened yet.
         press(&mut menu, Key::Char('s'));
@@ -618,7 +632,7 @@ mod tests {
         assert_eq!(ran(), [Action::Shutdown]);
 
         // Lock needs no second press.
-        let mut menu = self::menu(PowerConfig::default());
+        let mut menu = self::menu(four());
         assert_eq!(press(&mut menu, Key::Char('L')), Outcome::Exit);
         assert_eq!(ran(), [Action::Lock]);
     }
@@ -626,7 +640,7 @@ mod tests {
     /// The marked letters are the keys: `o` for Log out, which asks first.
     #[test]
     fn the_marked_letter_is_the_key() {
-        let mut menu = menu(PowerConfig::default());
+        let mut menu = menu(four());
         assert_eq!(menu.keys, [Some('l'), Some('o'), Some('r'), Some('s')]);
         assert_eq!(press(&mut menu, Key::Char('o')), Outcome::Redraw);
         assert_eq!((menu.selected, menu.armed), (1, Some(1)));
@@ -660,7 +674,7 @@ mod tests {
     fn navigation_wraps_and_confirmation_can_be_turned_off() {
         let mut menu = menu(PowerConfig {
             confirm: false,
-            ..PowerConfig::default()
+            ..four()
         });
         press(&mut menu, Key::Char('k'));
         assert_eq!(menu.selected, 3);
@@ -754,7 +768,7 @@ mod tests {
     /// halfway, the glint is on it and the sparkle beside it.
     #[test]
     fn the_key_letter_is_marked_and_glints() {
-        let mut menu = menu(PowerConfig::default());
+        let mut menu = menu(four());
         let mut text = TextEngine::new(&menu.ctx.config.appearance);
         let colors = menu.ctx.theme.colors.clone();
         let mut draw = |menu: &mut Menu, now| {

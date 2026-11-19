@@ -1,6 +1,7 @@
 //! Pictures, decoded in pure Rust: PNG, JPEG, WebP, and GIF (its first
 //! frame) — for thumbnails and previews, notification pictures, the
-//! wallpaper, and the lock screen's backdrop.
+//! wallpaper, and the lock screen's backdrop. A camera's photo is turned
+//! the way it was held: the EXIF orientation it carries is applied.
 
 use std::{fmt, fs, io, path::Path};
 
@@ -72,7 +73,128 @@ pub fn decode(bytes: &[u8]) -> Result<Pixels, Error> {
     } else {
         return Err(Error::NotAPicture);
     };
-    decoded.ok_or(Error::Unreadable)
+    let decoded = decoded.ok_or(Error::Unreadable)?;
+    Ok(match exif(bytes).and_then(orientation) {
+        Some(turn @ 2..=8) => oriented(&decoded, turn),
+        _ => decoded,
+    })
+}
+
+/// The EXIF block (a TIFF structure) a JPEG, PNG, or WebP carries, if any.
+fn exif(bytes: &[u8]) -> Option<&[u8]> {
+    const TIFF_AFTER: &[u8] = b"Exif\0\0";
+    if bytes.starts_with(&[0xff, 0xd8]) {
+        // JPEG: segments up to the image data; EXIF is an APP1.
+        let mut at = 2;
+        while at + 4 <= bytes.len() && bytes[at] == 0xff {
+            let marker = bytes[at + 1];
+            if marker == 0xda || marker == 0xd9 {
+                break;
+            }
+            let length = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+            let body = bytes.get(at + 4..at + 2 + length)?;
+            if marker == 0xe1 && body.starts_with(TIFF_AFTER) {
+                return Some(&body[TIFF_AFTER.len()..]);
+            }
+            at += 2 + length;
+        }
+        None
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        // PNG: an eXIf chunk, before the image data.
+        let mut at = 8;
+        while at + 8 <= bytes.len() {
+            let length = u32::from_be_bytes(bytes[at..at + 4].try_into().ok()?) as usize;
+            let kind = &bytes[at + 4..at + 8];
+            if kind == b"IDAT" {
+                break;
+            }
+            let body = bytes.get(at + 8..at + 8 + length)?;
+            if kind == b"eXIf" {
+                return Some(body);
+            }
+            at += 12 + length;
+        }
+        None
+    } else if bytes.len() > 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        // WebP: an EXIF chunk, padded to even lengths.
+        let mut at = 12;
+        while at + 8 <= bytes.len() {
+            let kind = &bytes[at..at + 4];
+            let length = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().ok()?) as usize;
+            let body = bytes.get(at + 8..at + 8 + length)?;
+            if kind == b"EXIF" {
+                return Some(body.strip_prefix(TIFF_AFTER).unwrap_or(body));
+            }
+            at += 8 + length + (length & 1);
+        }
+        None
+    } else {
+        None
+    }
+}
+
+/// The orientation an EXIF block gives (1 to 8; 1 is as stored).
+fn orientation(tiff: &[u8]) -> Option<u16> {
+    let big = match tiff.get(..2)? {
+        b"MM" => true,
+        b"II" => false,
+        _ => return None,
+    };
+    let u16_at = |at: usize| -> Option<u16> {
+        let pair: [u8; 2] = tiff.get(at..at + 2)?.try_into().ok()?;
+        Some(if big {
+            u16::from_be_bytes(pair)
+        } else {
+            u16::from_le_bytes(pair)
+        })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let four: [u8; 4] = tiff.get(at..at + 4)?.try_into().ok()?;
+        Some(if big {
+            u32::from_be_bytes(four)
+        } else {
+            u32::from_le_bytes(four)
+        })
+    };
+    if u16_at(2)? != 42 {
+        return None;
+    }
+    let first = u32_at(4)? as usize;
+    let count = usize::from(u16_at(first)?);
+    (0..count)
+        .map(|entry| first + 2 + entry * 12)
+        .find(|&entry| u16_at(entry) == Some(0x0112))
+        .and_then(|entry| u16_at(entry + 8))
+        .filter(|turn| (1..=8).contains(turn))
+}
+
+/// `image` turned and flipped as EXIF orientation `turn` says it was held.
+fn oriented(image: &Pixels, turn: u16) -> Pixels {
+    let (w, h) = (image.width, image.height);
+    let swapped = turn >= 5;
+    let (out_w, out_h) = if swapped { (h, w) } else { (w, h) };
+    let mut rgba = Vec::with_capacity(image.rgba.len());
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let (sx, sy) = match turn {
+                2 => (w - 1 - x, y),
+                3 => (w - 1 - x, h - 1 - y),
+                4 => (x, h - 1 - y),
+                5 => (y, x),
+                6 => (y, h - 1 - x),
+                7 => (w - 1 - y, h - 1 - x),
+                8 => (w - 1 - y, x),
+                _ => (x, y),
+            };
+            let at = ((sy * w + sx) * 4) as usize;
+            rgba.extend_from_slice(&image.rgba[at..at + 4]);
+        }
+    }
+    Pixels {
+        width: out_w,
+        height: out_h,
+        rgba,
+    }
 }
 
 /// The picture in the file at `path`, fitted within `max_side` (and not
@@ -261,6 +383,82 @@ mod tests {
             Err(Error::Read(_))
         ));
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A TIFF block saying `turn`, little-endian or big.
+    fn tiff(turn: u16, big: bool) -> Vec<u8> {
+        let u16b = |v: u16| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+        let u32b = |v: u32| if big { v.to_be_bytes() } else { v.to_le_bytes() };
+        let mut out = Vec::new();
+        out.extend(if big { b"MM" } else { b"II" });
+        out.extend(u16b(42));
+        out.extend(u32b(8));
+        out.extend(u16b(2));
+        // Another tag first, then the orientation: SHORT, one of it.
+        for (tag, value) in [(0x010f, 7), (0x0112, turn)] {
+            out.extend(u16b(tag));
+            out.extend(u16b(3));
+            out.extend(u32b(1));
+            out.extend(u16b(value));
+            out.extend([0, 0]);
+        }
+        out.extend(u32b(0));
+        out
+    }
+
+    #[test]
+    fn reads_the_orientation_from_exif() {
+        assert_eq!(orientation(&tiff(6, false)), Some(6));
+        assert_eq!(orientation(&tiff(8, true)), Some(8));
+        assert_eq!(orientation(&tiff(9, true)), None);
+        assert_eq!(orientation(b"II*\0"), None);
+        // Found in a JPEG's APP1, after another segment.
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe0, 0, 4, 1, 2];
+        let body = [b"Exif\0\0".as_slice(), &tiff(3, false)].concat();
+        jpeg.extend([0xff, 0xe1]);
+        jpeg.extend(u16::try_from(body.len() + 2).unwrap().to_be_bytes());
+        jpeg.extend(&body);
+        jpeg.extend([0xff, 0xda, 0, 2]);
+        assert_eq!(exif(&jpeg).and_then(orientation), Some(3));
+    }
+
+    #[test]
+    fn turns_a_photo_the_way_it_was_held() {
+        // 3 × 2: a b c / d e f, one byte standing for each pixel.
+        let image = Pixels {
+            width: 3,
+            height: 2,
+            rgba: b"abcdef".iter().flat_map(|&c| [c, 0, 0, 255]).collect(),
+        };
+        let read = |p: &Pixels| -> (u32, u32, String) {
+            let text = p.rgba.chunks(4).map(|px| px[0] as char).collect();
+            (p.width, p.height, text)
+        };
+        assert_eq!(read(&oriented(&image, 2)), (3, 2, "cbafed".into()));
+        assert_eq!(read(&oriented(&image, 3)), (3, 2, "fedcba".into()));
+        assert_eq!(read(&oriented(&image, 4)), (3, 2, "defabc".into()));
+        assert_eq!(read(&oriented(&image, 5)), (2, 3, "adbecf".into()));
+        // Held turned right: the left column becomes the top row.
+        assert_eq!(read(&oriented(&image, 6)), (2, 3, "daebfc".into()));
+        assert_eq!(read(&oriented(&image, 7)), (2, 3, "fcebda".into()));
+        assert_eq!(read(&oriented(&image, 8)), (2, 3, "cfbead".into()));
+    }
+
+    #[test]
+    fn a_png_carrying_exif_is_turned_too() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            let mut writer = encoder.write_header().unwrap();
+            writer
+                .write_chunk(png::chunk::ChunkType(*b"eXIf"), &tiff(6, true))
+                .unwrap();
+            writer.write_image_data(&[1, 0, 0, 255, 2, 0, 0, 255]).unwrap();
+        }
+        let picture = decode(&bytes).unwrap();
+        assert_eq!((picture.width, picture.height), (1, 2));
+        assert_eq!((picture.rgba[0], picture.rgba[4]), (1, 2));
     }
 
     #[test]

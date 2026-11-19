@@ -33,12 +33,21 @@ pub struct Battery {
     pub status: BatteryStatus,
     /// Power flowing in or out right now, in milliwatts.
     pub power_mw: Option<u32>,
-    /// Minutes until empty while discharging, or until full while charging,
-    /// at the present rate.
+    /// Minutes until empty while discharging, or until full (or the limit)
+    /// while charging, at the present rate.
     pub minutes_left: Option<u32>,
+    /// Where charging stops, when the system keeps the battery from filling
+    /// (`charge_control_end_threshold` below 100) to spare it.
+    pub limit: Option<u8>,
 }
 
 impl Battery {
+    /// Plugged in and not charging because the battery is at its limit.
+    pub fn is_held(&self) -> bool {
+        matches!(self.status, BatteryStatus::NotCharging | BatteryStatus::Full)
+            && self.limit.is_some_and(|limit| self.percent + 2 >= limit)
+    }
+
     /// On external power (charging, full, or held at a threshold).
     pub fn is_plugged_in(&self) -> bool {
         !matches!(
@@ -154,7 +163,10 @@ impl Sysfs {
                     return None;
                 }
                 let percent: u8 = read(&dir.join("capacity"))?.parse().ok()?;
-                let (power_mw, minutes_left) = battery_rate(&dir);
+                let limit = read(&dir.join("charge_control_end_threshold"))
+                    .and_then(|limit| limit.parse::<u8>().ok())
+                    .filter(|limit| (1..100).contains(limit));
+                let (power_mw, minutes_left) = battery_rate(&dir, limit);
                 let status = match read(&dir.join("status")).as_deref() {
                     Some("Charging") => BatteryStatus::Charging,
                     Some("Discharging") => BatteryStatus::Discharging,
@@ -171,6 +183,7 @@ impl Sysfs {
                     }),
                     status,
                     power_mw,
+                    limit,
                 })
             })
     }
@@ -276,6 +289,18 @@ impl Sysfs {
     }
 }
 
+impl Sysfs {
+    /// Where a backlight's files are: `actual_brightness` there is the level
+    /// as the hardware has it, and the kernel announces each change on it
+    /// (`sysfs_notify`), so a watcher can wait on it rather than poll.
+    pub fn backlight_dir(&self, backlight: &Backlight) -> PathBuf {
+        self.root
+            .join("class")
+            .join(backlight.kind.subsystem())
+            .join(&backlight.name)
+    }
+}
+
 /// Read one backlight directory.
 fn backlight(kind: BacklightKind, dir: &Path) -> Option<Backlight> {
     let brightness = read(&dir.join("brightness"))?.parse().ok()?;
@@ -295,7 +320,7 @@ fn backlight(kind: BacklightKind, dir: &Path) -> Option<Backlight> {
 /// A battery's present power in milliwatts and, from it, the minutes until
 /// it is empty or full. Batteries report either energy (µWh, µW) or charge
 /// (µAh, µA); both work the same way.
-fn battery_rate(dir: &Path) -> (Option<u32>, Option<u32>) {
+fn battery_rate(dir: &Path, limit: Option<u8>) -> (Option<u32>, Option<u32>) {
     let number = |file: &str| read(&dir.join(file))?.parse::<f64>().ok();
     let (now, full, rate) = match (number("energy_now"), number("power_now")) {
         (Some(now), Some(rate)) => (now, number("energy_full"), rate),
@@ -315,7 +340,8 @@ fn battery_rate(dir: &Path) -> (Option<u32>, Option<u32>) {
     }
     let charging = read(&dir.join("status")).as_deref() == Some("Charging");
     let remaining = match (charging, full) {
-        (true, Some(full)) => (full - now).max(0.0),
+        // Charging stops at the limit, when there is one.
+        (true, Some(full)) => (full * f64::from(limit.unwrap_or(100)) / 100.0 - now).max(0.0),
         (true, None) => return (power_mw, None),
         (false, _) => now,
     };
@@ -431,6 +457,34 @@ mod tests {
         );
         let battery = sys.battery().unwrap();
         assert_eq!((battery.power_mw, battery.minutes_left), (Some(0), None));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_charge_limit_is_where_charging_ends() {
+        let (root, sys) = tree(
+            "limit",
+            &[
+                ("class/power_supply/BAT1/type", "Battery\n"),
+                ("class/power_supply/BAT1/capacity", "60\n"),
+                ("class/power_supply/BAT1/status", "Charging\n"),
+                ("class/power_supply/BAT1/charge_control_end_threshold", "80\n"),
+                ("class/power_supply/BAT1/energy_now", "30000000\n"),
+                ("class/power_supply/BAT1/energy_full", "50000000\n"),
+                ("class/power_supply/BAT1/power_now", "20000000\n"),
+            ],
+        );
+        let battery = sys.battery().unwrap();
+        assert_eq!(battery.limit, Some(80));
+        // 40 Wh is 80 %: 10 Wh to go at 20 W.
+        assert_eq!(battery.minutes_left, Some(30));
+        assert!(!battery.is_held());
+        let held = Battery {
+            percent: 80,
+            status: BatteryStatus::NotCharging,
+            ..battery
+        };
+        assert!(held.is_held());
         fs::remove_dir_all(root).unwrap();
     }
 

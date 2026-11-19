@@ -418,6 +418,84 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Draw a picture of any size scaled into `dest` (logical pixels, and
+    /// as far off the canvas as it likes: only what shows is drawn). The
+    /// pixels are premultiplied R, G, B, A, `width × height`; smooth while
+    /// shrinking or gently enlarged, square pixels when enlarged a lot, as
+    /// an image viewer zooms in. Returns `false` if the numbers don't
+    /// describe `rgba`.
+    pub fn pixels(&mut self, rgba: &[u8], width: u32, height: u32, dest: Rect) -> bool {
+        let Some(source) = PixmapRef::from_bytes(rgba, width, height) else {
+            return false;
+        };
+        if dest.w <= 0.0 || dest.h <= 0.0 {
+            return true;
+        }
+        // The part that shows, in output pixels.
+        let s = self.scale;
+        let x0 = (dest.x * s).floor().max(0.0);
+        let y0 = (dest.y * s).floor().max(0.0);
+        let x1 = (dest.right() * s).ceil().min(self.width as f32);
+        let y1 = (dest.bottom() * s).ceil().min(self.height as f32);
+        if x1 <= x0 || y1 <= y0 {
+            return true;
+        }
+        let (tw, th) = ((x1 - x0) as u32, (y1 - y0) as u32);
+        let Some(mut tile) = tiny_skia::Pixmap::new(tw, th) else {
+            return true;
+        };
+        let zoom = dest.w * s / width as f32;
+        let quality = if zoom > 3.0 {
+            FilterQuality::Nearest
+        } else {
+            FilterQuality::Bilinear
+        };
+        let placement = Transform::from_row(
+            zoom,
+            0.0,
+            0.0,
+            dest.h * s / height as f32,
+            dest.x * s - x0,
+            dest.y * s - y0,
+        );
+        let paint = Paint {
+            shader: Pattern::new(source, SpreadMode::Pad, quality, 1.0, placement),
+            ..Paint::default()
+        };
+        let area = tiny_skia::Rect::from_xywh(
+            (dest.x * s - x0).max(0.0),
+            (dest.y * s - y0).max(0.0),
+            (dest.w * s).min(tw as f32),
+            (dest.h * s).min(th as f32),
+        );
+        if let Some(area) = area {
+            tile.fill_rect(area, &paint, Transform::identity(), None);
+        }
+        // The canvas may be B, G, R, A; the picture is R, G, B, A.
+        if self.bgra {
+            for pixel in tile.data_mut().as_chunks_mut::<4>().0 {
+                pixel.swap(0, 2);
+            }
+        }
+        let opacity = self.opacity;
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.draw_pixmap(
+                x0 as i32,
+                y0 as i32,
+                tile.as_ref(),
+                &tiny_skia::PixmapPaint {
+                    opacity,
+                    blend_mode: BlendMode::SourceOver,
+                    quality: FilterQuality::Nearest,
+                },
+                Transform::identity(),
+                mask,
+            );
+        }
+        true
+    }
+
     /// Copy `picture` onto the canvas pixel for pixel — its pixels are the
     /// output's, not logical ones — centred, and cropped where it is larger.
     /// At full opacity that is a plain copy; below it the picture is mixed

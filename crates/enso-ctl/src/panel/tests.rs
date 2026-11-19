@@ -29,6 +29,7 @@ fn hardware() -> Hardware {
             status: BatteryStatus::Discharging,
             power_mw: Some(9_400),
             minutes_left: Some(135),
+            limit: None,
         }),
         profile: Some(PlatformProfile {
             current: "balanced".into(),
@@ -82,6 +83,7 @@ fn sound() -> Sound {
             sound_device("Laptop Microphone", true),
             sound_device("Soft Buds", false),
         ],
+        recording: Vec::new(),
     }
 }
 
@@ -286,9 +288,10 @@ fn the_first_page_shows_readings_sliders_and_entries() {
 
 #[test]
 fn tiles_say_what_matters() {
-    let read = |hardware: &Hardware| -> Vec<(String, String)> {
-        draw::tiles(hardware)
+    let read = |hardware: &Hardware, switches: draw::Switches| -> Vec<(String, String)> {
+        draw::tiles(hardware, switches)
             .into_iter()
+            .flatten()
             .map(|tile| {
                 let debug = format!("{tile:?}");
                 let field = |name: &str| {
@@ -300,21 +303,39 @@ fn tiles_say_what_matters() {
             .collect()
     };
     let pair = |value: &str, label: &str| (value.to_owned(), label.to_owned());
+    let off = draw::Switches::default();
 
-    // The battery is the bar's: it has no tile here.
+    // The battery and how long it lasts; the profile, with how hard the
+    // machine works under it; then the two switches.
     let mut hardware = hardware();
+    let battery = hardware.battery.clone().unwrap();
+    let tiles = read(&hardware, off);
+    assert_eq!(tiles[0].0, format!("{}%", battery.percent));
+    assert_eq!(tiles[0].1, "2 h 15 min left");
+    assert_eq!(tiles[1], pair("Balanced", "54° · 2400 rpm"));
     assert_eq!(
-        read(&hardware),
-        [pair("Balanced", "Profile"), pair("54°", "2400 rpm")]
+        tiles[2..],
+        [pair("Do not disturb", "Off"), pair("Keep awake", "Off")]
     );
     hardware.fans[0].rpm = 0;
-    assert_eq!(read(&hardware)[1], pair("54°", "CPU"));
+    assert_eq!(read(&hardware, off)[1], pair("Balanced", "54°"));
 
-    // A desktop without power profiles shows the temperature alone, and a
-    // machine that says nothing shows no tiles.
+    // Switched on, they say so — and until when, if it ends by itself.
+    let on = draw::Switches {
+        quiet: Some(0),
+        awake: Some(0),
+    };
+    assert_eq!(
+        read(&hardware, on)[2..],
+        [pair("Do not disturb", "On"), pair("Keep awake", "On")]
+    );
+
+    // A desktop without a battery or power profiles shows the temperature
+    // alone; a machine that says nothing still has its switches.
+    hardware.battery = None;
     hardware.profile = None;
-    assert_eq!(read(&hardware), [pair("54°", "CPU")]);
-    assert!(draw::tiles(&Hardware::default()).is_empty());
+    assert_eq!(read(&hardware, off)[0], pair("54°", "CPU"));
+    assert_eq!(draw::tiles(&Hardware::default(), off).len(), 1);
 }
 
 #[test]
@@ -1215,6 +1236,7 @@ fn settings_holds_the_theme_and_do_not_disturb() {
         panel.items(),
         [
             Item::Open(Page::Theme),
+            Item::Open(Page::Displays),
             Item::DoNotDisturb,
             Item::Heading(Section::Screen),
             Item::Timer(Timer::Lock),
@@ -1233,12 +1255,16 @@ fn settings_holds_the_theme_and_do_not_disturb() {
 
     // Do not disturb is kept where enso-notify reads it.
     press(&mut panel, Key::Down);
+    press(&mut panel, Key::Down);
     assert_eq!(panel.items()[panel.selected], Item::DoNotDisturb);
     press(&mut panel, Key::Char(' '));
     assert!(panel.quiet);
     keep(&panel, &requests);
     let mut ctx = Context::load_from(panel.ctx.paths.clone());
-    assert!(ctx.section::<Quiet>("notify").do_not_disturb);
+    assert!(
+        ctx.section::<enso_core::chosen::Quiet>("notify")
+            .do_not_disturb
+    );
     // Its switch slides at once: with everything else at rest, the frame
     // after the press is still moving, so the next is asked for.
     for tween in [
@@ -1308,4 +1334,89 @@ fn times_step_between_choices_and_stop_at_the_ends() {
     assert_eq!(duration(30), "30 s");
     assert_eq!(duration(300), "5 min");
     assert_eq!(duration(3600), "1 h");
+}
+
+#[test]
+fn the_displays_page_steps_size_and_scale() {
+    let (mut panel, _requests) = panel("displays");
+    panel.page = Page::Displays;
+    panel.displays = vec![displays::Display {
+        name: "eDP-1".into(),
+        label: "Built-in screen".into(),
+        on: true,
+        modes: vec![(1920, 1080, 144_003), (1920, 1080, 60_004)],
+        mode: Some(0),
+        scale: 1.0,
+        vrr_supported: true,
+        vrr: false,
+        kept_as: "eDP-1".into(),
+        position: (0, 0),
+        transform: None,
+    }];
+    panel.selected = 1;
+    // One screen: its name, then size, scale, and variable refresh; no off.
+    assert_eq!(
+        panel.items(),
+        [
+            Item::Display(0, Screen::Name),
+            Item::Display(0, Screen::Mode),
+            Item::Display(0, Screen::Scale),
+            Item::Display(0, Screen::Vrr),
+        ]
+    );
+    assert!(!Panel::selectable(Item::Display(0, Screen::Name)));
+    let frame = render(&mut panel);
+    snapshot(&frame, "ctl-displays");
+    // Arrows to step, on the size and the scale.
+    assert!(
+        panel
+            .hits
+            .iter()
+            .any(|(_, hit)| *hit == Hit::DisplayStep(1, 1))
+    );
+    assert!(
+        panel
+            .hits
+            .iter()
+            .any(|(_, hit)| *hit == Hit::DisplayStep(2, -1))
+    );
+}
+
+#[test]
+fn a_page_asked_for_shows_once_it_can() {
+    let (panel, _requests) = panel("asked");
+    let mut panel = panel.asking(Some(Page::Wifi));
+    panel.wifi = None;
+    // Wi-Fi hasn't answered yet: the first page meanwhile.
+    panel.go_asked(true);
+    assert_eq!(panel.page, Page::Main);
+    panel.apply(Update::Wifi(Some(wifi())));
+    panel.go_asked(false);
+    assert_eq!((panel.page, panel.asked), (Page::Wifi, None));
+    // Back goes to the first page, as if it had been opened from there.
+    assert_eq!(panel.home, Page::Main);
+    assert_eq!(Page::named("Displays"), Some(Page::Displays));
+    assert_eq!(Page::named("nowhere"), None);
+    assert_eq!(Page::Bluetooth.name(), "bluetooth");
+}
+
+#[test]
+fn do_not_disturb_steps_through_how_long() {
+    let (mut panel, _requests) = panel("quiet-steps");
+    let now = enso_core::awake::unix_now();
+    assert_eq!(panel.quiet_choice(now), 0);
+    panel.step_quiet(1, false);
+    assert!(panel.quiet);
+    assert!(panel.quiet_until.abs_diff(now + 3600) < 5);
+    assert_eq!(panel.quiet_choice(now), 1);
+    panel.step_quiet(2, false);
+    assert_eq!(panel.quiet_choice(now), 3);
+    assert!(panel.quiet_until > now);
+    panel.step_quiet(1, false);
+    assert_eq!((panel.quiet, panel.quiet_until), (true, 0));
+    // The end stops; Enter goes round.
+    panel.step_quiet(1, false);
+    assert_eq!(panel.quiet_choice(now), 4);
+    panel.step_quiet(1, true);
+    assert!(!panel.quiet);
 }

@@ -35,6 +35,8 @@ udisks = ["dep:zbus"]
 secrets = ["dep:zbus"]
 # What media players are playing, and their buttons, through MPRIS.
 mpris = ["dep:zbus"]
+# Sending a desktop notification.
+notify = ["dep:zbus"]
 # Volume, per output and per application, through PipeWire's PulseAudio socket.
 audio = ["dep:pulseaudio"]
 

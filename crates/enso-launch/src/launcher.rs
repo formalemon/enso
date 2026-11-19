@@ -14,12 +14,13 @@ use std::{
 };
 
 use enso_core::{
-    Context, Role, Transition, Tween,
+    Context, Icon, Role, Transition, Tween,
     style::{icon, opacity, radius, space, stroke, type_scale},
 };
 use enso_ui::{
-    Align, App as UiApp, Button, Canvas, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent,
-    Presence, Proxy, Rect, SurfaceSpec, Text,
+    Align, App as UiApp, Button, Canvas, Clip, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent,
+    Presence, Proxy, Rect, SurfaceSpec, TEXT_TYPES, Text,
+    widget::{TextField, field},
 };
 use serde::Deserialize;
 
@@ -29,7 +30,12 @@ use enso_fs::{
     search::{self as files, Hit, Job, Scope},
 };
 
-use crate::history::{self, History};
+use crate::{
+    calc,
+    commands::{self, Command},
+    history::{self, History},
+    windows::{self, Window},
+};
 
 /// The `[launch]` table of `config.toml`.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -100,7 +106,13 @@ pub enum Message {
     Files { generation: u64, hits: Vec<Hit> },
     /// The launcher was invoked again: that closes this one.
     Dismiss,
+    /// The windows open now, from niri.
+    Windows(Vec<Window>),
 }
+
+/// Something the launcher copied, to be kept on the clipboard after it
+/// closes: `main` holds it there until something else is copied.
+pub type Copied = Arc<Mutex<Option<String>>>;
 
 /// Background work that should be allowed to finish after the window has
 /// closed — the file walk, so that its result is saved for next time.
@@ -109,8 +121,17 @@ pub type Background = Arc<Mutex<Vec<JoinHandle<()>>>>;
 /// One row of the result list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Entry {
+    /// The answer to a sum.
+    Answer(String),
     /// Index into `apps`.
     App(usize),
+    /// Index into `windows`: found by its title.
+    Window(usize),
+    /// One of an application's desktop actions: indices into `apps`, and
+    /// into its actions.
+    Action(usize, usize),
+    /// Index into `commands`.
+    Command(usize),
     File(Hit),
 }
 
@@ -123,7 +144,9 @@ pub struct Launcher {
     /// Whether `apps` has arrived; until then an empty result is not "no
     /// matches", just not known yet.
     loaded: bool,
-    query: String,
+    /// What's typed: a field like every other, with a caret, a selection,
+    /// and the clipboard.
+    field: TextField,
     /// Matching applications as indices into `apps`, best first.
     app_results: Vec<usize>,
     /// Matching files, best first, as last answered by the search thread.
@@ -150,6 +173,21 @@ pub struct Launcher {
     /// Geometry from the last frame, for hit-testing.
     card: Rect,
     rows: Vec<Rect>,
+    /// The answer, when the query is a sum.
+    answer: Option<String>,
+    /// The windows open, from niri.
+    windows: Vec<Window>,
+    /// Windows whose title matches, as indices into `windows`.
+    window_results: Vec<usize>,
+    /// Matching desktop actions: (app, action).
+    action_results: Vec<(usize, usize)>,
+    commands: Vec<Command>,
+    /// Matching commands, as indices into `commands`.
+    command_results: Vec<usize>,
+    /// What went wrong with the last choice, said under the field.
+    error: Option<String>,
+    /// What was copied, for `main` to keep on the clipboard.
+    copied: Copied,
 }
 
 impl Launcher {
@@ -165,6 +203,14 @@ impl Launcher {
             home: std::env::var("HOME").unwrap_or_default(),
             app_results: Vec::new(),
             file_results: Vec::new(),
+            answer: None,
+            windows: Vec::new(),
+            window_results: Vec::new(),
+            action_results: Vec::new(),
+            commands: commands::all(&ctx.themes),
+            command_results: Vec::new(),
+            error: None,
+            copied: Copied::default(),
             generation: 0,
             jobs: None,
             background,
@@ -173,7 +219,7 @@ impl Launcher {
             config,
             apps: Vec::new(),
             loaded: false,
-            query: String::new(),
+            field: TextField::default(),
             results: Vec::new(),
             selected: 0,
             offset: 0,
@@ -182,6 +228,13 @@ impl Launcher {
             card: Rect::default(),
             rows: Vec::new(),
         }
+    }
+
+    /// Open with `text` already typed: `=` for a sum, from a calculator key.
+    #[must_use]
+    pub fn typed(mut self, text: &str) -> Self {
+        self.field.insert(text);
+        self
     }
 
     /// Take the applications to search, keeping the query and — where the
@@ -218,7 +271,13 @@ impl Launcher {
     /// Identity of the selected row, to find it again after the list changes.
     fn selected_key(&self) -> Option<String> {
         self.results.get(self.selected).map(|entry| match entry {
+            Entry::Answer(_) => "answer".to_owned(),
             Entry::App(index) => app_key(&self.apps[*index].id),
+            Entry::Window(index) => format!("window:{}", self.windows[*index].id),
+            Entry::Action(app, action) => {
+                format!("action:{}:{action}", self.apps[*app].id)
+            }
+            Entry::Command(index) => format!("command:{}", self.commands[*index].name),
             Entry::File(hit) => file_key(&hit.path),
         })
     }
@@ -227,10 +286,29 @@ impl Launcher {
     /// stays selected if it is still listed; otherwise the selection stays
     /// where it is, or returns to the top when there was none to keep.
     fn compose(&mut self, keep: Option<&str>) {
+        // A sum's answer first; then what to open or go to; then what to
+        // do; then files.
         self.results = self
-            .app_results
+            .answer
             .iter()
-            .map(|index| Entry::App(*index))
+            .cloned()
+            .map(Entry::Answer)
+            .chain(self.app_results.iter().map(|index| Entry::App(*index)))
+            .chain(
+                self.window_results
+                    .iter()
+                    .map(|index| Entry::Window(*index)),
+            )
+            .chain(
+                self.action_results
+                    .iter()
+                    .map(|(app, action)| Entry::Action(*app, *action)),
+            )
+            .chain(
+                self.command_results
+                    .iter()
+                    .map(|index| Entry::Command(*index)),
+            )
             .chain(self.file_results.iter().cloned().map(Entry::File))
             .collect();
         let kept = keep.and_then(|key| {
@@ -262,9 +340,14 @@ impl Launcher {
         }
     }
 
+    /// What's typed.
+    fn query(&self) -> &str {
+        self.field.text()
+    }
+
     /// Nothing has been typed yet (spaces alone do not count).
     fn is_idle(&self) -> bool {
-        self.query.trim().is_empty()
+        self.query().trim().is_empty()
     }
 
     /// The query matched nothing, and that is final.
@@ -277,25 +360,44 @@ impl Launcher {
     }
 
     fn list_target(&self) -> f32 {
-        match self.visible_rows() {
-            // Room for the "no matches" line.
-            0 if self.has_no_matches() => ROW_HEIGHT + space::SM,
-            // Just the search field.
-            0 => 0.0,
-            rows => rows as f32 * ROW_HEIGHT + space::SM,
-        }
+        let error = if self.error.is_some() {
+            ROW_HEIGHT
+        } else {
+            0.0
+        };
+        error
+            + match self.visible_rows() {
+                // Room for the "no matches" line.
+                0 if self.has_no_matches() => ROW_HEIGHT + space::SM,
+                // Just the search field.
+                0 => 0.0,
+                rows => rows as f32 * ROW_HEIGHT + space::SM,
+            }
+    }
+
+    /// Make room for what's said under the list, or take it away.
+    fn reflow(&mut self) {
+        self.list_height.set(
+            self.list_target(),
+            self.ctx.motion.apply(Transition::REFLOW),
+            Instant::now(),
+        );
     }
 
     /// Rank the applications against the current query. An empty query
     /// lists nothing.
     fn rank_apps(&mut self) {
         // Looking inside files is for files alone.
-        if self.inside().is_some() {
+        self.window_results.clear();
+        self.action_results.clear();
+        self.command_results.clear();
+        self.answer = calc::answer(self.query());
+        if self.inside().is_some() || self.answer.is_some() {
             self.app_results.clear();
             return;
         }
         let now = history::now();
-        let pattern = fuzzy::Pattern::new(&self.query);
+        let pattern = fuzzy::Pattern::new(self.query());
         let mut ranked: Vec<(i32, usize)> = self
             .apps
             .iter()
@@ -309,12 +411,84 @@ impl Launcher {
         // Stable sort: ties keep the alphabetical order of `apps`.
         ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         self.app_results = ranked.into_iter().map(|(_, index)| index).collect();
+        if self.is_idle() {
+            return;
+        }
+
+        // Windows by their title — a page, a folder, a document — when the
+        // query is more than a letter or two.
+        if self.query().trim().chars().count() >= 3 {
+            let mut windows: Vec<(i32, usize)> = self
+                .windows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, window)| {
+                    let score = pattern.score(&window.title)?;
+                    // An app listed already says its window; a title that
+                    // only matches as the app's name adds nothing.
+                    let named = self.app_results.iter().any(|app| {
+                        self.apps[*app].owns_window(&window.app_id)
+                            && pattern.score(&self.apps[*app].name).is_some()
+                    });
+                    (!named).then_some((score, index))
+                })
+                .collect();
+            windows.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+            self.window_results = windows.into_iter().take(3).map(|(_, i)| i).collect();
+        }
+
+        // An application's actions, by their names or "app action".
+        let mut actions: Vec<(i32, (usize, usize))> = Vec::new();
+        for (app_index, app) in self.apps.iter().enumerate() {
+            for (action_index, action) in app.actions.iter().enumerate() {
+                let both = format!("{} {}", app.name, action.name);
+                let score = pattern
+                    .score(&action.name)
+                    .max(pattern.score(&both).map(|s| s - 10));
+                if let Some(score) = score {
+                    actions.push((score - 20, (app_index, action_index)));
+                }
+            }
+        }
+        actions.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        self.action_results = actions.into_iter().take(3).map(|(_, a)| a).collect();
+
+        // Commands, below what's opened.
+        let query = self.query().to_owned();
+        let mut commands: Vec<(i32, usize)> = self
+            .commands
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| command.allowed(&query))
+            .filter_map(|(index, command)| {
+                let score = std::iter::once(command.name.as_str())
+                    .chain(command.words.iter().copied())
+                    .filter_map(|name| pattern.score(name))
+                    .max()?;
+                Some((score, index))
+            })
+            .collect();
+        commands.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+        self.command_results = commands.into_iter().take(4).map(|(_, i)| i).collect();
+    }
+
+    /// The most recently focused window of an application, if it's running.
+    /// The window to go to for `app`, rather than opening another; never
+    /// one of a terminal's, which is asked for to have another terminal.
+    fn running(&self, app: &App) -> Option<&Window> {
+        if app.fresh {
+            return None;
+        }
+        self.windows
+            .iter()
+            .filter(|window| app.owns_window(&window.app_id))
+            .max_by_key(|window| window.focused_at)
     }
 
     /// What to look for inside files, if the query asks that: it starts
     /// with a quote (`"green tea`, or `"/te+a/"` for a pattern).
     fn inside(&self) -> Option<&str> {
-        let text = self.query.trim().strip_prefix('"')?;
+        let text = self.query().trim().strip_prefix('"')?;
         Some(text.strip_suffix('"').unwrap_or(text))
     }
 
@@ -330,7 +504,7 @@ impl Launcher {
             },
             None => Job::Query {
                 generation,
-                query: self.query.trim().to_owned(),
+                query: self.query().trim().to_owned(),
             },
         };
         let wanted = match &job {
@@ -383,38 +557,85 @@ impl Launcher {
     }
 
     /// Edit the query. Returns whether the key was consumed.
-    fn edit(&mut self, key: &KeyEvent) -> bool {
-        match key.key {
-            Key::Backspace => {
-                self.query.pop();
+    fn edit(&mut self, key: &KeyEvent, cx: Option<&mut Cx<'_>>) -> bool {
+        match self.field.key(key) {
+            field::Response::Ignored | field::Response::Submit | field::Response::Cancel => false,
+            field::Response::Moved => true,
+            field::Response::Changed => {
+                self.error = None;
+                self.search();
+                true
             }
-            Key::Char('u') if key.mods.ctrl => self.query.clear(),
-            Key::Char('w') if key.mods.ctrl => {
-                let trimmed = self.query.trim_end();
-                let cut = trimmed.rfind(char::is_whitespace).map_or(0, |i| i + 1);
-                self.query.truncate(cut);
+            field::Response::Copy(text) => {
+                if let Some(cx) = cx {
+                    cx.copy(Clip::text(&text));
+                }
+                true
             }
-            _ => match key.text() {
-                Some(c) => self.query.push(c),
-                None => return false,
-            },
+            field::Response::Cut(text) => {
+                if let Some(cx) = cx {
+                    cx.copy(Clip::text(&text));
+                }
+                self.search();
+                true
+            }
+            field::Response::Paste => {
+                if let Some(cx) = cx {
+                    cx.paste(&TEXT_TYPES);
+                }
+                true
+            }
         }
-        self.search();
-        true
+    }
+
+    /// What Ctrl+C copies when nothing in the field is selected: a file's
+    /// path, or a sum's answer.
+    fn copyable(&self) -> Option<String> {
+        match self.results.get(self.selected)? {
+            Entry::Answer(answer) => Some(answer.clone()),
+            Entry::File(hit) => Some(hit.path.clone()),
+            _ => None,
+        }
     }
 
     /// Launch the selected application or open the selected file — or,
-    /// with `reveal`, the folder the file is in.
-    fn launch_selected(&mut self, reveal: bool, cx: &mut Cx<'_>) {
+    /// with `reveal`, the folder the file is in. A running application's
+    /// window is gone to rather than another opened, unless `fresh`.
+    fn launch_selected(&mut self, reveal: bool, fresh: bool, cx: &mut Cx<'_>) {
         let Some(key) = self.selected_key() else {
             return;
         };
-        match &self.results[self.selected] {
+        let terminal = self.ctx.config.appearance.terminal_program();
+        let done = match &self.results[self.selected] {
+            Entry::Answer(answer) => {
+                // Kept on the clipboard by `main` once the window is gone.
+                if let Ok(mut copied) = self.copied.lock() {
+                    *copied = Some(answer.clone());
+                }
+                Ok(())
+            }
             Entry::App(index) => {
                 let app = &self.apps[*index];
-                if let Err(err) = app.launch(&self.ctx.config.appearance.terminal_program()) {
-                    eprintln!("enso-launch: cannot start {}: {err}", app.name);
+                match self.running(app).filter(|_| !fresh) {
+                    Some(window) => windows::focus(window.id)
+                        .map_err(|err| format!("Can't go to {}: {err}", app.name)),
+                    None => app
+                        .launch(&terminal)
+                        .map_err(|err| format!("Can't start {}: {err}", app.name)),
                 }
+            }
+            Entry::Window(index) => windows::focus(self.windows[*index].id)
+                .map_err(|err| format!("Can't go to that window: {err}")),
+            Entry::Action(app, action) => {
+                let app = &self.apps[*app];
+                app.launch_action(*action, &terminal)
+                    .map_err(|err| format!("Can't start {}: {err}", app.name))
+            }
+            Entry::Command(index) => {
+                let command = &self.commands[*index];
+                command
+                    .run()
+                    .map_err(|err| format!("Can't {}: {err}", command.name.to_lowercase()))
             }
             Entry::File(hit) => {
                 let path = Path::new(&hit.path);
@@ -422,14 +643,29 @@ impl Launcher {
                     Some(parent) if reveal => parent,
                     _ => path,
                 };
-                if let Err(err) = open::open(target, &self.ctx.config.appearance.terminal_program())
-                {
-                    eprintln!("enso-launch: cannot open {}: {err}", target.display());
-                }
+                open::open(target, &terminal)
+                    .map_err(|err| format!("Can't open {}: {err}", target.display()))
+            }
+        };
+        match done {
+            Ok(()) => {
+                self.history.record(&key, history::now());
+                self.presence.close(cx);
+            }
+            // Said here, where it was asked for, rather than to a log
+            // nobody reads; the card stays to try something else.
+            Err(err) => {
+                eprintln!("enso-launch: {err}");
+                self.error = Some(err);
+                self.reflow();
+                cx.redraw();
             }
         }
-        self.history.record(&key, history::now());
-        self.presence.close(cx);
+    }
+
+    /// What was copied, for keeping after the window has gone.
+    pub fn copied(&self) -> Copied {
+        Arc::clone(&self.copied)
     }
 
     /// Start indexing and searching files in the background.
@@ -489,6 +725,64 @@ fn chip_role(name: &str) -> Role {
     Role::ACCENTS[hash as usize % Role::ACCENTS.len()]
 }
 
+/// An application's letter chip: a stand-in for an icon, needing no icon
+/// theme.
+fn letter_chip(
+    canvas: &mut Canvas<'_>,
+    chip: Rect,
+    name: &str,
+    size: f32,
+    colors: &enso_core::Palette,
+) {
+    let tint = colors.get(chip_role(name));
+    canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT + 0.06));
+    let initial: String = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    canvas.text_in(&Text::new(&initial, size, tint).bold(), chip, Align::Center);
+}
+
+/// Go over the letters of `name` that matched in the accent, each where it
+/// stands in the name as drawn (and no further than `shown` of it).
+#[allow(clippy::too_many_arguments)]
+fn highlight_matches(
+    canvas: &mut Canvas<'_>,
+    pattern: &fuzzy::Pattern,
+    name: &str,
+    size: f32,
+    accent: enso_core::Rgba,
+    x: f32,
+    row: Rect,
+    shown: f32,
+) {
+    let Some(positions) = pattern.positions(name) else {
+        return;
+    };
+    let chars: Vec<(usize, char)> = name.char_indices().collect();
+    for index in positions {
+        let Some(&(at, c)) = chars.get(index) else {
+            continue;
+        };
+        let before = canvas
+            .measure(&Text::new(&name[..at], size, accent).medium())
+            .w;
+        let mut buf = [0u8; 4];
+        let letter = Text::new(c.encode_utf8(&mut buf), size, accent).medium();
+        let width = canvas.measure(&letter).w;
+        // Past an ellipsis, a letter isn't there to mark.
+        if before + width > shown - 1.0 {
+            break;
+        }
+        canvas.text_in(
+            &letter,
+            Rect::new(x + before, row.y, width + 1.0, row.h),
+            Align::Start,
+        );
+    }
+}
+
 impl UiApp for Launcher {
     type Message = Message;
 
@@ -502,6 +796,10 @@ impl UiApp for Launcher {
         if self.config.files {
             self.start_files(proxy.clone());
         }
+        // Opened with something typed: look for it as if it had been.
+        if !self.query().is_empty() {
+            self.search();
+        }
         if let Some(listener) = self.toggle.take() {
             let proxy = proxy.clone();
             // Any connection at all is the knock. Not being able to listen
@@ -514,6 +812,10 @@ impl UiApp for Launcher {
                     }
                 });
         }
+        let windows = proxy.clone();
+        windows::load(move |open| {
+            windows.send(Message::Windows(open));
+        });
         let index = self.ctx.paths.cache_dir.join(INDEX);
         let load = move || {
             apps::load_indexed(&index, |apps| {
@@ -542,18 +844,51 @@ impl UiApp for Launcher {
                 }
             }
             Event::Message(Message::Dismiss) => self.presence.close(cx),
+            Event::Message(Message::Windows(windows)) => {
+                let selected = self.selected_key();
+                self.windows = windows;
+                self.rank_apps();
+                self.compose(selected.as_deref());
+                cx.redraw();
+            }
             Event::Key(key) => {
                 if let Some(nav) = key.nav(false) {
                     self.move_selection(nav);
                 } else {
                     match key.key {
                         Key::Escape => return self.presence.close(cx),
-                        Key::Enter => return self.launch_selected(key.mods.ctrl, cx),
-                        _ if !self.edit(&key) => return,
+                        Key::Enter => {
+                            return self.launch_selected(key.mods.ctrl, key.mods.shift, cx);
+                        }
+                        // Nothing selected in the field: copy the row's path
+                        // or answer.
+                        Key::Char('c' | 'C')
+                            if key.mods.ctrl && self.field.selection().is_none() =>
+                        {
+                            if let Some(text) = self.copyable() {
+                                cx.copy(Clip::text(&text));
+                                if let Ok(mut copied) = self.copied.lock() {
+                                    *copied = Some(text);
+                                }
+                            }
+                            return;
+                        }
+                        _ if !self.edit(&key, Some(&mut *cx)) => return,
                         _ => {}
                     }
                 }
                 cx.redraw();
+            }
+            Event::Paste { data, .. } => {
+                // One line: a pasted paragraph is a search for its words.
+                let text = String::from_utf8_lossy(&data);
+                let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !line.is_empty() {
+                    self.field.insert(&line);
+                    self.error = None;
+                    self.search();
+                    cx.redraw();
+                }
             }
             Event::Pointer(PointerEvent::Move { x, y }) => {
                 if let Some(row) = self.rows.iter().position(|row| row.contains(x, y))
@@ -570,7 +905,7 @@ impl UiApp for Launcher {
             }) => {
                 if let Some(row) = self.rows.iter().position(|row| row.contains(x, y)) {
                     self.select(self.offset + row);
-                    self.launch_selected(false, cx);
+                    self.launch_selected(false, false, cx);
                 } else if !self.card.contains(x, y) {
                     self.presence.close(cx);
                 }
@@ -623,88 +958,17 @@ impl UiApp for Launcher {
             search.w - icon_width - space::XS,
             search.h,
         );
-        // What an input method is composing follows what's typed.
-        let preedit = canvas.preedit().cloned();
-        let typed = if self.query.is_empty() && preedit.is_none() {
-            canvas.text_in(
-                &Text::new(self.placeholder(), title, colors.muted),
-                field,
-                Align::Start,
-            );
-            0.0
-        } else if self.query.is_empty() {
-            0.0
-        } else {
-            canvas
-                .text_in(
-                    &Text::new(&self.query, title, colors.text),
-                    field,
-                    Align::Start,
-                )
-                .w
+        // The field: a caret to move, a selection, what an input method is
+        // composing — as in every enso text box.
+        let style = field::Style {
+            size: title,
+            color: colors.text,
+            placeholder: self.placeholder(),
+            placeholder_color: colors.muted,
+            caret: accent,
+            selection: accent.alpha(opacity::TINT * 2.0),
         };
-        let caret_height = title * 1.3;
-        let caret_at = |x: f32| {
-            Rect::new(
-                field.x + x + 1.0,
-                field.y + (field.h - caret_height) / 2.0,
-                2.0,
-                caret_height,
-            )
-        };
-        let mut caret = caret_at(typed);
-        let mut show_caret = true;
-        if let Some(preedit) = &preedit {
-            let measure = |canvas: &mut Canvas<'_>, end: usize| {
-                canvas
-                    .measure(&Text::new(&preedit.text[..end], title, colors.text))
-                    .w
-            };
-            let after = Rect::new(field.x + typed, field.y, field.w - typed, field.h);
-            // What the input method has picked out, under its letters.
-            if let Some(cursor) = preedit.cursor.as_ref().filter(|c| !c.is_empty()) {
-                let start = measure(canvas, cursor.start);
-                let end = measure(canvas, cursor.end);
-                let height = title * 1.4;
-                canvas.fill(
-                    Rect::new(
-                        after.x + start,
-                        field.y + (field.h - height) / 2.0,
-                        end - start,
-                        height,
-                    ),
-                    radius::CONTROL / 2.0,
-                    accent.alpha(opacity::TINT * 2.0),
-                );
-            }
-            let width = canvas
-                .text_in(
-                    &Text::new(&preedit.text, title, colors.text),
-                    after,
-                    Align::Start,
-                )
-                .w;
-            canvas.fill(
-                Rect::new(
-                    after.x,
-                    caret.bottom() - stroke::HAIRLINE,
-                    width,
-                    stroke::HAIRLINE,
-                ),
-                0.0,
-                colors.text,
-            );
-            let at = preedit
-                .cursor
-                .as_ref()
-                .map_or(preedit.text.len(), |c| c.start);
-            caret = caret_at(typed + measure(canvas, at));
-            show_caret = preedit.cursor.as_ref().is_some_and(|c| c.is_empty());
-        }
-        canvas.text_input_at(caret);
-        if show_caret {
-            canvas.fill(caret, 1.0, accent);
-        }
+        self.field.draw(canvas, field, &style, true);
 
         // The rule under the field belongs to the list: it fades in with it.
         let list_open = (list_height / ROW_HEIGHT).min(1.0);
@@ -747,6 +1011,7 @@ impl UiApp for Launcher {
 
             let visible = self.visible_rows();
             let glyphs = canvas.glyphs();
+            let pattern = fuzzy::Pattern::new(self.query());
             for (row_index, entry) in self
                 .results
                 .iter()
@@ -764,24 +1029,62 @@ impl UiApp for Launcher {
                 let chip = Rect::new(content.x, content.y + (content.h - CHIP) / 2.0, CHIP, CHIP);
 
                 let location;
-                let (name, description) = match entry {
-                    Entry::App(index) => {
-                        let app = &self.apps[*index];
-                        // A letter chip stands in for an icon: no icon themes needed.
-                        let tint = colors.get(chip_role(&app.name));
-                        canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT + 0.06));
-                        let initial: String = app
-                            .name
-                            .chars()
-                            .next()
-                            .map(|c| c.to_uppercase().collect())
-                            .unwrap_or_default();
+                let (name, description, hint): (&str, Option<&str>, Option<&str>) = match entry {
+                    Entry::Answer(answer) => {
+                        canvas.fill(chip, radius::CONTROL, accent.alpha(opacity::TINT + 0.06));
                         canvas.text_in(
-                            &Text::new(&initial, base_size, tint).bold(),
+                            &Text::new("=", base_size, accent).bold(),
                             chip,
                             Align::Center,
                         );
-                        (app.name.as_str(), app.description.as_deref())
+                        (answer.as_str(), Some(self.query().trim()), Some("Copy"))
+                    }
+                    Entry::App(index) => {
+                        let app = &self.apps[*index];
+                        letter_chip(canvas, chip, &app.name, base_size, &colors);
+                        // Running: a dot on its chip, and Enter goes there.
+                        let running = self.running(app).is_some();
+                        if running {
+                            canvas.circle(
+                                chip.right() - 1.0,
+                                chip.bottom() - 1.0,
+                                4.0,
+                                colors.surface,
+                            );
+                            canvas.circle(chip.right() - 1.0, chip.bottom() - 1.0, 2.6, accent);
+                        }
+                        let hint = running.then_some("Go to window · Shift+Enter new");
+                        (app.name.as_str(), app.description.as_deref(), hint)
+                    }
+                    Entry::Window(index) => {
+                        let window = &self.windows[*index];
+                        let owner = self.apps.iter().find(|app| app.owns_window(&window.app_id));
+                        let app_name =
+                            owner.map_or(window.app_id.as_str(), |app| app.name.as_str());
+                        letter_chip(canvas, chip, app_name, base_size, &colors);
+                        (window.title.as_str(), Some(app_name), Some("Go to window"))
+                    }
+                    Entry::Action(app, action) => {
+                        let app = &self.apps[*app];
+                        letter_chip(canvas, chip, &app.name, base_size, &colors);
+                        (
+                            app.actions[*action].name.as_str(),
+                            Some(app.name.as_str()),
+                            None,
+                        )
+                    }
+                    Entry::Command(index) => {
+                        let command = &self.commands[*index];
+                        canvas.fill(chip, radius::CONTROL, colors.overlay);
+                        let size = if glyphs { base_size + 3.0 } else { base_size };
+                        canvas.icon(
+                            Icon::new(command.figure, ""),
+                            size,
+                            colors.subtle,
+                            chip,
+                            Align::Center,
+                        );
+                        (command.name.as_str(), None, Some("Run"))
                     }
                     Entry::File(hit) => {
                         // Files are quieter than applications: one glyph,
@@ -800,25 +1103,43 @@ impl UiApp for Launcher {
                             Some(line) => line.clone(),
                             None => hit.location(&self.home),
                         };
-                        (hit.name(), Some(location.as_str()))
+                        (hit.name(), Some(location.as_str()), None)
                     }
                 };
 
+                // What Enter does, on the selected row only.
+                let selected = self.offset + row_index == self.selected;
+                let mut right = content.right();
+                if let Some(hint) = hint.filter(|_| selected) {
+                    let text = Text::new(hint, base_size * type_scale::SMALL, colors.subtle);
+                    let width = canvas.measure(&text).w;
+                    if width < content.w * 0.45 {
+                        canvas.text_in(&text, content, Align::End);
+                        right -= width + space::MD;
+                    }
+                }
+
                 let text_x = chip.right() + space::MD;
-                let available = content.right() - text_x;
-                let name = Text::new(name, base_size, colors.text)
+                let available = right - text_x;
+                let name_text = Text::new(name, base_size, colors.text)
                     .medium()
                     .max_width(available);
                 let name_width = canvas
                     .text_in(
-                        &name,
+                        &name_text,
                         Rect::new(text_x, content.y, available, content.h),
                         Align::Start,
                     )
                     .w;
+                // What was typed, picked out where it matched the name.
+                if !matches!(entry, Entry::Answer(_)) {
+                    highlight_matches(
+                        canvas, &pattern, name, base_size, accent, text_x, content, name_width,
+                    );
+                }
                 if let Some(description) = description {
                     let x = text_x + name_width + space::MD;
-                    let room = content.right() - x;
+                    let room = right - x;
                     if room > 60.0 {
                         let text =
                             Text::new(description, base_size * type_scale::SMALL, colors.muted)
@@ -830,6 +1151,19 @@ impl UiApp for Launcher {
                         );
                     }
                 }
+            }
+        }
+
+        // What went wrong with the last choice, at the foot of the card.
+        if let Some(error) = &self.error {
+            let line = Rect::new(card.x, card.bottom() - ROW_HEIGHT, card.w, ROW_HEIGHT)
+                .inset_xy(space::LG, 0.0);
+            if line.y >= card.y + SEARCH_HEIGHT {
+                canvas.text_in(
+                    &Text::new(error, base_size * type_scale::SMALL, colors.love).max_width(line.w),
+                    line,
+                    Align::Start,
+                );
             }
         }
 
@@ -869,6 +1203,21 @@ mod tests {
             keywords: Vec::new(),
             command: vec!["true".to_owned()],
             terminal: false,
+            fresh: false,
+            wm_class: None,
+            actions: Vec::new(),
+        }
+    }
+
+    /// What a row is called, as the tests read it.
+    fn name_of<'a>(launcher: &'a Launcher, entry: &'a Entry) -> &'a str {
+        match entry {
+            Entry::Answer(answer) => answer,
+            Entry::App(index) => launcher.apps[*index].name.as_str(),
+            Entry::Window(index) => launcher.windows[*index].title.as_str(),
+            Entry::Action(app, action) => launcher.apps[*app].actions[*action].name.as_str(),
+            Entry::Command(index) => launcher.commands[*index].name.as_str(),
+            Entry::File(hit) => hit.name(),
         }
     }
 
@@ -890,10 +1239,12 @@ mod tests {
         launcher
     }
 
-    /// A launcher whose applications have not arrived yet.
+    /// A launcher whose applications have not arrived yet. Its commands
+    /// are left out, so the tests of ranking see applications and files;
+    /// the commands have tests of their own.
     fn unloaded() -> Launcher {
         let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-launch-test"));
-        Launcher::new(
+        let mut launcher = Launcher::new(
             ctx,
             LaunchConfig {
                 max_results: 6,
@@ -901,17 +1252,108 @@ mod tests {
             },
             Background::default(),
             None,
-        )
+        );
+        launcher.commands.clear();
+        launcher
+    }
+
+    fn window(id: u64, app_id: &str, title: &str, focused_at: u64) -> Window {
+        Window {
+            id,
+            app_id: app_id.to_owned(),
+            title: title.to_owned(),
+            focused_at: Some((focused_at, 0)),
+        }
+    }
+
+    #[test]
+    fn a_sum_is_answered_first() {
+        let mut launcher = launcher();
+        type_text(&mut launcher, "12*7.5");
+        assert_eq!(names(&launcher), ["90"]);
+        assert_eq!(launcher.copyable().as_deref(), Some("90"));
+        let frame = settled(&mut launcher);
+        snapshot(&frame, "launch-sum");
+    }
+
+    #[test]
+    fn a_running_application_is_gone_to_and_windows_are_found_by_title() {
+        let mut launcher = launcher();
+        launcher.windows = vec![
+            window(1, "firefox", "Quiet Hours — Mozilla Firefox", 10),
+            window(2, "firefox", "Inbox — Mozilla Firefox", 20),
+            window(3, "Alacritty", "~/dev/enso", 5),
+        ];
+        type_text(&mut launcher, "fire");
+        let app = launcher
+            .apps
+            .iter()
+            .find(|app| app.name == "Firefox")
+            .unwrap();
+        // The most recently used of its windows.
+        assert_eq!(launcher.running(app).map(|w| w.id), Some(2));
+        // Its windows aren't listed again by title: the app says them.
+        assert_eq!(names(&launcher), ["Firefox"]);
+
+        launcher.field.replace_all("");
+        type_text(&mut launcher, "dev/enso");
+        assert_eq!(names(&launcher), ["~/dev/enso"]);
+        let frame = settled(&mut launcher);
+        snapshot(&frame, "launch-window");
+    }
+
+    #[test]
+    fn actions_and_commands_are_found_by_name() {
+        let mut launcher = launcher();
+        let mut apps = launcher.apps.clone();
+        let firefox = apps.iter_mut().find(|app| app.name == "Firefox").unwrap();
+        firefox.actions.push(enso_fs::apps::Shortcut {
+            name: "New Private Window".into(),
+            command: vec!["true".into()],
+        });
+        launcher.set_apps(apps);
+        launcher.commands = commands::all(&launcher.ctx.themes);
+        type_text(&mut launcher, "private");
+        assert_eq!(names(&launcher)[0], "New Private Window");
+
+        launcher.field.replace_all("");
+        type_text(&mut launcher, "lock");
+        assert!(names(&launcher).contains(&"Lock screen"));
+        // Ending the session wants most of the word.
+        launcher.field.replace_all("");
+        type_text(&mut launcher, "re");
+        assert!(!names(&launcher).contains(&"Restart"));
+        type_text(&mut launcher, "st");
+        assert!(names(&launcher).contains(&"Restart"));
+        let frame = settled(&mut launcher);
+        snapshot(&frame, "launch-commands");
+    }
+
+    #[test]
+    fn pasting_and_moving_the_caret_edit_the_query() {
+        let mut launcher = launcher();
+        launcher.field.insert("fox");
+        launcher.edit(&key(Key::Home, false), None);
+        type_text(&mut launcher, "fire");
+        assert_eq!(launcher.query(), "firefox");
+        assert_eq!(names(&launcher), ["Firefox"]);
+    }
+
+    #[test]
+    fn what_went_wrong_is_said_on_the_card() {
+        let mut launcher = launcher();
+        type_text(&mut launcher, "fire");
+        launcher.error = Some("Can't start Firefox: No such file or directory".into());
+        launcher.reflow();
+        let frame = settled(&mut launcher);
+        snapshot(&frame, "launch-error");
     }
 
     fn selected_name(launcher: &Launcher) -> Option<&str> {
         launcher
             .results
             .get(launcher.selected)
-            .map(|entry| match entry {
-                Entry::App(index) => launcher.apps[*index].name.as_str(),
-                Entry::File(hit) => hit.name(),
-            })
+            .map(|entry| name_of(launcher, entry))
     }
 
     fn hit(path: &str, score: i32) -> Hit {
@@ -960,7 +1402,7 @@ mod tests {
 
     fn type_text(launcher: &mut Launcher, text: &str) {
         for c in text.chars() {
-            assert!(launcher.edit(&key(Key::Char(c), false)));
+            assert!(launcher.edit(&key(Key::Char(c), false), None));
         }
     }
 
@@ -968,10 +1410,7 @@ mod tests {
         launcher
             .results
             .iter()
-            .map(|entry| match entry {
-                Entry::App(index) => launcher.apps[*index].name.as_str(),
-                Entry::File(hit) => hit.name(),
-            })
+            .map(|entry| name_of(launcher, entry))
             .collect()
     }
 
@@ -1001,7 +1440,7 @@ mod tests {
         // The caret, and the candidates with it, sit after what's composed.
         assert!(composing.x > typed.x + 8.0, "{typed:?} {composing:?}");
         // Composing isn't typing: the query waits for the commit.
-        assert_eq!(launcher.query, "fi");
+        assert_eq!(launcher.query(), "fi");
     }
 
     #[test]
@@ -1027,7 +1466,7 @@ mod tests {
         assert!(launcher.list_target() > 0.0);
 
         // Clearing the query folds the list away again.
-        launcher.edit(&key(Key::Char('u'), true));
+        launcher.edit(&key(Key::Char('u'), true), None);
         assert!(launcher.results.is_empty());
         assert_eq!(launcher.list_target(), 0.0);
     }
@@ -1042,7 +1481,7 @@ mod tests {
         assert_eq!(launcher.list_target(), 0.0);
 
         launcher.set_apps(vec![app("Files", ""), app("Firefox", "Web Browser")]);
-        assert_eq!(launcher.query, "fire");
+        assert_eq!(launcher.query(), "fire");
         assert_eq!(names(&launcher), ["Firefox"]);
 
         type_text(&mut launcher, "zzz");
@@ -1063,7 +1502,7 @@ mod tests {
             app("Filelight", ""),
             app("Firefox", "Web Browser"),
         ]);
-        assert_eq!(launcher.query, "fi");
+        assert_eq!(launcher.query(), "fi");
         assert_eq!(launcher.results.len(), 3);
         assert_eq!(selected_name(&launcher).unwrap(), "Firefox");
 
@@ -1079,7 +1518,7 @@ mod tests {
         assert_eq!(names(&launcher)[..2], ["Files", "Firefox"]);
 
         // "Text Editor" by name beats Neovim, which only matches by description.
-        launcher.edit(&key(Key::Char('u'), true));
+        launcher.edit(&key(Key::Char('u'), true), None);
         type_text(&mut launcher, "text ed");
         assert_eq!(names(&launcher), ["Text Editor", "Neovim"]);
 
@@ -1092,15 +1531,15 @@ mod tests {
     fn editing_keys() {
         let mut launcher = launcher();
         type_text(&mut launcher, "web brow");
-        launcher.edit(&key(Key::Char('w'), true));
-        assert_eq!(launcher.query, "web ");
-        launcher.edit(&key(Key::Backspace, false));
-        assert_eq!(launcher.query, "web");
-        launcher.edit(&key(Key::Char('u'), true));
-        assert_eq!(launcher.query, "");
+        launcher.edit(&key(Key::Char('w'), true), None);
+        assert_eq!(launcher.query(), "web ");
+        launcher.edit(&key(Key::Backspace, false), None);
+        assert_eq!(launcher.query(), "web");
+        launcher.edit(&key(Key::Char('u'), true), None);
+        assert_eq!(launcher.query(), "");
         // Shortcuts are not typed into the field.
-        assert!(!launcher.edit(&key(Key::Char('x'), true)));
-        assert!(!launcher.edit(&key(Key::Tab, false)));
+        assert!(!launcher.edit(&key(Key::Char('x'), true), None));
+        assert!(!launcher.edit(&key(Key::Tab, false), None));
     }
 
     #[test]
@@ -1190,7 +1629,7 @@ mod tests {
         snapshot(&frame, "launch-files");
 
         // Too short a query asks for no files and drops the old ones.
-        launcher.edit(&key(Key::Backspace, false));
+        launcher.edit(&key(Key::Backspace, false), None);
         assert_eq!(names(&launcher), ["Files"]);
     }
 

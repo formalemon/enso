@@ -30,6 +30,46 @@ pub mod lock {
     pub const BEFORE_SLEEP: bool = true;
 }
 
+/// Do not disturb, as chosen: whether it's on, and when it ends by itself
+/// (seconds since the Unix epoch; `0` when it lasts until turned off). The
+/// notification daemon, the bar's bell, and the control center all read it
+/// here, so they agree on when it's over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct Quiet {
+    #[serde(default)]
+    pub do_not_disturb: bool,
+    #[serde(default)]
+    pub do_not_disturb_until: u64,
+}
+
+impl Quiet {
+    /// As `config.toml` and the interface have it.
+    pub fn read(paths: &Paths) -> Self {
+        section(paths, "notify")
+    }
+
+    /// Whether it holds at `now` (seconds since the epoch).
+    pub fn is_on(self, now: u64) -> bool {
+        self.do_not_disturb && (self.do_not_disturb_until == 0 || now < self.do_not_disturb_until)
+    }
+
+    /// When it ends by itself, if it's on and does.
+    pub fn ends(self, now: u64) -> Option<u64> {
+        (self.is_on(now) && self.do_not_disturb_until > 0).then_some(self.do_not_disturb_until)
+    }
+
+    /// Choose it: on until turned off (`until` 0), on until then, or off.
+    pub fn set(paths: &Paths, on: bool, until: u64) -> io::Result<()> {
+        set(
+            paths,
+            "notify",
+            "do_not_disturb_until",
+            i64::try_from(until).unwrap_or(i64::MAX),
+        )?;
+        set(paths, "notify", "do_not_disturb", on)
+    }
+}
+
 pub fn path(paths: &Paths) -> PathBuf {
     paths.state_dir.join(FILE)
 }

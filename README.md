@@ -3,24 +3,27 @@
 A small, pure-Rust desktop suite for the [Niri](https://github.com/YaLTeR/niri)
 Wayland compositor: a bar, a control center, a launcher, a notification
 daemon, a wallpaper, a power menu, a lock screen, a password prompt, a
-keyring, a file manager, and what's playing — sharing one palette, one set of drawn icons,
-and one way of moving.
+keyring, a file manager, what's playing, clipboard history, and a night
+light — sharing one palette, one set of drawn icons, and one way of moving.
 
 | Tool | What it is | State |
 | --- | --- | --- |
-| `enso-bar` | Status bar: windows and workspaces (Niri IPC), clock, network, battery, notification bell; scroll for volume | working |
-| `enso-launch` | Keyboard-first launcher for applications and files: a bare search field until you type | working |
-| `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history | working |
-| `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, fonts, the cursor, Firefox, Qt, Flatpak | working |
+| `enso-bar` | Status bar, on every screen: windows and workspaces (Niri IPC), clock, network, battery, notification bell; the level as volume, brightness, or the keyboard light changes, a calendar under the clock, and what's out of the ordinary (sharing the screen, a live microphone, muted, kept awake) | working |
+| `enso-launch` | Keyboard-first launcher for applications, files, open windows, sums, and the desktop's own commands: a bare search field until you type | working |
+| `enso-notify` | Freedesktop notification daemon with gliding toasts: actions, pictures, level bars, and a history; low-battery warnings, a button for one-time codes, screenshots that open | working |
+| `enso-ctl` | Control center panel + CLI: battery, Do not disturb, keep awake, night light, Wi-Fi, Bluetooth, sound, brightness, displays, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, fonts, the cursor, Firefox, Qt, Flatpak | working |
+| `enso-clip` | Clipboard history: what's copied, kept in memory for the session, and a card to choose from (Mod+Ctrl+V) | new |
+| `enso-dusk` | Night light: the screens warm at sunset and cool at sunrise, worked out from the timezone; a day and a night theme, if you like | new |
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
-| `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
+| `enso-power` | Power menu: lock, sleep, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: the ensō, a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-greet` | Login screen, as a greeter for greetd: the ensō, your name, and a password; Tab for someone else | working |
 | `enso-boot` | Boot menu, for the firmware: Arch or Windows over rice terraces at dusk, in voxels; then the ensō while Arch starts | new |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
-| `enso-files` | File manager, and the file picker for every app (behind the desktop portal): tabs and a split view, search by name and inside files, previews and thumbnails, archives, git with GitHub and GitLab, drag and drop — keyboard and mouse alike | working |
+| `enso-view` | Image viewer: the pictures of a folder one at a time — zoom, turn, copy, make the wallpaper, throw away; what pictures open in | new |
+| `enso-files` | File manager, and the file picker for every app (behind the desktop portal), and what folders open in: tabs and a split view, search by name and inside files, previews and thumbnails, archives, git with GitHub and GitLab, drag and drop — keyboard and mouse alike | working |
 
 What's not built yet is under [Roadmap](#roadmap); what changed in each
 version is in its [release notes](https://github.com/formalemon/enso/releases).
@@ -73,12 +76,15 @@ spawn-at-startup "enso-notify"
 spawn-at-startup "enso-wall"
 spawn-at-startup "enso-auth"
 spawn-at-startup "enso-lock" "watch"
+spawn-at-startup "enso-clip"
+spawn-at-startup "enso-dusk"
 
 binds {
-    Mod+D { spawn "enso-launch"; }   // press again to close
+    Mod+Space { spawn "enso-launch"; }   // press again to close
+    Mod+Ctrl+V { spawn "enso-clip" "pick"; }   // what was copied
     Mod+C { spawn "enso-ctl"; }
     Mod+P { spawn "enso-play"; }     // what's playing; again to close
-    Mod+Escape { spawn "enso-power"; }   // then l, o, r, or s
+    Mod+Shift+E { spawn "enso-power"; }  // then l, p, o, r, or s
     Super+Alt+L { spawn "enso-lock"; }
 
     XF86MonBrightnessUp   allow-when-locked=true { spawn "enso-ctl" "brightness" "up"; }
@@ -122,7 +128,7 @@ crates/
                  archives, git, search
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
   enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
-  enso-play/  enso-greet/  enso-boot/                            the binaries
+  enso-play/  enso-greet/  enso-boot/  enso-clip/  enso-dusk/   the binaries
   enso-scene/    the boot menu's picture: terraces, river, mountains, computed
 config.example.toml   every config key with its default
 contrib/              udev rules: the power profile, and udisks for wheel
@@ -272,6 +278,37 @@ while one is open leaves it as it is.
 
 Without `enso-ctl` or `enso-notify` installed the island is simply a readout.
 
+**A bar on every screen.** `enso-bar` on its own draws nothing: it keeps
+one `enso-bar --output NAME` on each screen, starting one as a screen is
+plugged in, ending it as it goes, and starting it again if it falls over.
+Each shows its own screen's workspaces, and what it opens — the control
+center, the calendar, what's playing — comes up on that screen (it hands
+`$ENSO_OUTPUT` down). `outputs = ["eDP-1"]` under `[bar]` keeps it to
+the screens named.
+
+**The island answers.** Turning the volume — the keys, a scroll on the
+island, a headset's buttons, an application — or the brightness, or
+muting the microphone, or the keyboard's light, widens the island to the
+left into the level: a speaker (a sun, a microphone, a keyboard), a track
+filled as far as it goes, and the figure; a moment after the last change it folds back into its icons. The
+bar follows the sound server for the volume, and the backlight itself for
+the brightness (the kernel announces each new level), so it shows whatever
+changed it. The keyboard's light shows when its own keys change it, which
+many laptops handle in the firmware.
+
+What's out of the ordinary shows on the island while it lasts, ahead of
+the rest, and goes when it's over:
+
+- **Sharing the screen**, in love, while anything records it (niri says);
+  a click on it stops the sharing.
+- **A microphone in use**, in love, while an application listens to it —
+  struck through, quietly, when it listens but the microphone is muted.
+- **Muted**: the speaker struck through.
+- **Kept awake**: a cup (see `enso-ctl`).
+- **The keyboard layout** (`US`, `RU`), when there's more than one.
+
+With **Do not disturb** on, the bell is drawn quiet and struck through.
+
 The clock in the middle knows **what's playing**. While anything plays its
 pill turns to sea at dusk — the theme's iris in the deep water, rising
 through three waves rolling across it at their own speeds to a rose one in
@@ -280,10 +317,17 @@ in front of it all along. Every twenty seconds or so a set rolls in: a
 swell sweeps across from the left, lifting the far waves first and the
 nearest highest, a line of foam along its crest. The sea moves thirty times a second, not every frame: about one percent of a core
 while it plays, nothing at rest. Rest the pointer on the clock and `enso-play` hangs a card
-beneath it (with nothing playing, nothing opens); click it to play or
-pause. The bar learns what plays from `enso-play follow`, so it still
-speaks no D-Bus itself. `now_playing = false` under `[bar]` turns all of
-it off.
+beneath it; click it to play or pause. The bar learns what plays from
+`enso-play follow`, so it still speaks no D-Bus itself. `now_playing =
+false` under `[bar]` turns all of it off.
+
+With nothing playing, resting on the clock hangs **the month** there
+instead: today in the accent, the arrows (or a scroll) for the months
+around it, a click on its name to come back. It's this bar run again
+(`enso-bar --dropdown`); `calendar = false` under `[bar]` turns it off.
+
+Resting on a window's dot, the clock says **which window it is** — its
+title, or its application — gliding to the width of the words and back.
 
 **`enso-play`** — one small card for any media player on the session bus
 (MPRIS): a YouTube tab in Firefox, Spotify, mpv. The cover on the left (the
@@ -306,11 +350,20 @@ Covers Firefox keeps on disk are read where they are; covers on the web
 (Spotify's) are fetched once into `~/.cache/enso/covers`.
 
 **`enso-ctl`** — one card. The first page is the glance and the quick
-controls: the power profile and the CPU's temperature and fan speed (the
-battery is the bar's); a slider each for screen brightness and volume; and
-a row each for Wi-Fi and Bluetooth, with their on/off switch. Tiles show
-only what the machine has, so a desktop without power profiles shows the
-temperature alone.
+controls. Tiles first: the battery, with how long it lasts (or how long
+until it's full — or until the limit, where the system stops charging
+short of full to spare the battery; held there, it says *Kept at 80 %*); the power profile, with the CPU's temperature and fan
+speed under it; then **Do not disturb** and **Keep awake**, two switches
+lit in the accent while on, saying until when if they end by themselves.
+Then a slider each for screen brightness and volume, and a row each for
+Wi-Fi and Bluetooth, with their on/off switch. Tiles show only what the
+machine has, so a desktop without power profiles shows the temperature
+alone.
+
+Keep awake holds off the idle lock (`enso-lock watch`) — for a talk, a
+long read, a build to watch — and a cup on the bar says it's on. The
+brightness slider ends in a moon, with enso-dusk installed: night light,
+the other way from now until the next sunset or sunrise.
 
 The volume row's speaker is its mute button and its track is the slider;
 anywhere else on the row leads to the Sound page.
@@ -331,10 +384,20 @@ A row opens a page of its own:
   its level, and the microphones to choose between.
 - **Theme**, from Settings, is the picker. Choosing one themes everything
   `theme set` does: see [Theming](#theming).
+- **Displays**, from Settings: each screen niri drives — its resolution and
+  refresh and its scale, stepped with the arrows (or `h`/`l`), variable
+  refresh where it can, and on or off when there's more than one. niri
+  applies each at once, and enso-ctl keeps each screen changed here, whole,
+  in `~/.local/state/enso/outputs.kdl`, so niri starts with it too. niri
+  reads the first section it finds for a screen, so its config includes that
+  file ahead of its own outputs (sumi does); remove a screen's section to go
+  back.
 
 Beside the first page, a sideways swipe on the touchpad away — or `Tab`,
 the page keys, or the dots at the card's foot — is **Settings**: the theme,
-**Do not disturb**, and the screen and sleep: how long the machine sits
+**Do not disturb** — stepped with its arrows from off to an hour, three
+hours, until the morning, and on, saying until when — and the screen and
+sleep: how long the machine sits
 idle before the screen locks, how long the lock screen waits before turning
 the screens off and before putting the machine to sleep, and whether it
 locks just before sleeping. Each time steps with its arrows (or `h`/`l`).
@@ -345,7 +408,8 @@ notification daemon and the lock watcher follow it at once.
 Keys: `j`/`k` or arrows move; `Enter` or `l` opens or chooses; `h`, `Esc`, or
 `Backspace` goes back; `h`/`l` adjust a slider or a time; `Tab` turns to the
 page beside; `m` mutes; `Space` flips the switch of the row or page; `p`
-cycles the power profile; `q` closes.
+cycles the power profile; `d` Do not disturb, `a` keep awake, `n` night
+light; `q` closes.
 
 Opened from a key binding the panel takes the keyboard. Opened from the bar
 it never does — hovering must not steal your typing — except for as long as a
@@ -366,7 +430,16 @@ enso-ctl volume output buds         # play through another device
 enso-ctl mic toggle                 # microphone on/off; `mic 70`, `mic input webcam`
 enso-ctl profile next
 enso-ctl power
+enso-ctl dnd 1h                     # Do not disturb for an hour; on, off, toggle
+enso-ctl awake 2h                   # keep awake for two hours; on, off, toggle
+enso-ctl copy some text             # on the clipboard, kept there from the background
+enso-ctl colour                     # pick a colour from the screen: its hex is copied
+enso-ctl --page wifi                # open on a page: settings, wifi, bluetooth,
+                                    # sound, displays, theme (an open one turns to it)
 ```
+
+Raising the volume (or the microphone's level) unmutes it, as every
+desktop's volume keys do.
 
 A passphrase is never taken from the command line, where other users could
 read it: it is typed unseen at the terminal, or piped in.
@@ -385,7 +458,11 @@ once you type: applications from the first letter, files from the second,
 listed under the applications. `Enter` launches the application or opens the
 file with whatever the desktop associates with its type; `Ctrl+Enter` opens
 the folder a file is in. Running `enso-launch` while it is open closes it, so
-one key binding toggles it. What you chose before ranks a little higher next
+one key binding toggles it. The control center's pages are there by name and
+by what they're for — *Settings*, *Wi-Fi*, *Sound*, *Displays* (or
+"resolution"), *Appearance* — and a terminal always opens a new window,
+where a running application is gone to. `enso-launch --query =` opens with
+a sum begun (sumi binds the calculator key to it). What you chose before ranks a little higher next
 time.
 
 Everything is gathered on background threads, so the field is on screen
@@ -452,6 +529,29 @@ Python virtual environment under any name — is listed but not entered.
 each match's line, and gives way the moment the query changes.
 `enso-launch --find '"words'` does it from a terminal.
 
+Beyond applications and files:
+
+- **A running application is gone to.** Typing one that's open marks its
+  chip with a dot, and `Enter` brings its most recent window forward
+  (niri's windows, by their app id); `Shift+Enter` opens another.
+  **Windows are found by their title** too — a page, a folder, a document.
+- **Sums are worked out**: `12*7.5`, `2^10`, `sqrt(2)`, `80*15%`, listed
+  first; `Enter` copies the answer, which stays on the clipboard after the
+  launcher has gone.
+- **An application's actions** — New Private Window, New Document — by
+  their names.
+- **The desktop's own commands**: lock, sleep, a theme by name, Wi-Fi or
+  Bluetooth off, Do not disturb (or for an hour), keep awake, night light,
+  pick a colour. Logging out, restarting, and shutting down are listed only
+  once most of their name is typed, so a stray `Enter` never ends the
+  session.
+
+The field is the suite's own: arrows and `Home`/`End` move the caret,
+`Ctrl+V` pastes, and `Ctrl+C` copies a file's path or a sum's answer.
+Letters that matched are picked out in the accent; the selected row says
+what `Enter` will do. If something can't start, the card stays and says
+why.
+
 Opening a file uses the freedesktop databases directly — the shared MIME
 database for the type, `mimeapps.list` and `mimeinfo.cache` for the
 application — rather than `xdg-open`. Where nothing is associated, a text
@@ -474,9 +574,21 @@ showing.
   `notify-send -h int:value:60 -h string:x-canonical-private-synchronous:volume Volume`.
 - **Markup** in the body is understood and shown as plain text.
 - **Reading time.** Nothing expires while the pointer is on the toasts.
-- **Do not disturb** (`do_not_disturb`, or the control center's Settings):
-  notifications go quietly to the history, and the bell counts them;
-  critical ones — a battery about to run out — still show.
+- **Do not disturb** (`do_not_disturb`, the control center, or
+  `enso-ctl dnd 1h` for a while): notifications go quietly to the
+  history, and the bell counts them; critical ones — a battery about to
+  run out — still show.
+- **Low battery.** The daemon looks at the battery itself every half
+  minute and warns at 10 % and, critically, at 5 %, with how long is left
+  and a *Sleep now* button. Plugging in takes the warnings away.
+- **One-time codes.** A message that carries one ("Your code is 482 913")
+  gets a *Copy 482913* button.
+- **Pictures that are files.** A toast whose picture is a file of yours,
+  from a sender offering nothing to do with it — niri's "Screenshot
+  captured" — opens the picture when clicked, and has *Open* and *Show in
+  Files*.
+- **For now only.** A notification marked `transient` shows as a toast
+  and is never kept in the history or counted by the bell.
 - **History.** `enso-notify history` — or a click on the bar's bell — opens
   a card where the toasts appear, listing the last 50 notifications, newest
   first. Five show at once and the rest are a scroll away: the list glides
@@ -527,18 +639,18 @@ shimmer), handed to the compositor, and let go: at rest the process holds no
 pixels at all — about 5 MB — and wakes for nothing but a theme, a wallpaper,
 or a monitor changing.
 
-**`enso-power`** — a row of four: Lock, Log out, Restart, Shut down. Each has
-a key, a letter of its own name marked there in the choice's colour — the
-**L** of Lock, the **o** of Log *o*ut, the **R** of Restart, the **S** of Shut
-down — so leaving is the binding that opens the menu and one letter. Landing
+**`enso-power`** — a row of five: Lock, Sleep, Log out, Restart, Shut down.
+Each has a key, a letter of its own name marked there in the choice's colour
+— the **L** of Lock, the **p** of Slee*p* (the S being Shut down's), the **o**
+of Log *o*ut, the **R** of Restart, the **S** of Shut down — so leaving is the
+binding that opens the menu and one letter. Landing
 on a choice sends a glint of light across its letter, with a small sparkle
 at its shoulder, once. The three that end the session ask for the letter (or `Enter`)
 a second time — the tile warms and a line says what a second press does —
 and `Esc` takes the question back before it closes the menu. Arrows, `Tab`,
 `j`/`k`, and `Ctrl+n`/`Ctrl+p` move; a click chooses; a click outside or a
 second `enso-power` closes. `confirm = false` under `[power]` makes every
-choice immediate, and `actions` picks and orders the tiles (`"suspend"` adds
-Sleep, on the **p** of Slee*p*, the S being Shut down's). Each choice takes the
+choice immediate, and `actions` picks and orders the tiles. Each choice takes the
 first free letter of its name, in a fixed order of who chooses first, so the
 letters never clash however the tiles are ordered.
 
@@ -575,7 +687,8 @@ A locked machine is one nobody is looking at, so it is made a quiet one:
 
 Nothing in the session is stopped — music keeps playing, a build keeps
 building, only slower — so unlocking returns to exactly what was left, with
-no windows to wake.
+no windows to wake. A laptop running low on battery says so at the foot of
+the lock screen (20 % and under), so one left locked doesn't die unnoticed.
 
 **Locking without being asked** is `enso-lock watch`: started with the
 session, it draws nothing and runs the lock screen at the two moments nobody
@@ -595,6 +708,11 @@ spawn-at-startup "enso-lock" "watch"
 All four — `idle_after`, `screen_off_after`, `suspend_after`, and
 `before_sleep` — can be changed from the control center's Settings page as
 well as in `config.toml`; the watcher picks up a change at once.
+
+**Kept awake** (the control center's tile, or `enso-ctl awake 1h`), being
+left alone doesn't lock the machine. When that ends — its time runs out, or
+it's turned off — while nobody is there, the lock comes then, as it would
+have.
 
 Only one lock screen runs at a time: a second, from the key while the first
 is up, steps aside.
@@ -676,7 +794,8 @@ spawn-at-startup "enso-auth"
 ```
 
 Each question is one card over the dimmed screen, the same for all of them.
-For polkit: what is being asked and by which program, who answers (a choice,
+For polkit: what is being asked and by which program (by its application's
+name where one owns it: *Files (enso-files)*), who answers (a choice,
 `←`/`→` or `Tab`, when polkit would take any administrator), and a field that
 fills with dots; a wrong password shakes it, Caps Lock is pointed out, and
 anything PAM says — a second factor's question, "the account is locked" —
@@ -700,7 +819,8 @@ from anyone else are refused. If either service restarts, the agent
 registers again.
 
 **`enso-files`** — a file manager, and every application's file chooser
-once `enso-files portal enable` has run. The window is a list (or a grid
+once `enso-files portal enable` has run — which also lists it as *Files*
+and makes it what folders open in, unless something else was chosen. The window is a list (or a grid
 of thumbnails, or columns: `Ctrl+1/2/3`) with the places, bookmarks,
 drives, and the trash down the side; each folder keeps its own view, sort,
 and dotfiles once you change them, and Settings (`Ctrl+,`) sets the rest.
@@ -747,6 +867,17 @@ As the file picker, behind the desktop portal, it answers every "Open…"
 and "Save as…" — Firefox, Chromium, Electron, Flatpaks — in the window of
 the program that asked, and remembers each program's folder.
 
+**Sharing the screen** goes through the same portal, to
+[xdg-desktop-portal-gnome](https://gitlab.gnome.org/GNOME/xdg-desktop-portal-gnome):
+niri speaks GNOME's screen-casting interface, and that portal is what
+turns it into the one browsers, Discord, and OBS ask for. With it
+installed, calls can share a screen or a window. The portal links the
+system's portal files again each time it starts (`enso-files portal
+refresh`, run from its drop-in), so installing it later needs nothing
+more than the portal starting again; `enso-files portal status` says
+whether it's there. While anything shares, the bar shows it, and a click
+there stops it.
+
 **`enso-keyring`** — where programs keep passwords and tokens: the Secret
 Service (`org.freedesktop.secrets`), which gh, git (with
 `credential.helper = /usr/lib/git-core/git-credential-libsecret`), VS Code,
@@ -774,6 +905,70 @@ to no TPM registers, it survives firmware and Secure Boot updates; only
 clearing the TPM loses it, and then the card says so and starts a new one,
 keeping the old file beside it. `enso-keyring lock` locks it;
 `enso-keyring status` says how it stands.
+
+**`enso-clip`** — clipboard history. Started with the session, it keeps
+what's copied — text, and pictures — for as long as the session lasts:
+the last 50, in `$XDG_RUNTIME_DIR/enso-clip` (memory, readable by you
+alone, never written to the disk). It watches the clipboard through
+`ext-data-control`, the protocol clipboard managers use, and:
+
+- **Keeps the newest on the clipboard** after the program that copied it
+  quits, so what was copied from a window since closed still pastes.
+- **Never reads a secret**: what a password manager marks so
+  (`x-kde-passwordManagerHint`) isn't kept, or even looked at.
+
+`enso-clip pick` (Mod+Ctrl+V in sumi) opens the history as a card like
+the launcher's: newest first, pictures as thumbnails, a field to narrow it
+down. `Enter` puts the chosen one on the clipboard, ready to paste;
+`Delete` forgets it. `enso-clip list` prints it; `enso-clip clear`
+forgets everything.
+
+```kdl
+spawn-at-startup "enso-clip"
+binds { Mod+Ctrl+V { spawn "enso-clip" "pick"; } }
+```
+
+**`enso-dusk`** — night light. Started with the session, it holds every
+screen's gamma (`wlr-gamma-control`) and warms it from sunset to sunrise,
+changing over half an hour centred on each (`fade`), to `warmth` kelvin
+(3500). When the sun sets is worked out here, from nothing but the
+timezone: the timezone database knows where each zone's city is
+(`zone1970.tab`), which is near enough — `latitude` and `longitude` under
+`[dusk]` win over it. In between it sleeps until the light next turns.
+
+Turned on or off by hand — the control center's moon, `n` there, the
+launcher's *Night light*, `enso-dusk toggle` — it stays that way until the
+next sunset or sunrise, and then the sun has its say again. `enso-dusk on`,
+`off`, and `sun` are for good; `enso-dusk status` says how it stands, and
+today's sunrise and sunset.
+
+Given `day_theme` and `night_theme` (`rose-pine-dawn` and
+`rose-pine-moon`, say), it switches the whole desktop's theme at sunrise
+and sunset too — unless a third theme was chosen by hand, which it leaves
+alone.
+
+```kdl
+spawn-at-startup "enso-dusk"
+```
+
+**`enso-view`** — pictures, one at a time, in a window of their own: as
+large as fits (never enlarged to fit), on the theme's base colour, with a
+quiet line under it — the name, which of how many, its size, the zoom — that
+is there while you move and gone when you look. Opened on a picture it steps
+through the others in its folder, in the order a file manager lists them,
+reading the next ahead. A photo is turned the way the camera was held
+(EXIF), here and everywhere enso shows pictures.
+
+`Right`/`Space` and `Left`/`Backspace` step, `Home`/`End` go to the ends;
+`+`/`-` or the wheel zoom about the pointer, `0` fits, `1` or a
+double-click shows every pixel, and a drag moves about; `r`/`R` turn it;
+`Ctrl+C` copies the picture itself; `w` makes it the wallpaper
+(`enso-wall set`); `Delete` moves it to the trash and `Ctrl+Z` puts it
+back; `e` shows it in Files.
+
+`enso-view enable` makes it what PNG, JPEG, WebP, and GIF open in (those
+nothing else was chosen for), with a desktop entry that stays out of the
+launcher; `enso-view disable` gives them back.
 
 ## Theming
 
@@ -993,9 +1188,8 @@ one.
 - **enso-launch** — Git's global excludes file and `.git/info/exclude`.
 - **enso-notify** — keeping pictures in the saved history; styled (bold,
   italic) body text.
-- **enso-bar** — one bar per output.
-- **enso-wall** — a picture per output; honouring a photograph's EXIF
-  rotation.
+- **enso-wall** — a picture per output.
+- **enso-view** — animated GIFs; a slideshow.
 - **enso-lock** — authentication beyond the password (fingerprint), which
   means PAM.
 - **enso-boot** — a picture for other screen sizes than 16:9 at 1080p

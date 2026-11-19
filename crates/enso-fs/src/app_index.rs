@@ -11,15 +11,18 @@ use std::{fs, io, path::Path};
 
 use enso_core::disk;
 
-use crate::apps::App;
+use crate::apps::{App, Shortcut};
 
 /// First line of the file. Bump the number when the format changes; older
 /// files are then ignored and rewritten.
-const HEADER: &str = "enso-launch index 1";
+const HEADER: &str = "enso-launch index 3";
 /// Separates fields within a line.
 const FIELD: char = '\t';
 /// Ends each item of a list field.
 const ITEM: char = '\x1f';
+/// Separates an action's name from its command's arguments, and those
+/// arguments from each other, within one item.
+const PART: char = '\x1e';
 
 /// The saved index, if there is a usable one.
 pub fn read(path: &Path) -> Option<Vec<App>> {
@@ -51,6 +54,19 @@ fn encode(apps: &[App]) -> String {
             out.push(FIELD);
         }
         out.push(if app.terminal { '1' } else { '0' });
+        out.push(FIELD);
+        out.push(if app.fresh { '1' } else { '0' });
+        out.push(FIELD);
+        escape(app.wm_class.as_deref().unwrap_or_default(), &mut out);
+        out.push(FIELD);
+        for action in &app.actions {
+            escape(&action.name, &mut out);
+            for arg in &action.command {
+                out.push(PART);
+                escape(arg, &mut out);
+            }
+            out.push(ITEM);
+        }
         out.push('\n');
     }
     out
@@ -73,15 +89,32 @@ fn decode(text: &str) -> Option<Vec<App>> {
                 description: Some(unescape(fields.next()?)).filter(|text| !text.is_empty()),
                 keywords: list(fields.next()?),
                 command: list(fields.next()?),
-                terminal: match fields.next()? {
-                    "1" => true,
-                    "0" => false,
-                    _ => return None,
-                },
+                terminal: flag(fields.next()?)?,
+                fresh: flag(fields.next()?)?,
+                wm_class: Some(unescape(fields.next()?)).filter(|class| !class.is_empty()),
+                actions: fields
+                    .next()?
+                    .split_terminator(ITEM)
+                    .map(|item| {
+                        let mut parts = item.split(PART).map(unescape);
+                        Shortcut {
+                            name: parts.next().unwrap_or_default(),
+                            command: parts.collect(),
+                        }
+                    })
+                    .collect(),
             };
             fields.next().is_none().then_some(app)
         })
         .collect()
+}
+
+fn flag(field: &str) -> Option<bool> {
+    match field {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// Write `text` with the characters the format gives meaning to escaped.
@@ -92,6 +125,7 @@ fn escape(text: &str, out: &mut String) {
             '\n' => out.push_str("\\n"),
             FIELD => out.push_str("\\t"),
             ITEM => out.push_str("\\i"),
+            PART => out.push_str("\\p"),
             c => out.push(c),
         }
     }
@@ -109,6 +143,7 @@ fn unescape(text: &str) -> String {
             Some('n') => out.push('\n'),
             Some('t') => out.push(FIELD),
             Some('i') => out.push(ITEM),
+            Some('p') => out.push(PART),
             Some(other) => out.push(other),
             None => {}
         }
@@ -128,6 +163,9 @@ mod tests {
             keywords: Vec::new(),
             command: vec![name.to_lowercase()],
             terminal: false,
+            fresh: false,
+            wm_class: None,
+            actions: Vec::new(),
         }
     }
 
@@ -148,6 +186,15 @@ mod tests {
                     String::new(),
                 ],
                 terminal: true,
+                fresh: true,
+                wm_class: Some("Tricky\x1eclass".into()),
+                actions: vec![
+                    Shortcut {
+                        name: "New\x1fwindow".into(),
+                        command: vec!["tricky".into(), String::new(), "--new\x1e".into()],
+                    },
+                    Shortcut::default(),
+                ],
             },
             App {
                 command: Vec::new(),
@@ -163,13 +210,13 @@ mod tests {
         let good = encode(&[app("Files"), app("Notes")]);
         assert!(decode(&good).is_some());
         // Another version, an empty or foreign file.
-        assert_eq!(decode(&good.replace("index 1", "index 2")), None);
+        assert_eq!(decode(&good.replace("index 3", "index 2")), None);
         assert_eq!(decode(""), None);
         assert_eq!(decode("[Desktop Entry]\nName=Files\n"), None);
         // A record cut short, or with a field too many.
         assert_eq!(decode(&good[..good.len() - 4]), None);
-        assert_eq!(decode(&good.replace("\t0\n", "\t0\textra\n")), None);
-        assert_eq!(decode(&good.replace("\t0\n", "\tyes\n")), None);
+        assert_eq!(decode(&good.replace("\t0\t0\t\t\n", "\t0\t0\t\t\textra\n")), None);
+        assert_eq!(decode(&good.replace("\t0\t0\t\t\n", "\tyes\t0\t\t\n")), None);
     }
 
     #[test]

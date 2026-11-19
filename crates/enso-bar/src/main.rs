@@ -12,11 +12,15 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bar;
+mod calendar;
 mod config;
 mod dropdown;
+mod every;
 mod icons;
+mod light;
 mod music;
 mod niri;
+mod osd;
 mod sound;
 mod water;
 
@@ -29,7 +33,13 @@ enso-bar — minimal Wayland status bar for Niri
 
 Usage: enso-bar [OPTIONS]
 
+With no options, a bar on every screen, coming and going with the screens.
+
 Options:
+  --output NAME             only the bar on this screen (`niri msg outputs`
+                            names them)
+  --dropdown[=top|bottom]   show the month under the clock, as the bar does
+                            while the pointer rests there and nothing plays
   -h, --help       Print this help
   -V, --version    Print the version
 
@@ -51,20 +61,59 @@ Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
                                    the status island
   now_playing = true               the clock's sea while something plays,
                                    enso-play under it, a click to pause
+  calendar = true                  the month under the clock while the
+                                   pointer rests there and nothing plays
   opacity  = 0.9                   how solid the islands are, 0.0 to 1.0
+  outputs  = []                    the screens to have a bar, by name; none
+                                   listed: every screen
 ";
 
+/// What was asked for.
+enum Mode {
+    /// A bar on every screen.
+    Every,
+    /// The bar on one screen.
+    On(String),
+    /// The calendar, hanging from this edge.
+    Calendar(calendar::Edge),
+}
+
 fn main() -> ExitCode {
-    if let Err(code) = parse_args() {
-        return code;
-    }
+    let output = match parse_args() {
+        Err(code) => return code,
+        Ok(Mode::Calendar(edge)) => {
+            return match calendar::run(edge) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("enso-bar: {err}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Ok(Mode::Every) => {
+            let mut ctx = Context::load();
+            let config: config::BarConfig = ctx.section("bar");
+            ctx.report_warnings("enso-bar");
+            return match every::run(&config.outputs) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("enso-bar: {err}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Ok(Mode::On(output)) => {
+            every::end_with_the_watcher();
+            output
+        }
+    };
 
     let mut ctx = Context::load();
     let config = ctx.section("bar");
     ctx.report_warnings("enso-bar");
     let appearance = ctx.config.appearance.clone();
 
-    match enso_ui::run(bar::Bar::new(ctx, config), &appearance) {
+    match enso_ui::run(bar::Bar::new(ctx, config).on(output), &appearance) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("enso-bar: {err}");
@@ -73,13 +122,34 @@ fn main() -> ExitCode {
     }
 }
 
-/// Handle `--help`/`--version`; `Err` carries the exit code to stop with.
-fn parse_args() -> Result<(), ExitCode> {
+/// Handle `--help`/`--version`, `--output`, and `--dropdown` (the
+/// calendar, on this edge); `Err` carries the exit code to stop with.
+fn parse_args() -> Result<Mode, ExitCode> {
     use lexopt::prelude::*;
 
     // There are no other options, so the first argument decides.
-    match lexopt::Parser::from_env().next() {
-        Ok(None) => Ok(()),
+    let mut parser = lexopt::Parser::from_env();
+    match parser.next() {
+        Ok(None) => Ok(Mode::Every),
+        Ok(Some(Long("output"))) => match parser.value().map(|value| value.string()) {
+            Ok(Ok(name)) => Ok(Mode::On(name)),
+            Ok(Err(err)) | Err(err) => {
+                eprintln!("enso-bar: {err}");
+                Err(ExitCode::from(2))
+            }
+        },
+        Ok(Some(Long("dropdown"))) => match parser.optional_value() {
+            None => Ok(Mode::Calendar(calendar::Edge::Top)),
+            Some(edge) if edge == "top" => Ok(Mode::Calendar(calendar::Edge::Top)),
+            Some(edge) if edge == "bottom" => Ok(Mode::Calendar(calendar::Edge::Bottom)),
+            Some(edge) => {
+                eprintln!(
+                    "enso-bar: --dropdown is top or bottom, not {}",
+                    edge.to_string_lossy()
+                );
+                Err(ExitCode::from(2))
+            }
+        },
         Ok(Some(Short('h') | Long("help"))) => {
             print!("{HELP}");
             Err(ExitCode::SUCCESS)

@@ -36,8 +36,21 @@ const CHEVRON: f32 = 18.0;
 const READING: f32 = 40.0;
 /// Width kept for a time between its arrows.
 const TIME: f32 = 56.0;
+/// The same for how long Do not disturb lasts: `Until 14:30`.
+const UNTIL: f32 = 76.0;
 
-/// A small labelled reading in the summary row.
+/// What a stepping row shows at its end.
+struct Steps<'a> {
+    text: &'a str,
+    width: f32,
+    /// Whether there is a choice before this one, and after it.
+    sooner: bool,
+    later: bool,
+    /// What the arrows do.
+    hits: (Hit, Hit),
+}
+
+/// A small labelled tile: a reading, or a switch.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Tile {
     icon: Icon,
@@ -45,34 +58,122 @@ pub(super) struct Tile {
     label: String,
     /// What a click on it does, if anything.
     hit: Option<Hit>,
+    /// A switch: lit while on.
+    on: Option<bool>,
 }
 
-/// The readings worth a tile, in order: those the machine has.
-pub(super) fn tiles(hardware: &Hardware) -> Vec<Tile> {
-    let mut tiles = Vec::new();
-    // The battery is the bar's to show: it is always in sight there.
-    if let Some(profile) = &hardware.profile {
-        tiles.push(Tile {
-            icon: icon::POWER_PROFILE,
-            value: capitalised(&profile.current),
-            label: "Profile".to_owned(),
-            hit: Some(Hit::Profile),
+/// What the switches stand at, for their tiles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Switches {
+    /// Do not disturb: on, and when it ends (0: when it's turned off).
+    pub quiet: Option<u64>,
+    /// Keeping awake: on, and when it ends.
+    pub awake: Option<u64>,
+}
+
+/// The tiles, in rows of two: the readings the machine has — the battery,
+/// how hard it's working — then the two switches everybody reaches for.
+pub(super) fn tiles(hardware: &Hardware, switches: Switches) -> Vec<Vec<Tile>> {
+    let mut readings = Vec::new();
+    if let Some(battery) = &hardware.battery {
+        readings.push(Tile {
+            icon: if battery.is_plugged_in() {
+                icon::BATTERY_CHARGING
+            } else {
+                icon::BATTERY
+            },
+            value: format!("{}%", battery.percent.min(100)),
+            label: battery_label(battery),
+            hit: None,
+            on: None,
         });
     }
-    if let Some(temperature) = hardware.temperature {
-        // The fastest fan says how hard the machine is working.
+    // The fastest fan says how hard the machine is working.
+    let working = hardware.temperature.map(|temperature| {
+        match hardware.fans.iter().map(|fan| fan.rpm).max() {
+            Some(rpm) if rpm > 0 => format!("{temperature:.0}° · {rpm} rpm"),
+            _ => format!("{temperature:.0}°"),
+        }
+    });
+    if let Some(profile) = &hardware.profile {
+        readings.push(Tile {
+            icon: icon::POWER_PROFILE,
+            value: capitalised(&profile.current),
+            label: working.unwrap_or_else(|| "Profile".to_owned()),
+            hit: Some(Hit::Profile),
+            on: None,
+        });
+    } else if let Some(temperature) = hardware.temperature {
         let label = match hardware.fans.iter().map(|fan| fan.rpm).max() {
             Some(rpm) if rpm > 0 => format!("{rpm} rpm"),
             _ => "CPU".to_owned(),
         };
-        tiles.push(Tile {
+        readings.push(Tile {
             icon: icon::THERMOMETER,
             value: format!("{temperature:.0}°"),
             label,
             hit: None,
+            on: None,
         });
     }
-    tiles
+    let until = |state: Option<u64>| match state {
+        None => "Off".to_owned(),
+        Some(0) => "On".to_owned(),
+        Some(at) => format!("Until {}", crate::commands::clock_at(at)),
+    };
+    let toggles = vec![
+        Tile {
+            icon: if switches.quiet.is_some() {
+                icon::BELL_OFF
+            } else {
+                icon::BELL
+            },
+            value: "Do not disturb".to_owned(),
+            label: until(switches.quiet),
+            hit: Some(Hit::Quiet),
+            on: Some(switches.quiet.is_some()),
+        },
+        Tile {
+            icon: icon::CUP,
+            value: "Keep awake".to_owned(),
+            label: until(switches.awake),
+            hit: Some(Hit::Awake),
+            on: Some(switches.awake.is_some()),
+        },
+    ];
+    let mut rows: Vec<Vec<Tile>> = readings.chunks(2).map(<[Tile]>::to_vec).collect();
+    rows.push(toggles);
+    rows
+}
+
+/// What the battery's tile says under its figure: how long it lasts, or
+/// how long until it's full.
+fn battery_label(battery: &enso_sys::power::Battery) -> String {
+    use enso_sys::power::BatteryStatus;
+    let span = |minutes: u32| match minutes {
+        m if m >= 60 => format!("{} h {} min", m / 60, m % 60),
+        m => format!("{m} min"),
+    };
+    if battery.is_held() {
+        // Not a fault: the system stops there to spare the battery.
+        return format!("Kept at {}%", battery.limit.unwrap_or(100));
+    }
+    let full = match battery.limit {
+        Some(limit) => format!("{limit}%"),
+        None => "Full".to_owned(),
+    };
+    match (battery.status, battery.minutes_left) {
+        (BatteryStatus::Discharging, Some(minutes)) => format!("{} left", span(minutes)),
+        (BatteryStatus::Charging, Some(minutes)) if battery.limit.is_some() => {
+            format!("{full} in {}", span(minutes))
+        }
+        (BatteryStatus::Discharging, None) => "On battery".to_owned(),
+        (BatteryStatus::Charging, Some(minutes)) => format!("Full in {}", span(minutes)),
+        (BatteryStatus::Charging, None) => "Charging".to_owned(),
+        (BatteryStatus::Full, _) => "Full".to_owned(),
+        (BatteryStatus::NotCharging, _) => "Plugged in, holding".to_owned(),
+        (BatteryStatus::Unknown, _) => "Battery".to_owned(),
+    }
 }
 
 /// `balanced` → `Balanced`.
@@ -201,13 +302,17 @@ impl Panel {
         let inner = card.inset_xy(EDGE, 0.0).translate(shift, 0.0);
         let mut y = card.y + EDGE;
 
-        let tiles = tiles(&self.hardware);
-        if !tiles.is_empty() {
+        for tiles in tiles(&self.hardware, self.switches()) {
             let gap = space::SM;
-            let width = (inner.w - gap * (tiles.len() - 1) as f32) / tiles.len() as f32;
+            let width = (inner.w - gap) / 2.0;
             for (i, tile) in tiles.iter().enumerate() {
                 let rect = Rect::new(inner.x + i as f32 * (width + gap), y, width, TILE_HEIGHT);
-                canvas.fill(rect, radius::CONTROL, colors.overlay);
+                // A switch that's on is lit in the accent.
+                let fill = match tile.on {
+                    Some(true) => colors.overlay.mix(look.accent, 0.22),
+                    _ => colors.overlay,
+                };
+                canvas.fill(rect, radius::CONTROL, fill);
                 // Words in line with the rows' icons below.
                 let content = rect.inset_xy(space::SM, space::SM);
                 let top = Rect::new(content.x, content.y, content.w, content.h / 2.0);
@@ -223,8 +328,12 @@ impl Panel {
                     Text::new(&tile.value, look.small, colors.text).bold()
                 };
                 let tile_icon = look.icon - 2.0;
+                let tint = match tile.on {
+                    Some(false) => colors.subtle,
+                    _ => look.accent,
+                };
                 if canvas.glyphs() && width + space::SM + tile_icon <= content.w {
-                    canvas.icon(tile.icon, tile_icon, look.accent, top, Align::End);
+                    canvas.icon(tile.icon, tile_icon, tint, top, Align::End);
                 }
                 canvas.text_in(&value, top, Align::Start);
                 canvas.text_in(
@@ -236,6 +345,7 @@ impl Panel {
                     self.hits.push((rect, hit));
                 }
             }
+            // A line between rows, and between the last and the list.
             y += TILE_HEIGHT + EDGE;
         }
 
@@ -334,6 +444,28 @@ impl Panel {
         }
         let grip = Rect::new(track.x - KNOB, row.y, track.w + 2.0 * KNOB, row.h);
         self.hits.push((grip, Hit::Slider(index, dial, travel)));
+        // The screen's slider ends in the moon: night light, when enso-dusk
+        // is there to give it.
+        if dial == Dial::Brightness && self.page == Page::Main && self.night.is_some() {
+            let warm = self.night == Some(true);
+            let moon = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
+            canvas.icon(
+                icon::SLEEP,
+                look.icon,
+                if warm { look.accent } else { colors.muted },
+                moon,
+                Align::End,
+            );
+            self.hits.push((
+                Rect::new(
+                    moon.x - space::SM,
+                    row.y,
+                    moon.w + space::SM + space::SM,
+                    row.h,
+                ),
+                Hit::NightLight,
+            ));
+        }
         if dial == Dial::Volume && self.page == Page::Main {
             let chevron = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
             canvas.icon(
@@ -376,6 +508,7 @@ impl Panel {
                     .as_ref()
                     .map(|_| self.bluetooth_switch.get(now)),
             ),
+            Page::Displays => (icon::DISPLAY, "Displays", String::new(), None),
             _ => (icon::PALETTE, "Theme", self.ctx.theme.name.clone(), None),
         };
         // A page that cannot be opened is shown, but dimmed.
@@ -475,6 +608,7 @@ impl Panel {
                 Some(self.bluetooth_switch.get(now)),
             ),
             Page::Sound => ("Sound", None, None),
+            Page::Displays => ("Displays", None, None),
             _ => ("Theme", None, None),
         };
 
@@ -561,6 +695,9 @@ impl Panel {
                         Align::Start,
                     );
                 }
+                Item::Display(display, screen) => {
+                    self.paint_display(canvas, row, index, display, screen, look);
+                }
                 Item::Open(_) | Item::Timer(_) | Item::BeforeSleep | Item::DoNotDisturb => {}
             }
             // Headings are not for choosing; sliders have targets of their own.
@@ -616,6 +753,7 @@ impl Panel {
                     self.paint_heading(canvas, row, section, look, now);
                     continue;
                 }
+                Item::DoNotDisturb if self.quiet => (icon::BELL_OFF, "Do not disturb"),
                 Item::DoNotDisturb => (icon::BELL, "Do not disturb"),
                 Item::Timer(Timer::Lock) => (icon::LOCK, "Lock after"),
                 Item::Timer(Timer::ScreenOff) => (icon::BRIGHTNESS, "Screen off when locked"),
@@ -625,12 +763,24 @@ impl Panel {
             canvas.icon(glyph, look.icon, colors.subtle, content, Align::Start);
             let right = match *item {
                 Item::Timer(timer) => self.paint_time(canvas, content, row, index, timer, look),
-                _ => {
-                    let on = if *item == Item::DoNotDisturb {
-                        self.quiet_switch.get(now)
-                    } else {
-                        self.before_sleep_switch.get(now)
+                Item::DoNotDisturb => {
+                    let at = self.quiet_choice(enso_core::awake::unix_now());
+                    let text = match (self.quiet, self.quiet_until) {
+                        (false, _) => "Off".to_owned(),
+                        (true, 0) => "On".to_owned(),
+                        (true, until) => format!("Until {}", crate::commands::clock_at(until)),
                     };
+                    let steps = Steps {
+                        text: &text,
+                        width: UNTIL,
+                        sooner: at > 0,
+                        later: at + 1 < super::QUIET_CHOICES,
+                        hits: (Hit::QuietStep(index, -1), Hit::QuietStep(index, 1)),
+                    };
+                    self.paint_steps(canvas, content, row, &steps, look)
+                }
+                _ => {
+                    let on = self.before_sleep_switch.get(now);
                     // In line with the switches on the first page.
                     let rect = Rect::new(
                         content.right() - CHEVRON - space::XS - SWITCH.0,
@@ -667,12 +817,33 @@ impl Panel {
         timer: Timer,
         look: &Look,
     ) -> f32 {
-        let colors = &look.colors;
         let seconds = self.lock.get(timer);
         let choices = timer.choices();
         let (first, last) = (choices[0], choices[choices.len() - 1]);
+        let text = duration(seconds);
+        let steps = Steps {
+            text: &text,
+            width: TIME,
+            sooner: seconds != first,
+            later: seconds != last,
+            hits: (Hit::Step(index, timer, -1), Hit::Step(index, timer, 1)),
+        };
+        self.paint_steps(canvas, content, row, &steps, look)
+    }
+
+    /// A choice at the end of its row, between the arrows that step it.
+    /// Returns where the row's words must end.
+    fn paint_steps(
+        &mut self,
+        canvas: &mut Canvas<'_>,
+        content: Rect,
+        row: Rect,
+        steps: &Steps<'_>,
+        look: &Look,
+    ) -> f32 {
+        let colors = &look.colors;
         let later = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
-        let time = Rect::new(later.x - TIME, content.y, TIME, content.h);
+        let time = Rect::new(later.x - steps.width, content.y, steps.width, content.h);
         let sooner = Rect::new(time.x - CHEVRON, content.y, CHEVRON, content.h);
         // An arrow with nowhere to go is shown faintly.
         let arrow = |canvas: &mut Canvas<'_>, glyph, rect, live: bool| {
@@ -683,19 +854,120 @@ impl Panel {
             };
             canvas.icon(glyph, look.icon, tint, rect, Align::Center);
         };
-        arrow(canvas, icon::CHEVRON_LEFT, sooner, seconds != first);
-        arrow(canvas, icon::CHEVRON_RIGHT, later, seconds != last);
+        arrow(canvas, icon::CHEVRON_LEFT, sooner, steps.sooner);
+        arrow(canvas, icon::CHEVRON_RIGHT, later, steps.later);
         canvas.text_in(
-            &Text::new(&duration(seconds), look.small, colors.text),
+            &Text::new(steps.text, look.small, colors.text),
             time,
             Align::Center,
         );
         // Generous targets, the full height of the row.
         let target = |rect: Rect| Rect::new(rect.x - space::XS, row.y, rect.w + space::SM, row.h);
-        self.hits
-            .push((target(sooner), Hit::Step(index, timer, -1)));
-        self.hits.push((target(later), Hit::Step(index, timer, 1)));
+        self.hits.push((target(sooner), steps.hits.0));
+        self.hits.push((target(later), steps.hits.1));
         sooner.x - space::SM
+    }
+
+    /// A row about a screen: its name over its rows; on or off and variable
+    /// refresh as switches; its size and scale between arrows.
+    fn paint_display(
+        &mut self,
+        canvas: &mut Canvas<'_>,
+        row: Rect,
+        index: usize,
+        display: usize,
+        screen: super::Screen,
+        look: &Look,
+    ) {
+        use super::Screen;
+        let colors = &look.colors;
+        let Some(shown) = self.displays.get(display).cloned() else {
+            return;
+        };
+        let content = row.inset_xy(space::SM, 0.0);
+        if screen == Screen::Name {
+            let label = Rect::new(
+                content.x,
+                content.y + space::SM,
+                content.w,
+                content.h - space::SM,
+            );
+            canvas.text_in(
+                &Text::new(&shown.label, look.small, colors.subtle).medium(),
+                label,
+                Align::Start,
+            );
+            return;
+        }
+        let (glyph, title) = match screen {
+            Screen::Power => (icon::POWER, "On"),
+            Screen::Mode => (icon::DISPLAY, "Resolution"),
+            Screen::Scale => (icon::SEARCH, "Scale"),
+            _ => (icon::BRIGHTNESS, "Variable refresh"),
+        };
+        canvas.icon(glyph, look.icon, colors.subtle, content, Align::Start);
+        let right = match screen {
+            Screen::Power | Screen::Vrr => {
+                let on = if screen == Screen::Power {
+                    shown.on
+                } else {
+                    shown.vrr
+                };
+                let rect = Rect::new(
+                    content.right() - CHEVRON - space::XS - SWITCH.0,
+                    content.y + (content.h - SWITCH.1) / 2.0,
+                    SWITCH.0,
+                    SWITCH.1,
+                );
+                paint_switch(canvas, rect, if on { 1.0 } else { 0.0 }, look);
+                rect.x - space::MD
+            }
+            _ => {
+                let (value, back, on) = if screen == Screen::Mode {
+                    (
+                        shown.mode_text(),
+                        shown.mode_step(-1).is_some(),
+                        shown.mode_step(1).is_some(),
+                    )
+                } else {
+                    (
+                        shown.scale_text(),
+                        shown.scale_step(-1).is_some(),
+                        shown.scale_step(1).is_some(),
+                    )
+                };
+                let text = Text::new(&value, look.small, colors.text);
+                let width = canvas.measure(&text).w.ceil().max(TIME);
+                let later = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
+                let middle = Rect::new(later.x - width, content.y, width, content.h);
+                let sooner = Rect::new(middle.x - CHEVRON, content.y, CHEVRON, content.h);
+                let arrow = |canvas: &mut Canvas<'_>, glyph, rect, live: bool| {
+                    let tint = if live {
+                        colors.subtle
+                    } else {
+                        colors.highlight_high
+                    };
+                    canvas.icon(glyph, look.icon, tint, rect, Align::Center);
+                };
+                arrow(canvas, icon::CHEVRON_LEFT, sooner, back);
+                arrow(canvas, icon::CHEVRON_RIGHT, later, on);
+                canvas.text_in(&text, middle, Align::Center);
+                let target =
+                    |rect: Rect| Rect::new(rect.x - space::XS, row.y, rect.w + space::SM, row.h);
+                self.hits
+                    .push((target(sooner), Hit::DisplayStep(index, -1)));
+                self.hits.push((target(later), Hit::DisplayStep(index, 1)));
+                sooner.x - space::SM
+            }
+        };
+        let x = content.x + look.icon_width + space::SM;
+        canvas.text_in(
+            &Text::new(title, look.base, colors.text)
+                .medium()
+                .max_width(right - x),
+            Rect::new(x, content.y, right - x, content.h),
+            Align::Start,
+        );
     }
 
     /// The dots at the foot of the pages that sit side by side: the one
@@ -741,6 +1013,7 @@ impl Panel {
                 _ => "Looking for devices…",
             },
             Page::Sound => "No sound devices",
+            Page::Displays => "niri isn't saying which screens there are",
             _ => "",
         }
     }

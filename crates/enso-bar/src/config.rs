@@ -27,9 +27,14 @@ pub struct BarConfig {
     /// what's playing under it while the pointer rests there, and a click on
     /// it to play or pause.
     pub now_playing: bool,
+    /// The month under the clock while the pointer rests there and nothing
+    /// is playing.
+    pub calendar: bool,
     /// How solid the islands are, `0.0..=1.0`: a little less than solid lets
     /// the wallpaper show through, just.
     pub opacity: f32,
+    /// The screens to have a bar, by name (`eDP-1`); empty: every screen.
+    pub outputs: Vec<String>,
 }
 
 impl Default for BarConfig {
@@ -40,7 +45,9 @@ impl Default for BarConfig {
             clock: DEFAULT_CLOCK.to_owned(),
             control_center: true,
             now_playing: true,
+            calendar: true,
             opacity: 0.9,
+            outputs: Vec::new(),
         }
     }
 }

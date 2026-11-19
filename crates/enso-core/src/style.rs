@@ -162,6 +162,16 @@ pub enum Figure {
     Next,
     /// Media: the same, turned back.
     Previous,
+    /// The bell, quietened: Do not disturb.
+    BellOff,
+    /// A cup with steam over it: kept awake.
+    Cup,
+    /// A screen with a dot on it: the screen is being shared.
+    Screencast,
+    /// A screen on its stand: displays.
+    Display,
+    /// Two sliders, each with its knob: settings.
+    Sliders,
 }
 
 /// An icon: the figure drawn, and a few letters standing in for it where
@@ -231,4 +241,9 @@ pub mod icon {
     pub const PAUSE: Icon = Icon::new(Figure::Pause, "pause");
     pub const NEXT: Icon = Icon::new(Figure::Next, ">>");
     pub const PREVIOUS: Icon = Icon::new(Figure::Previous, "<<");
+    pub const BELL_OFF: Icon = Icon::new(Figure::BellOff, "dnd");
+    pub const CUP: Icon = Icon::new(Figure::Cup, "awake");
+    pub const SCREENCAST: Icon = Icon::new(Figure::Screencast, "rec");
+    pub const DISPLAY: Icon = Icon::new(Figure::Display, "scr");
+    pub const SLIDERS: Icon = Icon::new(Figure::Sliders, "set");
 }

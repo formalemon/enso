@@ -24,6 +24,7 @@
 //! pointer does; it leaves the keyboard with whatever had it, borrowing it
 //! only for as long as a passphrase is being typed.
 
+mod displays;
 mod draw;
 
 use std::{
@@ -119,12 +120,43 @@ pub enum Message {
     /// something else is opening in this panel's place, or the key that
     /// opened it was pressed again.
     Dismiss,
+    /// From a second `enso-ctl --page`: show this page.
+    Page(Page),
+}
+
+/// The pages `--page` can open, by name.
+pub const PAGE_NAMES: [(&str, Page); 7] = [
+    ("main", Page::Main),
+    ("settings", Page::Settings),
+    ("wifi", Page::Wifi),
+    ("bluetooth", Page::Bluetooth),
+    ("sound", Page::Sound),
+    ("displays", Page::Displays),
+    ("theme", Page::Theme),
+];
+
+impl Page {
+    pub fn named(name: &str) -> Option<Self> {
+        PAGE_NAMES
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(name))
+            .map(|(_, page)| *page)
+    }
+
+    pub fn name(self) -> &'static str {
+        PAGE_NAMES
+            .iter()
+            .find(|(_, page)| *page == self)
+            .map_or("main", |(name, _)| name)
+    }
 }
 
 /// What the panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Main,
+    /// The screens: size, refresh, scale, on or off.
+    Displays,
     /// Beside the first page: the theme, Do not disturb, and when to lock,
     /// darken, and sleep.
     Settings,
@@ -144,6 +176,27 @@ enum Dial {
     App(usize),
     /// The microphone's level.
     Mic,
+}
+
+/// How many choices the Do not disturb row steps through.
+const QUIET_CHOICES: usize = 5;
+const HOUR: u64 = 3600;
+
+/// The next 8 in the morning, in seconds since the epoch: today's, if it
+/// hasn't come yet.
+fn next_morning(now: u64) -> u64 {
+    let morning = || -> Option<u64> {
+        let zone = jiff::tz::TimeZone::system();
+        let at = jiff::Timestamp::from_second(i64::try_from(now).ok()?)
+            .ok()?
+            .to_zoned(zone);
+        let mut morning = at.date().at(8, 0, 0, 0).to_zoned(at.time_zone().clone()).ok()?;
+        if morning <= at {
+            morning = morning.tomorrow().ok()?;
+        }
+        u64::try_from(morning.timestamp().as_second()).ok()
+    };
+    morning().unwrap_or(now + 8 * HOUR)
 }
 
 /// The pages side by side, which a swipe moves between.
@@ -264,13 +317,6 @@ enum Section {
     Screen,
 }
 
-/// `[notify]`'s one setting the panel switches.
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
-#[serde(default)]
-struct Quiet {
-    do_not_disturb: bool,
-}
-
 /// Something on the current page that can be selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Item {
@@ -296,6 +342,19 @@ enum Item {
     BeforeSleep,
     /// Notifications wait quietly in the history.
     DoNotDisturb,
+    /// One row about a screen: index into the displays, and which.
+    Display(usize, Screen),
+}
+
+/// A row on the Displays page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Screen {
+    /// Its name, heading its rows. Not selectable.
+    Name,
+    Power,
+    Mode,
+    Scale,
+    Vrr,
 }
 
 /// What a click lands on.
@@ -319,8 +378,18 @@ enum Hit {
     Back,
     /// The power profile tile.
     Profile,
+    /// The Do not disturb tile.
+    Quiet,
+    /// The Keep awake tile.
+    Awake,
+    /// One of a display row's arrows: its item index, and the step.
+    DisplayStep(usize, isize),
+    /// The moon at the end of the screen's slider: night light.
+    NightLight,
     /// One of a time's arrows: a step shorter (`-1`) or longer (`1`).
     Step(usize, Timer, isize),
+    /// One of the arrows of how long Do not disturb lasts.
+    QuietStep(usize, isize),
     /// A dot at the foot: go to that page.
     Dot(Page),
 }
@@ -392,8 +461,17 @@ pub struct Panel {
     mic_switch: Tween<f32>,
     before_sleep_switch: Tween<f32>,
     quiet_switch: Tween<f32>,
-    /// Do not disturb.
+    /// Do not disturb, as it stands now.
     quiet: bool,
+    /// The screens, as niri last said, while the Displays page is open.
+    displays: Vec<displays::Display>,
+    /// Night light: whether the screens are warm, as enso-dusk last said;
+    /// `None` without enso-dusk.
+    night: Option<bool>,
+    /// When Do not disturb ends by itself (0: when it's turned off).
+    quiet_until: u64,
+    /// Keeping awake, as chosen.
+    awake: enso_core::Awake,
 
     /// When to lock, darken, and sleep.
     lock: LockTimes,
@@ -406,6 +484,10 @@ pub struct Panel {
     owner_hovering: bool,
     /// Dropdown only: when to close unless the pointer comes back.
     leave_at: Option<Instant>,
+
+    /// A page asked for (`--page`) and not shown yet: Wi-Fi, Bluetooth,
+    /// and Sound wait until their service has answered.
+    asked: Option<Page>,
 
     /// Geometry from the last frame, for hit-testing.
     card: Rect,
@@ -444,6 +526,10 @@ impl Panel {
             before_sleep_switch: Tween::new(0.0),
             quiet_switch: Tween::new(0.0),
             quiet: false,
+            displays: Vec::new(),
+            night: None,
+            quiet_until: 0,
+            awake: enso_core::Awake::Off,
             lock: LockTimes::default(),
             swipe: 0.0,
             wifi_switch: Tween::new(0.0),
@@ -452,6 +538,7 @@ impl Panel {
             // Whoever opened a dropdown is hovering until they say otherwise.
             owner_hovering: matches!(mode, PanelMode::Dropdown(_)),
             leave_at: None,
+            asked: None,
             card: Rect::default(),
             hits: Vec::new(),
         };
@@ -520,7 +607,10 @@ impl Panel {
 
     /// Whether the selection can rest on an item.
     fn selectable(item: Item) -> bool {
-        !matches!(item, Item::Heading(_) | Item::Silence)
+        !matches!(
+            item,
+            Item::Heading(_) | Item::Silence | Item::Display(_, Screen::Name)
+        )
     }
 
     fn items(&self) -> Vec<Item> {
@@ -563,8 +653,28 @@ impl Panel {
             Page::Wifi => (0..self.networks().len()).map(Item::Network).collect(),
             Page::Bluetooth => (0..self.devices().len()).map(Item::Device).collect(),
             Page::Theme => (0..self.ctx.themes.len()).map(Item::Theme).collect(),
+            Page::Displays => {
+                let many = self.displays.len() > 1;
+                let mut items = Vec::new();
+                for (index, display) in self.displays.iter().enumerate() {
+                    items.push(Item::Display(index, Screen::Name));
+                    // The only screen can't be turned off from here.
+                    if many {
+                        items.push(Item::Display(index, Screen::Power));
+                    }
+                    if display.on {
+                        items.push(Item::Display(index, Screen::Mode));
+                        items.push(Item::Display(index, Screen::Scale));
+                        if display.vrr_supported {
+                            items.push(Item::Display(index, Screen::Vrr));
+                        }
+                    }
+                }
+                items
+            }
             Page::Settings => vec![
                 Item::Open(Page::Theme),
+                Item::Open(Page::Displays),
                 Item::DoNotDisturb,
                 Item::Heading(Section::Screen),
                 Item::Timer(Timer::Lock),
@@ -624,11 +734,8 @@ impl Panel {
         let rows = |count: usize| count as f32 * ROW_HEIGHT;
         match self.page {
             Page::Main => {
-                let tiles = if draw::tiles(&self.hardware).is_empty() {
-                    0.0
-                } else {
-                    TILE_HEIGHT + EDGE
-                };
+                let tile_rows = draw::tiles(&self.hardware, self.switches()).len();
+                let tiles = tile_rows as f32 * (TILE_HEIGHT + EDGE);
                 EDGE + tiles + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM
             }
             Page::Settings => EDGE + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM,
@@ -856,6 +963,28 @@ impl Panel {
     }
 
     /// Go to a page.
+    /// Open on `page` rather than the first, as soon as it can be shown.
+    pub fn asking(mut self, page: Option<Page>) -> Self {
+        self.asked = page;
+        self
+    }
+
+    /// Show the page asked for, if it can be shown now.
+    fn go_asked(&mut self, at_once: bool) {
+        let Some(page) = self.asked else {
+            return;
+        };
+        self.open(page);
+        if self.page == page {
+            self.asked = None;
+            if at_once {
+                // Opening on it: no slide, and the card at its size.
+                self.slide.jump(0.0);
+                self.height.jump(self.height_target());
+            }
+        }
+    }
+
     fn open(&mut self, page: Page) {
         let unavailable = match page {
             Page::Sound => self.sound.is_none(),
@@ -894,6 +1023,10 @@ impl Panel {
                 .position(|theme| theme.id == self.ctx.theme.id)
                 .unwrap_or(0),
             Page::Wifi | Page::Bluetooth | Page::Sound => 0,
+            Page::Displays => {
+                self.read_displays();
+                1
+            }
         };
         match page {
             Page::Wifi if self.wifi.as_ref().is_some_and(|w| w.powered) => {
@@ -960,7 +1093,8 @@ impl Panel {
             Some(Item::Theme(index)) => self.apply_theme(index),
             Some(Item::Timer(timer)) => self.step_timer(timer, 1, true),
             Some(Item::BeforeSleep) => self.toggle_before_sleep(),
-            Some(Item::DoNotDisturb) => self.toggle_quiet(),
+            Some(Item::DoNotDisturb) => self.step_quiet(1, true),
+            Some(Item::Display(display, screen)) => self.change_display(display, screen, 1),
             Some(Item::Output(index)) => self.choose_device(false, index),
             Some(Item::Input(index)) => self.choose_device(true, index),
             Some(Item::Slider(_) | Item::Heading(_) | Item::Silence) | None => {}
@@ -1178,13 +1312,169 @@ impl Panel {
     /// with what was chosen here over them.
     fn read_settings(&mut self) {
         self.lock = chosen::section(&self.ctx.paths, "lock");
-        self.quiet = chosen::section::<Quiet>(&self.ctx.paths, "notify").do_not_disturb;
+        let now = enso_core::awake::unix_now();
+        let quiet = chosen::Quiet::read(&self.ctx.paths);
+        self.quiet = quiet.is_on(now);
+        self.quiet_until = quiet.ends(now).unwrap_or(0);
+        self.awake = enso_core::Awake::read(&self.ctx.paths);
+        self.night = night_light(&self.ctx.paths);
     }
 
-    /// Do not disturb, on or off, and keep it.
+    /// Night light the other way, until the next sunset or sunrise.
+    fn toggle_night(&mut self) {
+        if self.night.is_none() {
+            return;
+        }
+        // Shown at once; enso-dusk confirms it in its state file.
+        self.night = self.night.map(|warm| !warm);
+        let dusk = enso_core::exe::companion("enso-dusk");
+        let _ = std::thread::Builder::new()
+            .name("enso-dusk-toggle".to_owned())
+            .spawn(move || {
+                if let Err(err) = std::process::Command::new(dusk)
+                    .arg("toggle")
+                    .stdout(std::process::Stdio::null())
+                    .status()
+                {
+                    eprintln!("enso-ctl: cannot reach enso-dusk: {err}");
+                }
+            });
+        self.settle();
+    }
+
+    /// What the switch tiles stand at.
+    fn switches(&self) -> draw::Switches {
+        let now = enso_core::awake::unix_now();
+        draw::Switches {
+            quiet: self.quiet.then_some(self.quiet_until),
+            awake: self
+                .awake
+                .is_on(now)
+                .then(|| self.awake.ends(now).unwrap_or(0)),
+        }
+    }
+
+    /// Where Do not disturb stands among the Settings row's choices: off,
+    /// an hour, three hours, until morning, on. A time set elsewhere counts
+    /// as the shortest choice that covers what's left of it.
+    fn quiet_choice(&self, now: u64) -> usize {
+        match (self.quiet, self.quiet_until) {
+            (false, _) => 0,
+            (true, 0) => QUIET_CHOICES - 1,
+            (true, until) => match until.saturating_sub(now) {
+                left if left <= HOUR => 1,
+                left if left <= 3 * HOUR => 2,
+                _ => 3,
+            },
+        }
+    }
+
+    /// Step how long Do not disturb lasts, and keep it; `wrap` goes round
+    /// from on to off.
+    fn step_quiet(&mut self, step: isize, wrap: bool) {
+        let now = enso_core::awake::unix_now();
+        let to = self.quiet_choice(now) as isize + step;
+        let last = QUIET_CHOICES as isize - 1;
+        let to = if wrap {
+            to.rem_euclid(last + 1)
+        } else {
+            to.clamp(0, last)
+        };
+        let until = match to {
+            0 => None,
+            1 => Some(now + HOUR),
+            2 => Some(now + 3 * HOUR),
+            3 => Some(next_morning(now)),
+            _ => Some(0),
+        };
+        self.quiet = until.is_some();
+        self.quiet_until = until.unwrap_or(0);
+        self.keep(
+            "notify",
+            "do_not_disturb_until",
+            Setting::Seconds(self.quiet_until),
+        );
+        self.keep("notify", "do_not_disturb", Setting::Switch(self.quiet));
+    }
+
+    /// Do not disturb, on or off, and keep it. Turned on here it lasts
+    /// until it's turned off.
     fn toggle_quiet(&mut self) {
         self.quiet = !self.quiet;
+        self.quiet_until = 0;
+        self.keep("notify", "do_not_disturb_until", Setting::Seconds(0));
         self.keep("notify", "do_not_disturb", Setting::Switch(self.quiet));
+    }
+
+    /// Ask niri for the screens again.
+    fn read_displays(&mut self) {
+        match displays::read() {
+            Ok(displays) => self.displays = displays,
+            Err(err) => {
+                self.displays.clear();
+                self.notice = Some(format!("can't ask niri about the screens: {err}"));
+            }
+        }
+    }
+
+    /// Change one thing about a screen: flip its power or variable
+    /// refresh, or step its size or scale `step` along. niri does it at
+    /// once; it lasts until niri restarts.
+    fn change_display(&mut self, index: usize, screen: Screen, step: isize) {
+        let Some(display) = self.displays.get(index).cloned() else {
+            return;
+        };
+        let done = match screen {
+            Screen::Name => return,
+            Screen::Power => displays::set_on(&display.name, !display.on),
+            Screen::Vrr => displays::set_vrr(&display.name, !display.vrr),
+            Screen::Mode => match display.mode_step(step) {
+                Some(mode) => displays::set_mode(&display.name, mode),
+                None => return,
+            },
+            Screen::Scale => match display.scale_step(step) {
+                Some(scale) => displays::set_scale(&display.name, scale),
+                None => return,
+            },
+        };
+        let selected = self.items().get(self.selected).copied();
+        self.read_displays();
+        // Kept as it now is, so niri starts with it next time.
+        let kept = match &done {
+            Ok(()) => self
+                .displays
+                .iter()
+                .find(|shown| shown.name == display.name)
+                .map(|shown| displays::keep(&self.ctx.paths.state_dir, shown))
+                .transpose(),
+            Err(_) => Ok(None),
+        };
+        // The same row stays selected, though rows come and go.
+        if let Some(position) =
+            selected.and_then(|item| self.items().iter().position(|i| *i == item))
+        {
+            self.selected = position;
+        }
+        self.notice = match (done, kept) {
+            (Ok(()), Ok(_)) => None,
+            (Ok(()), Err(err)) => Some(format!("Changed, but can't keep it for next time: {err}")),
+            (Err(err), _) => Some(format!("niri says: {err}")),
+        };
+        self.settle();
+    }
+
+    /// Keep the machine awake, or stop.
+    fn toggle_awake(&mut self) {
+        let now = enso_core::awake::unix_now();
+        self.awake = if self.awake.is_on(now) {
+            enso_core::Awake::Off
+        } else {
+            enso_core::Awake::On
+        };
+        if let Err(err) = self.awake.write(&self.ctx.paths) {
+            self.notice = Some(format!("can't keep the setting: {err}"));
+        }
+        self.settle();
     }
 
     /// Move a time `step` choices along, and keep it.
@@ -1316,9 +1606,25 @@ impl Panel {
             (Key::Right | Key::Char('l'), Some(Item::Timer(timer))) => {
                 self.step_timer(timer, 1, false);
             }
+            (Key::Left | Key::Char('h'), Some(Item::DoNotDisturb)) => self.step_quiet(-1, false),
+            (Key::Right | Key::Char('l'), Some(Item::DoNotDisturb)) => self.step_quiet(1, false),
             (Key::Char(' '), Some(Item::BeforeSleep | Item::DoNotDisturb | Item::Timer(_))) => {
                 self.activate(self.selected);
             }
+            // A screen's size and scale step with left and right.
+            (
+                Key::Left | Key::Char('h'),
+                Some(Item::Display(display, screen @ (Screen::Mode | Screen::Scale))),
+            ) => {
+                self.change_display(display, screen, -1);
+            }
+            (
+                Key::Right | Key::Char('l'),
+                Some(Item::Display(display, screen @ (Screen::Mode | Screen::Scale))),
+            ) => {
+                self.change_display(display, screen, 1);
+            }
+            (Key::Char(' '), Some(Item::Display(..))) => self.activate(self.selected),
             (Key::Escape, _) if on_home => return Outcome::Close,
             // On a slider, left and right adjust it — also on a page, where
             // they would otherwise lead back.
@@ -1348,6 +1654,9 @@ impl Panel {
             }
             (Key::Char(' '), Some(Item::Theme(_))) => self.activate(self.selected),
             (Key::Char('p'), _) if on_main => self.cycle_profile(),
+            (Key::Char('d'), _) if on_main => self.toggle_quiet(),
+            (Key::Char('a'), _) if on_main => self.toggle_awake(),
+            (Key::Char('n'), _) if on_main => self.toggle_night(),
             _ => return Outcome::Ignored,
         }
         Outcome::Changed
@@ -1409,9 +1718,22 @@ impl Panel {
             Some(Hit::Switch(page)) => self.toggle(page),
             Some(Hit::Back) => self.open(self.home),
             Some(Hit::Profile) => self.cycle_profile(),
+            Some(Hit::Quiet) => self.toggle_quiet(),
+            Some(Hit::NightLight) => self.toggle_night(),
+            Some(Hit::DisplayStep(index, step)) => {
+                self.selected = index;
+                if let Some(Item::Display(display, screen)) = self.items().get(index).copied() {
+                    self.change_display(display, screen, step);
+                }
+            }
+            Some(Hit::Awake) => self.toggle_awake(),
             Some(Hit::Step(index, timer, step)) => {
                 self.selected = index;
                 self.step_timer(timer, step, false);
+            }
+            Some(Hit::QuietStep(index, step)) => {
+                self.selected = index;
+                self.step_quiet(step, false);
             }
             Some(Hit::Dot(page)) => self.open(page),
             None if self.card.contains(x, y) => return Outcome::Ignored,
@@ -1432,6 +1754,7 @@ impl Panel {
                 Hit::Item(index)
                 | Hit::Slider(index, ..)
                 | Hit::Step(index, ..)
+                | Hit::QuietStep(index, _)
                 | Hit::OpenSound(index),
             ) => index,
             _ => return Outcome::Ignored,
@@ -1626,10 +1949,14 @@ impl App for Panel {
         // Told to go by whoever wants its place: see `main::open_panel`.
         if let Err(err) = enso_core::ipc::listen(NAME, {
             let proxy = proxy.clone();
-            move |word| word != "close" || proxy.send(Message::Dismiss)
+            move |word| match word.strip_prefix("page ") {
+                Some(name) => Page::named(name).is_none_or(|page| proxy.send(Message::Page(page))),
+                None => word != "close" || proxy.send(Message::Dismiss),
+            }
         }) {
             eprintln!("enso-ctl: a second Super+C cannot close this one: {err}");
         }
+        self.go_asked(true);
         if self.mode != PanelMode::Modal {
             // Without the bar's word, the pointer on the card decides alone.
             self.owner_hovering = follow_owner(proxy);
@@ -1642,6 +1969,13 @@ impl App for Panel {
         let outcome = match event {
             Event::Message(Message::System(update)) => {
                 self.apply(*update);
+                // Its service has answered: a page asked for may show now.
+                self.go_asked(false);
+                Outcome::Changed
+            }
+            Event::Message(Message::Page(page)) => {
+                self.asked = Some(page);
+                self.go_asked(false);
                 Outcome::Changed
             }
             Event::Message(Message::ThemeChanged) => {
@@ -1735,6 +2069,20 @@ fn follow_owner(proxy: Proxy<Message>) -> bool {
             proxy.send(Message::Owner(false));
         })
         .is_ok()
+}
+
+/// Whether enso-dusk has the screens warm: its state file's `warm` line.
+/// `None` when enso-dusk isn't installed.
+fn night_light(paths: &enso_core::Paths) -> Option<bool> {
+    let text = std::fs::read_to_string(paths.state_dir.join("dusk")).ok();
+    let installed = text.is_some() || {
+        let dusk = enso_core::exe::companion("enso-dusk");
+        dusk.is_file()
+            || std::env::var_os("PATH").is_some_and(|path| {
+                std::env::split_paths(&path).any(|dir| dir.join("enso-dusk").is_file())
+            })
+    };
+    installed.then(|| text.is_some_and(|text| text.lines().any(|line| line.trim() == "warm 1")))
 }
 
 #[cfg(test)]

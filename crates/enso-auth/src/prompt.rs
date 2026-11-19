@@ -384,7 +384,7 @@ impl Prompt {
                 "Confirm it's you".to_owned(),
                 message.clone(),
                 Some(match program {
-                    Some(program) => format!("Asked by {program}"),
+                    Some(program) => format!("Asked by {}", program_name(program)),
                     None => action.clone(),
                 }),
             ),
@@ -615,6 +615,60 @@ impl App for Prompt {
     fn draw(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
         self.render(canvas, now)
     }
+}
+
+/// What to call the program asking: the name its application goes by
+/// (`Files`), with the program itself (`enso-files`) beside it — or just
+/// the program, when no application owns it.
+fn program_name(program: &str) -> String {
+    let base = program.rsplit('/').next().unwrap_or(program);
+    match application_named(base) {
+        Some(name) if !name.eq_ignore_ascii_case(base) => format!("{name} ({base})"),
+        _ => base.to_owned(),
+    }
+}
+
+/// The name of the application whose desktop entry runs `program`. (Not
+/// in tests, whose pictures mustn't depend on what's installed.)
+fn application_named(program: &str) -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from)?;
+    let shared =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_owned());
+    let dirs = std::iter::once(home.join(".local/share"))
+        .chain(shared.split(':').map(std::path::PathBuf::from))
+        .map(|dir| dir.join("applications"));
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            if path.extension().is_none_or(|ext| ext != "desktop") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let (mut name, mut runs) = (None, false);
+            let mut in_entry = false;
+            for line in text.lines().map(str::trim) {
+                if line.starts_with('[') {
+                    in_entry = line == "[Desktop Entry]";
+                } else if in_entry && let Some(value) = line.strip_prefix("Name=") {
+                    name = Some(value.to_owned());
+                } else if in_entry && let Some(exec) = line.strip_prefix("Exec=") {
+                    let first = exec.split_whitespace().next().unwrap_or_default();
+                    runs = first.trim_matches('"').rsplit('/').next() == Some(program);
+                }
+            }
+            if runs {
+                return name;
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

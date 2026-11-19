@@ -7,9 +7,11 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod battery;
 mod center;
 mod daemon;
 mod dbus;
+mod local;
 mod markup;
 mod stack;
 
@@ -42,6 +44,14 @@ dismiss it; click one of its buttons to choose that action; right-click to
 dismiss it without doing anything. Toasts stay for as long as the pointer is
 on them.
 
+Some buttons are enso-notify's own: a one-time code in a message (\"Your
+code is 482 913\") gets one that copies it, and a screenshot gets Open and
+Show in Files. With a battery, it warns at 10 % and again at 5 % (with
+Sleep now), and takes the warnings back when the power comes.
+
+Do not disturb (the control center, `enso-ctl dnd 1h`) sends notifications
+quietly to the history instead; critical ones still show.
+
 Options:
   -h, --help       Print this help
   -V, --version    Print the version
@@ -53,6 +63,12 @@ Configuration is optional: the [notify] table of ~/.config/enso/config.toml.
   gap         = 10      space between toasts
   history_rows = 5      notifications the history shows at once
   history_size = 50     notifications the history remembers
+  history_keep = true   keep the history across restarts and logins
+  do_not_disturb = false
+                        notifications go quietly to the history
+  do_not_disturb_until = 0
+                        when it ends by itself, in seconds since 1970
+                        (0: when it's turned off); the control center sets it
 ";
 
 fn main() -> ExitCode {

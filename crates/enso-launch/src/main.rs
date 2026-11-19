@@ -13,8 +13,11 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod calc;
+mod commands;
 mod history;
 mod launcher;
+mod windows;
 
 use std::{
     env, fs,
@@ -35,6 +38,7 @@ Usage: enso-launch [OPTIONS]
 Options:
       --list          Print launchable applications and exit
       --find <QUERY>  Print the files matching QUERY, with timings, and exit
+      --query <TEXT>  Open with TEXT already typed (`=` for a sum)
   -h, --help          Print this help
   -V, --version       Print the version
 
@@ -42,10 +46,22 @@ Nothing is listed until you start typing: applications from the first
 letter, files from the second. Running enso-launch while it is open closes it.
 
 Keys:
-  type             search               Enter        launch, or open the file
-  Up / Ctrl+p      previous             Ctrl+Enter   open the file's folder
-  Down / Ctrl+n    next                 Esc          close
+  type             search               Enter        launch, open, or go to
+  Up / Ctrl+p      previous             Shift+Enter  a new window, even if
+  Down / Ctrl+n    next                              the app is running
+  Ctrl+v           paste                Ctrl+Enter   open the file's folder
+  Ctrl+c           copy a path, or      Esc          close
+                   a sum's answer
   Ctrl+u / w       clear / delete word
+
+Besides applications and files: sums (12*7.5, sqrt(2), 80*15%) are worked
+out, and Enter copies the answer; windows are found by their title; an
+application's actions (New Private Window), the desktop's own commands
+(lock, sleep, a theme, Wi-Fi off, Do not disturb, keep awake), and the
+control center's pages (Settings, Wi-Fi, Sound, Displays) are listed by
+name. Logging out, restarting and shutting down need most of their name.
+A terminal always opens a new window; other running applications are gone
+to (Shift+Enter for a new one).
 
 Configuration is optional: the [launch] table of ~/.config/enso/config.toml.
   width       = 560            card width in pixels
@@ -72,7 +88,8 @@ applications open in [appearance] terminal ($TERMINAL, or alacritty).
 ";
 
 enum Mode {
-    Launcher,
+    /// The launcher, with this already typed.
+    Launcher(String),
     List,
     Find(String),
 }
@@ -95,10 +112,14 @@ fn main() -> ExitCode {
     ctx.report_warnings("enso-launch");
     let appearance = ctx.config.appearance.clone();
 
-    if let Mode::Find(query) = mode {
-        find(&ctx, &config, &query);
-        return ExitCode::SUCCESS;
-    }
+    let typed = match mode {
+        Mode::Find(query) => {
+            find(&ctx, &config, &query);
+            return ExitCode::SUCCESS;
+        }
+        Mode::Launcher(typed) => typed,
+        Mode::List => return ExitCode::SUCCESS,
+    };
 
     // Invoked while already open: close that one instead of opening another.
     let socket =
@@ -115,7 +136,9 @@ fn main() -> ExitCode {
     let listening = listener.is_some();
 
     let background = launcher::Background::default();
-    let launcher = launcher::Launcher::new(ctx, config, background.clone(), listener);
+    let launcher =
+        launcher::Launcher::new(ctx, config, background.clone(), listener).typed(&typed);
+    let copied = launcher.copied();
     let result = enso_ui::run(launcher, &appearance);
 
     // The window is gone. Stop being "the open launcher" at once, then let
@@ -129,6 +152,16 @@ fn main() -> ExitCode {
         .unwrap_or_default();
     for handle in pending {
         let _ = handle.join();
+    }
+
+    // Something was copied — a sum's answer, a path: the window is gone,
+    // so keep it on the clipboard from here, unseen, until something else
+    // is copied.
+    let copied = copied.lock().ok().and_then(|mut copied| copied.take());
+    if let Some(text) = copied
+        && let Err(err) = enso_ui::clipboard::hold(enso_ui::clipboard::text(&text))
+    {
+        eprintln!("enso-launch: cannot keep what was copied: {err}");
     }
 
     match result {
@@ -198,12 +231,19 @@ fn find(ctx: &Context, config: &launcher::LaunchConfig, query: &str) {
 fn parse_args() -> Result<Mode, ExitCode> {
     use lexopt::prelude::*;
 
-    let mut mode = Mode::Launcher;
+    let mut mode = Mode::Launcher(String::new());
     let mut parser = lexopt::Parser::from_env();
     loop {
         match parser.next() {
             Ok(None) => return Ok(mode),
             Ok(Some(Long("list"))) => mode = Mode::List,
+            Ok(Some(Long("query"))) => match parser.value().map(|value| value.string()) {
+                Ok(Ok(text)) => mode = Mode::Launcher(text),
+                Ok(Err(err)) | Err(err) => {
+                    eprintln!("enso-launch: {err}");
+                    return Err(ExitCode::from(2));
+                }
+            },
             Ok(Some(Long("find"))) => match parser.value().map(|value| value.string()) {
                 Ok(Ok(query)) => mode = Mode::Find(query),
                 Ok(Err(err)) | Err(err) => {

@@ -173,6 +173,8 @@ fn read_cached(path: &Path, uri: &str, mtime: i64) -> Option<Thumb> {
         match chunk.keyword.as_str() {
             "Thumb::URI" => good_uri = chunk.text == uri,
             "Thumb::MTime" => good_mtime = chunk.text.parse::<i64>().ok() == Some(mtime),
+            // Made before photos were turned the way they were held.
+            "Software" if chunk.text == "enso-files" => return None,
             _ => {}
         }
     }
@@ -193,6 +195,10 @@ fn read_cached(path: &Path, uri: &str, mtime: i64) -> Option<Thumb> {
     picture::decode(&bytes).ok()
 }
 
+/// Who made a thumbnail, and which way: a thumbnail enso made before it
+/// read EXIF orientation said only `enso-files`, and is made again.
+const SOFTWARE: &str = "enso-files 2";
+
 fn write(path: &Path, thumb: &Thumb, uri: &str, mtime: i64, size: u64) -> io::Result<()> {
     let mut png = Vec::new();
     let mut encoder = png::Encoder::new(&mut png, thumb.width, thumb.height);
@@ -209,7 +215,7 @@ fn write(path: &Path, thumb: &Thumb, uri: &str, mtime: i64, size: u64) -> io::Re
         .add_text_chunk("Thumb::Size".to_owned(), size.to_string())
         .map_err(text)?;
     encoder
-        .add_text_chunk("Software".to_owned(), "enso-files".to_owned())
+        .add_text_chunk("Software".to_owned(), SOFTWARE.to_owned())
         .map_err(text)?;
     let mut writer = encoder.write_header().map_err(text)?;
     writer.write_image_data(&thumb.rgba).map_err(text)?;

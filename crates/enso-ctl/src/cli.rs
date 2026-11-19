@@ -9,6 +9,10 @@ Usage: enso-ctl [COMMAND]
 
 With no command, opens the control center panel.
 
+Panel:
+  --page NAME               Open on a page: settings, wifi, bluetooth, sound,
+                            displays, or theme (an open panel turns to it)
+
 Wi-Fi (iwd):
   wifi                      Radio, connection, and the networks in range
   wifi on | off             Turn the radio on or off
@@ -48,6 +52,21 @@ Hardware:
                             The same for the keyboard light, one level a step
   profile                   Show the power profile and the choices
   profile set <NAME> | next Switch power profile
+
+Quiet and awake:
+  dnd                       Whether Do not disturb is on, and until when
+  dnd on | off | toggle     Notifications wait in the history (critical
+                            ones still show), or don't
+  dnd DURATION              On for a while: 30m, 1h, 2h30m, …
+  awake                     Whether the machine is kept awake
+  awake on | off | toggle | DURATION
+                            Hold off locking when left alone
+
+Clipboard:
+  copy TEXT                 Put TEXT on the clipboard, and keep it there
+                            (in the background) until something else is copied
+  colour                    Pick a colour from the screen: its hex is copied,
+                            and said in a notification
 
 Theme:
   theme [list]              List available themes
@@ -94,8 +113,8 @@ pub enum PanelMode {
 /// What the user asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    /// Open the control center panel.
-    Panel(PanelMode),
+    /// Open the control center panel, on this page if one is named.
+    Panel(PanelMode, Option<crate::panel::Page>),
     Help,
     Version,
     Theme(ThemeCommand),
@@ -115,6 +134,77 @@ pub enum Command {
         input: bool,
         name: Option<String>,
     },
+    /// Do not disturb.
+    Quiet(Switch),
+    /// Keeping the machine awake.
+    Awake(Switch),
+    /// Put text on the clipboard and keep it there.
+    Copy(String),
+    /// Pick a colour from the screen.
+    Colour,
+}
+
+/// A switch with a timer: Do not disturb, keeping awake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switch {
+    Show,
+    On,
+    Off,
+    Toggle,
+    /// On for this many seconds.
+    For(u64),
+}
+
+/// `30m`, `1h`, `2h30m`, `90s`, `1d` as seconds.
+pub fn duration(text: &str) -> Option<u64> {
+    let text = text.trim().to_ascii_lowercase();
+    let mut total = 0u64;
+    let mut number = String::new();
+    let mut chars = text.chars().peekable();
+    let mut any = false;
+    while let Some(c) = chars.next() {
+        if c.is_ascii_digit() {
+            number.push(c);
+            continue;
+        }
+        let mut unit = String::from(c);
+        while let Some(&next) = chars.peek().filter(|next| next.is_ascii_alphabetic()) {
+            unit.push(next);
+            chars.next();
+        }
+        let n: u64 = number.parse().ok()?;
+        number.clear();
+        let scale = match unit.as_str() {
+            "s" | "sec" | "secs" | "second" | "seconds" => 1,
+            "m" | "min" | "mins" | "minute" | "minutes" => 60,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3600,
+            "d" | "day" | "days" => 86_400,
+            _ => return None,
+        };
+        total = total.checked_add(n.checked_mul(scale)?)?;
+        any = true;
+    }
+    // A bare number is minutes.
+    if !number.is_empty() {
+        total = total.checked_add(number.parse::<u64>().ok()?.checked_mul(60)?)?;
+        any = true;
+    }
+    (any && total > 0).then_some(total)
+}
+
+fn switch(words: &[&str], what: &str) -> Result<Switch, String> {
+    match words {
+        [] => Ok(Switch::Show),
+        ["on"] => Ok(Switch::On),
+        ["off"] => Ok(Switch::Off),
+        ["toggle"] => Ok(Switch::Toggle),
+        ["for", time] | [time] => duration(time)
+            .map(Switch::For)
+            .ok_or_else(|| format!("`{what}` takes on, off, toggle, or a time like 1h or 30m")),
+        _ => Err(format!(
+            "`{what}` takes on, off, toggle, or a time like 1h or 30m"
+        )),
+    }
 }
 
 /// What to do with a volume.
@@ -200,6 +290,7 @@ pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Comm
     let mut parser = lexopt::Parser::from_args(args);
     let mut words: Vec<String> = Vec::new();
     let mut mode = PanelMode::Modal;
+    let mut page = None;
     while let Some(arg) = parser.next().map_err(|err| err.to_string())? {
         match arg {
             Short('h') | Long("help") => return Ok(Command::Help),
@@ -217,6 +308,17 @@ pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Comm
                     Some(other) => return Err(format!("unknown edge `{other}`")),
                 });
             }
+            Long("page") => {
+                let name = parser
+                    .value()
+                    .and_then(|value| value.string())
+                    .map_err(|err| err.to_string())?;
+                page = Some(crate::panel::Page::named(&name).ok_or_else(|| {
+                    let names: Vec<&str> =
+                        crate::panel::PAGE_NAMES.iter().map(|(name, _)| *name).collect();
+                    format!("no page `{name}`: one of {}", names.join(", "))
+                })?);
+            }
             Value(value) => words.push(value.string().map_err(|err| err.to_string())?),
             other => return Err(other.unexpected().to_string()),
         }
@@ -226,9 +328,15 @@ pub fn parse(args: impl IntoIterator<Item = impl Into<OsString>>) -> Result<Comm
     // Names with spaces need not be quoted: `wifi connect My Network`.
     let name = |words: &[&str]| words.join(" ");
     match words.as_slice() {
-        [] => Ok(Command::Panel(mode)),
+        [] => Ok(Command::Panel(mode, page)),
         _ if mode != PanelMode::Modal => Err("`--dropdown` only opens the panel".to_owned()),
+        _ if page.is_some() => Err("`--page` only opens the panel".to_owned()),
 
+        ["dnd", rest @ ..] => switch(rest, "dnd").map(Command::Quiet),
+        ["awake", rest @ ..] => switch(rest, "awake").map(Command::Awake),
+        ["copy"] => Err("`copy` needs the text to put on the clipboard".to_owned()),
+        ["copy", ..] => Ok(Command::Copy(name(&words[1..]))),
+        ["colour" | "color"] => Ok(Command::Colour),
         ["theme"] | ["theme", "list"] => Ok(Command::Theme(ThemeCommand::List)),
         ["theme", "current"] => Ok(Command::Theme(ThemeCommand::Current)),
         ["theme", "set", id] => Ok(Command::Theme(ThemeCommand::Set((*id).to_owned()))),
@@ -385,20 +493,51 @@ fn level(words: &[&str]) -> Result<Level, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn switches_and_times_read_as_written() {
+        let parse = |words: &[&str]| parse(words.iter().copied());
+        assert_eq!(parse(&["dnd"]), Ok(Command::Quiet(Switch::Show)));
+        assert_eq!(parse(&["dnd", "on"]), Ok(Command::Quiet(Switch::On)));
+        assert_eq!(parse(&["dnd", "1h"]), Ok(Command::Quiet(Switch::For(3600))));
+        assert_eq!(
+            parse(&["awake", "for", "2h30m"]),
+            Ok(Command::Awake(Switch::For(9000)))
+        );
+        assert_eq!(
+            parse(&["awake", "toggle"]),
+            Ok(Command::Awake(Switch::Toggle))
+        );
+        assert!(parse(&["dnd", "soon"]).is_err());
+        assert_eq!(
+            parse(&["copy", "two", "words"]),
+            Ok(Command::Copy("two words".into()))
+        );
+        assert_eq!(parse(&["color"]), Ok(Command::Colour));
+        assert_eq!(duration("45"), Some(2700));
+        assert_eq!(duration("90s"), Some(90));
+        assert_eq!(duration("0m"), None);
+    }
+
     fn parse_words(words: &[&str]) -> Result<Command, String> {
         parse(words.iter().map(OsString::from))
     }
 
     #[test]
     fn no_arguments_opens_the_panel() {
-        assert_eq!(parse_words(&[]), Ok(Command::Panel(PanelMode::Modal)));
+        assert_eq!(parse_words(&[]), Ok(Command::Panel(PanelMode::Modal, None)));
+        assert_eq!(
+            parse_words(&["--page", "wifi"]),
+            Ok(Command::Panel(PanelMode::Modal, Some(crate::panel::Page::Wifi)))
+        );
+        assert!(parse_words(&["--page", "nowhere"]).is_err());
+        assert!(parse_words(&["--page", "wifi", "dnd"]).is_err());
         assert_eq!(
             parse_words(&["--dropdown"]),
-            Ok(Command::Panel(PanelMode::Dropdown(Edge::Top)))
+            Ok(Command::Panel(PanelMode::Dropdown(Edge::Top), None))
         );
         assert_eq!(
             parse_words(&["--dropdown=bottom"]),
-            Ok(Command::Panel(PanelMode::Dropdown(Edge::Bottom)))
+            Ok(Command::Panel(PanelMode::Dropdown(Edge::Bottom), None))
         );
         assert!(parse_words(&["--dropdown=left"]).is_err());
         assert!(parse_words(&["--dropdown", "wifi"]).is_err());

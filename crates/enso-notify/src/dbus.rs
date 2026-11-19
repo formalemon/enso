@@ -8,7 +8,7 @@ use zbus::{Connection, connection, interface, object_server::SignalEmitter, wire
 
 use crate::{
     daemon::Message,
-    markup,
+    local, markup,
     stack::{Action, CloseReason, Notification, Timeout, Urgency},
 };
 
@@ -17,6 +17,8 @@ const PATH: &str = "/org/freedesktop/Notifications";
 
 struct Server {
     proxy: Proxy<Message>,
+    /// Where a picture must be for enso to offer to open it.
+    home: std::path::PathBuf,
     next_id: u32,
     /// Ids of notifications that named a stack tag, so the next one with
     /// the same tag replaces it: how volume pop-ups update in place.
@@ -151,6 +153,20 @@ impl Server {
                     .or_else(|| value.downcast_ref::<u32>().ok().map(|v| v.min(100) as i32))
             })
             .map(|value| value.clamp(0, 100) as u8);
+        // Some senders give the flag as a number rather than a boolean.
+        let transient = hints.get("transient").is_some_and(|value| {
+            value
+                .downcast_ref::<bool>()
+                .ok()
+                .or_else(|| value.downcast_ref::<i32>().ok().map(|v| v != 0))
+                .or_else(|| value.downcast_ref::<u8>().ok().map(|v| v != 0))
+                .unwrap_or(false)
+        });
+        // A picture named by file: shown, and perhaps something to open.
+        let picture = IMAGE_PATH_HINTS
+            .iter()
+            .find_map(|hint| hints.remove(*hint))
+            .and_then(|value| String::try_from(value).ok());
         // In the specification's order of preference: pixels sent along,
         // then a picture named by a hint, then the application's icon.
         let image = IMAGE_DATA_HINTS
@@ -158,15 +174,12 @@ impl Server {
             .find_map(|hint| hints.remove(*hint))
             .and_then(|value| RawImage::try_from(value).ok())
             .and_then(image_from_raw)
-            .or_else(|| {
-                IMAGE_PATH_HINTS
-                    .iter()
-                    .find_map(|hint| hints.remove(*hint))
-                    .and_then(|value| String::try_from(value).ok())
-                    .and_then(|path| image_from_path(&path))
-            })
+            .or_else(|| picture.as_deref().and_then(image_from_path))
             .or_else(|| image_from_path(&app_icon));
-        self.proxy.send(Message::Notify(Notification {
+        let picture_file = picture
+            .as_deref()
+            .map(|name| Path::new(name.strip_prefix("file://").unwrap_or(name)).to_owned());
+        let mut note = Notification {
             id,
             app_name,
             summary: summary.trim().to_owned(),
@@ -176,7 +189,13 @@ impl Server {
             actions: actions_from(&actions),
             image,
             progress,
-        }));
+            transient,
+        };
+        // Senders can't claim enso's own buttons.
+        note.actions
+            .retain(|action| !action.key.starts_with(local::PREFIX));
+        local::enrich(&mut note, picture_file.as_deref(), &self.home);
+        self.proxy.send(Message::Notify(note));
         id
     }
 
@@ -211,7 +230,12 @@ pub fn serve(proxy: Proxy<Message>) {
     let failed = proxy.clone();
     let spawned = thread::Builder::new().name("enso-dbus".to_owned()).spawn(move || {
         zbus::block_on(async move {
-            let server = Server { proxy: proxy.clone(), next_id: 1, tagged: HashMap::new() };
+            let server = Server {
+                proxy: proxy.clone(),
+                home: enso_fs::places::home(),
+                next_id: 1,
+                tagged: HashMap::new(),
+            };
             match connection::Builder::session().name(NAME)
                 // Never take the name from, or lose it to, another daemon.
                 .allow_name_replacements(false)
@@ -249,6 +273,20 @@ pub fn emit_action(connection: &Connection, id: u32, key: &str) {
     if let Err(err) = result {
         eprintln!("enso-notify: cannot emit ActionInvoked: {err}");
     }
+}
+
+/// Ask the file manager to show `path`, selected in its folder
+/// (`org.freedesktop.FileManager1`, which enso-files and the others answer).
+pub fn show_in_files(connection: &Connection, path: &Path) -> zbus::Result<()> {
+    let uri = enso_fs::uri::from_path(path);
+    zbus::block_on(connection.call_method(
+        Some("org.freedesktop.FileManager1"),
+        "/org/freedesktop/FileManager1",
+        Some("org.freedesktop.FileManager1"),
+        "ShowItems",
+        &(vec![uri], ""),
+    ))
+    .map(drop)
 }
 
 /// Tell clients a notification is gone.

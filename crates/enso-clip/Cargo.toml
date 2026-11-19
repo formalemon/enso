@@ -1,0 +1,23 @@
+[package]
+name = "enso-clip"
+description = "Clipboard history for Niri: what was copied, kept for the session, and a card to choose from"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-ui = { workspace = true, features = ["picture"] }
+enso-fs.workspace = true
+# The clipboard itself, through ext-data-control, on a connection of its own.
+smithay-client-toolkit = { workspace = true, features = ["calloop"] }
+rustix = { workspace = true, features = ["pipe"] }
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png", "picture"] }
+
+[lints]
+workspace = true

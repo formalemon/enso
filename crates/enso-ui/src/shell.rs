@@ -54,7 +54,7 @@ use smithay_client_toolkit::{
     reexports::{
         calloop_wayland_source::WaylandSource,
         client::{
-            Connection, Proxy as _, QueueHandle, WEnum,
+            Connection, EventQueue, Proxy as _, QueueHandle, WEnum,
             globals::registry_queue_init,
             protocol::{
                 wl_data_device::WlDataDevice,
@@ -205,6 +205,11 @@ pub struct SurfaceSpec {
     pub keyboard: Keyboard,
     /// Whether to show the surface at startup. Hidden surfaces cost nothing.
     pub visible: bool,
+    /// The screen to be on, by name (`eDP-1`); `None` leaves it to the
+    /// compositor — or to `$ENSO_OUTPUT`, which a bar on each screen sets
+    /// for what it opens, so a dropdown comes up under the bar that opened
+    /// it. A screen that isn't there is the same as none.
+    pub output: Option<String>,
     /// Be an ordinary window instead of a layer surface. The layer, anchor,
     /// margin, exclusive zone, and keyboard fields are then not used, and
     /// `width`/`height` are only the size to start at: the compositor
@@ -243,6 +248,7 @@ impl SurfaceSpec {
             margin: Margin::default(),
             keyboard: Keyboard::None,
             visible: true,
+            output: None,
             window: None,
         }
     }
@@ -703,16 +709,23 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         viewporter.destroy();
         (viewport, scale)
     });
+    // The screen asked for, if any, and the queue it was found on.
+    let mut on_output = None;
     let surface = match &spec.window {
         None => {
             let layer_shell = LayerShell::bind(&globals, &qh)
                 .map_err(|err| Error::new("compositor lacks wlr-layer-shell", err))?;
+            let wanted = spec
+                .output
+                .clone()
+                .or_else(|| std::env::var("ENSO_OUTPUT").ok().filter(|name| !name.is_empty()));
+            on_output = wanted.and_then(|name| crate::outputs::find(&conn, &globals, &name));
             Surface::Layer(layer_shell.create_layer_surface(
                 &qh,
                 wl_surface,
                 spec.layer.into(),
                 Some(spec.namespace.clone()),
-                None,
+                on_output.as_ref().map(|(output, _)| output),
             ))
         }
         Some(window_spec) => {
@@ -833,6 +846,7 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         internal,
         cursor: Cursor::Default,
         maximized: false,
+        _on_output: on_output,
         spec,
     };
 
@@ -852,6 +866,8 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
 }
 
 struct Runtime<A: App> {
+    /// The screen the surface was put on, kept for as long as it is.
+    _on_output: Option<(WlOutput, EventQueue<crate::outputs::Names>)>,
     app: A,
     registry: RegistryState,
     seats: SeatState,

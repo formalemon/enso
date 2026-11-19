@@ -21,6 +21,7 @@
 //! shaping (cosmic-text). Colours, spacing, and motion come from `enso-core`.
 
 pub mod canvas;
+pub mod clipboard;
 pub mod figure;
 mod fractional;
 pub mod geom;
@@ -30,6 +31,7 @@ mod ime;
 pub mod input;
 mod keymap;
 pub mod mark;
+pub mod outputs;
 pub mod picture;
 pub mod presence;
 pub mod screens;

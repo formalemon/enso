@@ -1,0 +1,20 @@
+[package]
+name = "enso-dusk"
+description = "Night light for Niri: the screens warm at sunset, worked out from the timezone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+serde.workspace = true
+jiff.workspace = true
+# Gamma ramps, through wlr-gamma-control, on a Wayland connection of its own.
+smithay-client-toolkit = { workspace = true, features = ["calloop"] }
+rustix.workspace = true
+
+[lints]
+workspace = true
