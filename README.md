@@ -33,11 +33,11 @@ carries `enso-<version>-x86_64-linux.tar.gz`, every tool in one folder, and
 its SHA-256:
 
 ```sh
-curl -LO https://github.com/formalemon/enso/releases/download/v0.1.0/enso-v0.1.0-x86_64-linux.tar.gz
-curl -LO https://github.com/formalemon/enso/releases/download/v0.1.0/enso-v0.1.0-x86_64-linux.tar.gz.sha256
-sha256sum -c enso-v0.1.0-x86_64-linux.tar.gz.sha256
-tar xf enso-v0.1.0-x86_64-linux.tar.gz
-cp enso-v0.1.0-x86_64-linux/enso-* ~/.local/bin/
+curl -LO https://github.com/formalemon/enso/releases/download/v0.2.0/enso-v0.2.0-x86_64-linux.tar.gz
+curl -LO https://github.com/formalemon/enso/releases/download/v0.2.0/enso-v0.2.0-x86_64-linux.tar.gz.sha256
+sha256sum -c enso-v0.2.0-x86_64-linux.tar.gz.sha256
+tar xf enso-v0.2.0-x86_64-linux.tar.gz
+cp enso-v0.2.0-x86_64-linux/enso-* ~/.local/bin/
 ```
 
 **From source**, with Rust 1.89 or newer:
