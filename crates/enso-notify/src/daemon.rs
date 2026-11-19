@@ -46,6 +46,9 @@ pub struct NotifyConfig {
     pub history_size: usize,
     /// Keep the history across restarts.
     pub history_keep: bool,
+    /// Do not disturb: notifications go quietly to the history instead of
+    /// showing as toasts — all but critical ones, which still show.
+    pub do_not_disturb: bool,
 }
 
 impl Default for NotifyConfig {
@@ -58,6 +61,7 @@ impl Default for NotifyConfig {
             history_rows: 5,
             history_size: 50,
             history_keep: true,
+            do_not_disturb: false,
         }
     }
 }
@@ -302,6 +306,12 @@ impl Daemon {
     }
 
     /// Height of the card for `note`, from its measured text.
+    /// Whether `note` waits quietly in the history: while Do not disturb
+    /// is on, everything but what's critical.
+    fn holds_back(&self, note: &Notification) -> bool {
+        self.config.do_not_disturb && note.urgency != Urgency::Critical
+    }
+
     fn toast_height(&self, note: &Notification, cx: &mut Cx<'_>) -> f32 {
         let body = if note.body.is_empty() {
             0.0
@@ -602,6 +612,13 @@ impl App for Daemon {
                     if !self.center.is_live(note.id) {
                         self.closed(note.id, CloseReason::Dismissed);
                     }
+                } else if self.holds_back(&note) {
+                    // Not now: it waits in the history, as a toast nobody
+                    // saw would, and the bell says so.
+                    if !self.center.is_live(note.id) {
+                        self.closed(note.id, CloseReason::Expired);
+                    }
+                    self.center.missed();
                 } else {
                     let height = self.toast_height(&note, cx);
                     self.stack.push(note, height, now);
@@ -624,6 +641,11 @@ impl App for Daemon {
                 if self.ctx.reload_theme() {
                     cx.redraw();
                 }
+                // Do not disturb, switched in the control center, is kept
+                // in the same directory.
+                let mut ctx = enso_core::Context::load_from(self.ctx.paths.clone());
+                let config: NotifyConfig = ctx.section("notify");
+                self.config.do_not_disturb = config.do_not_disturb;
             }
             Event::Message(Message::History(ask)) => {
                 let open = match ask {
@@ -801,6 +823,20 @@ mod tests {
         Offscreen::render(&mut text, (392, height), 2, |canvas| {
             daemon.draw(canvas, settled);
         })
+    }
+
+    #[test]
+    fn do_not_disturb_holds_back_all_but_the_critical() {
+        let mut daemon = daemon();
+        let normal = Notification::default();
+        let critical = Notification {
+            urgency: Urgency::Critical,
+            ..Notification::default()
+        };
+        assert!(!daemon.holds_back(&normal));
+        daemon.config.do_not_disturb = true;
+        assert!(daemon.holds_back(&normal));
+        assert!(!daemon.holds_back(&critical));
     }
 
     #[test]

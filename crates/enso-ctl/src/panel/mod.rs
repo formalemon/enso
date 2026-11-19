@@ -1,16 +1,17 @@
 //! The control center panel: a floating card in the corner of the screen.
 //!
-//! The first page is a glance and the quick controls — power readings,
-//! brightness, volume, and one row each for Wi-Fi, Bluetooth, and the theme.
-//! A row opens a page of its own: networks in range, devices, themes — and
-//! the volume opens Sound: which output, each application's level, and the
-//! microphone.
+//! The first page is a glance and the quick controls — the power profile
+//! and temperature, brightness, volume, and a row each for Wi-Fi and
+//! Bluetooth. A row opens a page of its own: networks in range, devices —
+//! and the volume opens Sound: which output, each application's level, and
+//! the microphone.
 //!
-//! Beside the first page, a swipe away (or Tab, or the dots at the foot),
-//! is Screen & sleep: when the screen locks, when the lock screen turns the
-//! screens off and puts the machine to sleep, and whether it locks before
-//! sleeping. What's chosen there is kept with enso's state, over
-//! `config.toml` ([`enso_core::chosen`]), and the lock watcher follows it.
+//! Beside it, a swipe away (or Tab, or the dots at the foot), is Settings:
+//! the theme, Do not disturb, and when the screen locks, when the lock
+//! screen turns the screens off and puts the machine to sleep, and whether
+//! it locks before sleeping. What's chosen there is kept with enso's state,
+//! over `config.toml` ([`enso_core::chosen`]), and the notification daemon
+//! and the lock watcher follow it.
 //!
 //! This module is the panel's state and behaviour; `draw` paints it. It never
 //! talks to the system itself: it sends [`Request`]s to the workers in
@@ -121,8 +122,9 @@ pub enum Message {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Main,
-    /// Beside the first page: when to lock, darken, and sleep.
-    Screen,
+    /// Beside the first page: the theme, Do not disturb, and when to lock,
+    /// darken, and sleep.
+    Settings,
     Sound,
     Wifi,
     Bluetooth,
@@ -142,7 +144,7 @@ enum Dial {
 }
 
 /// The pages side by side, which a swipe moves between.
-const SIDE_BY_SIDE: [Page; 2] = [Page::Main, Page::Screen];
+const SIDE_BY_SIDE: [Page; 2] = [Page::Main, Page::Settings];
 
 /// A time on the Screen & sleep page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -249,12 +251,21 @@ fn duration(seconds: u64) -> String {
     }
 }
 
-/// A part of the Sound page.
+/// A part of the Sound page, or of Settings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Section {
     Output,
     Apps,
     Microphone,
+    /// Settings' times and the lock.
+    Screen,
+}
+
+/// `[notify]`'s one setting the panel switches.
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default)]
+struct Quiet {
+    do_not_disturb: bool,
 }
 
 /// Something on the current page that can be selected.
@@ -280,6 +291,8 @@ enum Item {
     Timer(Timer),
     /// Whether to lock before sleeping.
     BeforeSleep,
+    /// Notifications wait quietly in the history.
+    DoNotDisturb,
 }
 
 /// What a click lands on.
@@ -292,8 +305,9 @@ enum Hit {
     Slider(usize, Dial, Rect),
     /// The speaker at the start of a volume slider: mute.
     Mute(Dial),
-    /// The chevron at the end of the volume row: the Sound page.
-    OpenSound,
+    /// The volume row away from its track and its speaker: the Sound page.
+    /// The row's item index.
+    OpenSound(usize),
     /// The switch on the Sound page's microphone heading.
     MicSwitch,
     /// The on/off switch of Wi-Fi or Bluetooth.
@@ -344,8 +358,11 @@ pub struct Panel {
     page: Page,
     /// Selected item on the current page.
     selected: usize,
-    /// Where the selection was on the first page, to return to.
-    main_selected: usize,
+    /// Where the selection was on each page side by side, to return to.
+    home_selected: [usize; SIDE_BY_SIDE.len()],
+    /// The page side by side that the page showing was opened from, and
+    /// goes back to.
+    home: Page,
     /// First visible item of a scrolling list.
     offset: usize,
     /// Scroll distance not yet turned into rows.
@@ -371,6 +388,9 @@ pub struct Panel {
     /// On while the microphone is live.
     mic_switch: Tween<f32>,
     before_sleep_switch: Tween<f32>,
+    quiet_switch: Tween<f32>,
+    /// Do not disturb.
+    quiet: bool,
 
     /// When to lock, darken, and sleep.
     lock: LockTimes,
@@ -405,7 +425,8 @@ impl Panel {
             sound: None,
             page: Page::Main,
             selected: 0,
-            main_selected: 0,
+            home_selected: [0; SIDE_BY_SIDE.len()],
+            home: Page::Main,
             offset: 0,
             scroll: 0.0,
             prompt: None,
@@ -418,6 +439,8 @@ impl Panel {
             slide_from: 1.0,
             mic_switch: Tween::new(0.0),
             before_sleep_switch: Tween::new(0.0),
+            quiet_switch: Tween::new(0.0),
+            quiet: false,
             lock: LockTimes::default(),
             swipe: 0.0,
             wifi_switch: Tween::new(0.0),
@@ -429,10 +452,11 @@ impl Panel {
             card: Rect::default(),
             hits: Vec::new(),
         };
-        panel.read_lock_times();
+        panel.read_settings();
         panel
             .before_sleep_switch
             .jump(panel.before_sleep_switch.target());
+        panel.quiet_switch.jump(panel.quiet_switch.target());
         // The card opens at its size instead of growing into it.
         panel.height.jump(panel.height_target());
         panel
@@ -506,7 +530,7 @@ impl Panel {
                 if self.sound.as_ref().is_some_and(|s| s.output.is_some()) {
                     items.push(Item::Slider(Dial::Volume));
                 }
-                items.extend([Page::Wifi, Page::Bluetooth, Page::Theme].map(Item::Open));
+                items.extend([Page::Wifi, Page::Bluetooth].map(Item::Open));
                 items
             }
             Page::Sound => {
@@ -536,7 +560,10 @@ impl Panel {
             Page::Wifi => (0..self.networks().len()).map(Item::Network).collect(),
             Page::Bluetooth => (0..self.devices().len()).map(Item::Device).collect(),
             Page::Theme => (0..self.ctx.themes.len()).map(Item::Theme).collect(),
-            Page::Screen => vec![
+            Page::Settings => vec![
+                Item::Open(Page::Theme),
+                Item::DoNotDisturb,
+                Item::Heading(Section::Screen),
                 Item::Timer(Timer::Lock),
                 Item::Timer(Timer::ScreenOff),
                 Item::Timer(Timer::Sleep),
@@ -571,7 +598,7 @@ impl Panel {
     /// Rows of the list that fit at once.
     fn visible_rows(&self) -> usize {
         match self.page {
-            Page::Main | Page::Screen => self.items().len(),
+            Page::Main | Page::Settings => self.items().len(),
             Page::Sound => self.items().len().min(MAX_SOUND_ROWS),
             _ => self.items().len().min(MAX_ROWS),
         }
@@ -601,15 +628,7 @@ impl Panel {
                 };
                 PAD + tiles + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM
             }
-            Page::Screen => {
-                space::SM
-                    + ROW_HEIGHT
-                    + space::XS
-                    + rows(self.visible_rows())
-                    + notice
-                    + DOTS_HEIGHT
-                    + space::SM
-            }
+            Page::Settings => PAD + rows(self.visible_rows()) + notice + DOTS_HEIGHT + space::SM,
             _ => {
                 // An empty list still says why it is empty, on one row.
                 let list = self.visible_rows().max(1) + usize::from(self.prompt_index().is_some());
@@ -696,6 +715,7 @@ impl Panel {
         self.mic_switch.set(on(live), toggle, now);
         self.before_sleep_switch
             .set(on(Some(self.lock.before_sleep)), toggle, now);
+        self.quiet_switch.set(on(Some(self.quiet)), toggle, now);
     }
 
     // ---- News from the system ------------------------------------------------
@@ -741,7 +761,7 @@ impl Panel {
                 self.sound = sound;
                 if self.page == Page::Sound {
                     if self.sound.is_none() {
-                        self.open(Page::Main);
+                        self.open(self.home);
                     } else if let Some(index) =
                         selected.and_then(|item| self.items().iter().position(|now| *now == item))
                     {
@@ -763,7 +783,7 @@ impl Panel {
                         self.prompt = None;
                     }
                     if self.wifi.is_none() {
-                        self.open(Page::Main);
+                        self.open(self.home);
                     }
                 }
                 if first {
@@ -778,7 +798,7 @@ impl Panel {
                 if self.page == Page::Bluetooth {
                     self.reselect(selected);
                     if self.bluetooth.is_none() {
-                        self.open(Page::Main);
+                        self.open(self.home);
                     }
                 }
                 if first {
@@ -843,11 +863,18 @@ impl Panel {
         if page == self.page || unavailable {
             return;
         }
-        match self.page {
-            Page::Main => self.main_selected = self.selected,
-            // Only look for devices while someone is looking at them.
-            Page::Bluetooth => self.request(Request::BluetoothDiscover(false)),
-            _ => {}
+        let side = |page: Page| SIDE_BY_SIDE.iter().position(|side| *side == page);
+        let (from, to) = (side(self.page), side(page));
+        if let Some(at) = from {
+            self.home_selected[at] = self.selected;
+            // A page opened from here comes back here.
+            if to.is_none() {
+                self.home = self.page;
+            }
+        }
+        // Only look for devices while someone is looking at them.
+        if self.page == Page::Bluetooth {
+            self.request(Request::BluetoothDiscover(false));
         }
         self.page = page;
         self.swipe = 0.0;
@@ -856,14 +883,14 @@ impl Panel {
         self.offset = 0;
         self.scroll = 0.0;
         self.selected = match page {
-            Page::Main => self.main_selected,
+            Page::Main | Page::Settings => to.map_or(0, |at| self.home_selected[at]),
             Page::Theme => self
                 .ctx
                 .themes
                 .iter()
                 .position(|theme| theme.id == self.ctx.theme.id)
                 .unwrap_or(0),
-            Page::Wifi | Page::Bluetooth | Page::Sound | Page::Screen => 0,
+            Page::Wifi | Page::Bluetooth | Page::Sound => 0,
         };
         match page {
             Page::Wifi if self.wifi.as_ref().is_some_and(|w| w.powered) => {
@@ -875,9 +902,14 @@ impl Panel {
             _ => {}
         }
 
-        // The new page slides in from the side it lives on; the highlight is
-        // simply there, not carried over from the page before.
-        self.slide_from = if page == Page::Main { -1.0 } else { 1.0 };
+        // The new page slides in from the side it lives on — the right for
+        // one further along or opened from here, the left going back — and
+        // the highlight is simply there, not carried over.
+        self.slide_from = match (from, to) {
+            (Some(from), Some(to)) if to < from => -1.0,
+            (None, Some(_)) => -1.0,
+            _ => 1.0,
+        };
         self.slide = Tween::new(1.0);
         self.slide.set(
             0.0,
@@ -925,6 +957,7 @@ impl Panel {
             Some(Item::Theme(index)) => self.apply_theme(index),
             Some(Item::Timer(timer)) => self.step_timer(timer, 1, true),
             Some(Item::BeforeSleep) => self.toggle_before_sleep(),
+            Some(Item::DoNotDisturb) => self.toggle_quiet(),
             Some(Item::Output(index)) => self.choose_device(false, index),
             Some(Item::Input(index)) => self.choose_device(true, index),
             Some(Item::Slider(_) | Item::Heading(_) | Item::Silence) | None => {}
@@ -1138,11 +1171,19 @@ impl Panel {
         });
     }
 
-    /// Read when to lock, darken, and sleep: the config file's `[lock]`,
-    /// with what was chosen here over it.
-    fn read_lock_times(&mut self) {
+    /// Read what Settings shows: the config file's `[lock]` and `[notify]`,
+    /// with what was chosen here over them.
+    fn read_settings(&mut self) {
         let mut ctx = Context::load_from(self.ctx.paths.clone());
         self.lock = ctx.section("lock");
+        self.quiet = ctx.section::<Quiet>("notify").do_not_disturb;
+    }
+
+    /// Do not disturb, on or off, and keep it.
+    fn toggle_quiet(&mut self) {
+        self.quiet = !self.quiet;
+        let kept = chosen::set(&self.ctx.paths, "notify", "do_not_disturb", self.quiet);
+        self.kept(kept);
     }
 
     /// Move a time `step` choices along, and keep it.
@@ -1249,6 +1290,7 @@ impl Panel {
         };
         let item = self.items().get(self.selected).copied();
         let on_main = self.page == Page::Main;
+        let on_home = self.side_by_side();
         // The pages side by side turn with Tab, the page keys, and brackets.
         if self.side_by_side() {
             let step = match pressed {
@@ -1277,16 +1319,20 @@ impl Panel {
             (Key::Right | Key::Char('l'), Some(Item::Timer(timer))) => {
                 self.step_timer(timer, 1, false);
             }
-            (Key::Char(' '), Some(Item::BeforeSleep | Item::Timer(_))) => {
+            (Key::Char(' '), Some(Item::BeforeSleep | Item::DoNotDisturb | Item::Timer(_))) => {
                 self.activate(self.selected);
             }
-            (Key::Escape, _) if on_main => return Outcome::Close,
+            (Key::Escape, _) if on_home => return Outcome::Close,
             // On a slider, left and right adjust it — also on a page, where
             // they would otherwise lead back.
             (Key::Left | Key::Char('h'), Some(Item::Slider(dial))) => self.nudge(dial, false),
             (Key::Right | Key::Char('l'), Some(Item::Slider(dial))) => self.nudge(dial, true),
-            (Key::Escape | Key::Backspace | Key::Left | Key::Char('h'), _) if !on_main => {
-                self.open(Page::Main);
+            (Key::Escape | Key::Backspace | Key::Left | Key::Char('h'), _) if !on_home => {
+                self.open(self.home);
+            }
+            // On Settings, left is the first page.
+            (Key::Left | Key::Char('h'), _) if self.page == Page::Settings => {
+                self.turn(-1);
             }
             // The volume leads to the Sound page; m mutes what is selected.
             (Key::Enter, Some(Item::Slider(Dial::Volume))) if on_main => self.open(Page::Sound),
@@ -1353,7 +1399,7 @@ impl Panel {
                 self.settle();
             }
             Some(Hit::Mute(dial)) => self.toggle_mute(dial),
-            Some(Hit::OpenSound) => self.open(Page::Sound),
+            Some(Hit::OpenSound(_)) => self.open(Page::Sound),
             Some(Hit::MicSwitch) => self.toggle_mute(Dial::Mic),
             Some(Hit::Item(index)) => {
                 // Clicking elsewhere while a passphrase is asked for drops it.
@@ -1364,7 +1410,7 @@ impl Panel {
                 self.activate(index);
             }
             Some(Hit::Switch(page)) => self.toggle(page),
-            Some(Hit::Back) => self.open(Page::Main),
+            Some(Hit::Back) => self.open(self.home),
             Some(Hit::Profile) => self.cycle_profile(),
             Some(Hit::Step(index, timer, step)) => {
                 self.selected = index;
@@ -1385,7 +1431,12 @@ impl Panel {
             return Outcome::Changed;
         }
         let index = match self.hit(x, y) {
-            Some(Hit::Item(index) | Hit::Slider(index, ..) | Hit::Step(index, ..)) => index,
+            Some(
+                Hit::Item(index)
+                | Hit::Slider(index, ..)
+                | Hit::Step(index, ..)
+                | Hit::OpenSound(index),
+            ) => index,
             _ => return Outcome::Ignored,
         };
         // The pointer selects what it rests on — but not out from under a
@@ -1599,7 +1650,7 @@ impl App for Panel {
             Event::Message(Message::ThemeChanged) => {
                 self.ctx.reload_theme();
                 // The state directory changed: perhaps the times too.
-                self.read_lock_times();
+                self.read_settings();
                 self.settle();
                 Outcome::Changed
             }

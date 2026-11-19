@@ -12,7 +12,6 @@ use enso_core::{
 };
 use enso_sys::{
     bluetooth::Device,
-    power::BatteryStatus,
     wifi::{Link, Security},
 };
 use enso_ui::{
@@ -48,29 +47,10 @@ pub(super) struct Tile {
     hit: Option<Hit>,
 }
 
-/// The power readings worth a tile, in order.
+/// The readings worth a tile, in order: those the machine has.
 pub(super) fn tiles(hardware: &Hardware) -> Vec<Tile> {
     let mut tiles = Vec::new();
-    if let Some(battery) = &hardware.battery {
-        let label = match (battery.status, battery.minutes_left) {
-            (BatteryStatus::Charging, Some(minutes)) => format!("{} to full", brief(minutes)),
-            (BatteryStatus::Charging, None) => "Charging".to_owned(),
-            (BatteryStatus::Discharging, Some(minutes)) => format!("{} left", brief(minutes)),
-            (BatteryStatus::Full, _) => "Full".to_owned(),
-            (BatteryStatus::NotCharging, _) => "Plugged in".to_owned(),
-            _ => "Battery".to_owned(),
-        };
-        tiles.push(Tile {
-            icon: if battery.is_plugged_in() {
-                icon::BATTERY_CHARGING
-            } else {
-                icon::BATTERY
-            },
-            value: format!("{}%", battery.percent),
-            label,
-            hit: None,
-        });
-    }
+    // The battery is the bar's to show: it is always in sight there.
     if let Some(profile) = &hardware.profile {
         tiles.push(Tile {
             icon: icon::POWER_PROFILE,
@@ -93,15 +73,6 @@ pub(super) fn tiles(hardware: &Hardware) -> Vec<Tile> {
         });
     }
     tiles
-}
-
-/// A duration short enough for a tile: `2h 15m`, `45m`.
-fn brief(minutes: u32) -> String {
-    match (minutes / 60, minutes % 60) {
-        (0, minutes) => format!("{minutes}m"),
-        (hours, 0) => format!("{hours}h"),
-        (hours, minutes) => format!("{hours}h {minutes}m"),
-    }
 }
 
 /// `balanced` → `Balanced`.
@@ -171,7 +142,7 @@ impl Panel {
         canvas.set_opacity(presence * (1.0 - slide));
         let bottom = match self.page {
             Page::Main => self.paint_main(canvas, card, shift, &look, now),
-            Page::Screen => self.paint_screen(canvas, card, shift, &look, now),
+            Page::Settings => self.paint_settings(canvas, card, shift, &look, now),
             _ => self.paint_page(canvas, card, shift, &look, now),
         };
         if let Some(notice) = &self.notice {
@@ -351,13 +322,16 @@ impl Panel {
         let (_, cy) = track.center();
         canvas.circle(knob, cy, KNOB, colors.text);
 
-        // Specific targets first: the mute button and the chevron, then the
-        // row, which is the slider.
+        // Specific targets first: the mute button, then the track — a
+        // little wider than it, for the knob at either end — which is the
+        // slider. The rest of the row only selects it, but the volume's on
+        // the first page leads on to the Sound page, its chevron included.
         if dial != Dial::Brightness {
             let target = Rect::new(row.x, row.y, button.right() + space::XS - row.x, row.h);
             self.hits.push((target, Hit::Mute(dial)));
         }
-        // On the first page the volume leads on to the Sound page.
+        let grip = Rect::new(track.x - KNOB, row.y, track.w + 2.0 * KNOB, row.h);
+        self.hits.push((grip, Hit::Slider(index, dial, travel)));
         if dial == Dial::Volume && self.page == Page::Main {
             let chevron = Rect::new(content.right() - CHEVRON, content.y, CHEVRON, content.h);
             canvas.icon(
@@ -367,15 +341,10 @@ impl Panel {
                 chevron,
                 Align::End,
             );
-            let target = Rect::new(
-                chevron.x - space::SM,
-                row.y,
-                row.right() - chevron.x + space::SM,
-                row.h,
-            );
-            self.hits.push((target, Hit::OpenSound));
+            self.hits.push((row, Hit::OpenSound(index)));
+        } else {
+            self.hits.push((row, Hit::Item(index)));
         }
-        self.hits.push((row, Hit::Slider(index, dial, travel)));
     }
 
     /// A row of the first page that opens another: Wi-Fi, Bluetooth, Theme.
@@ -590,7 +559,7 @@ impl Panel {
                         Align::Start,
                     );
                 }
-                Item::Open(_) | Item::Timer(_) | Item::BeforeSleep => {}
+                Item::Open(_) | Item::Timer(_) | Item::BeforeSleep | Item::DoNotDisturb => {}
             }
             // Headings are not for choosing; sliders have targets of their own.
             if Self::selectable(*item) && !matches!(item, Item::Slider(_)) {
@@ -609,9 +578,9 @@ impl Panel {
         bottom
     }
 
-    /// Screen & sleep: when to lock, darken, and sleep. Returns where its
-    /// content ends.
-    fn paint_screen(
+    /// Settings: the theme, Do not disturb, and the screen's times.
+    /// Returns where its content ends.
+    fn paint_settings(
         &mut self,
         canvas: &mut Canvas<'_>,
         card: Rect,
@@ -620,18 +589,12 @@ impl Panel {
         now: Instant,
     ) -> f32 {
         let colors = &look.colors;
-        let header = Rect::new(
+        let list = Rect::new(
             card.x + space::SM + shift,
-            card.y + space::SM,
+            card.y + PAD,
             card.w - 2.0 * space::SM,
-            ROW_HEIGHT,
+            0.0,
         );
-        canvas.text_in(
-            &Text::new("Screen & sleep", look.base, colors.text).bold(),
-            header.inset_xy(space::SM, 0.0),
-            Align::Start,
-        );
-        let list = Rect::new(header.x, header.bottom() + space::XS, header.w, 0.0);
         self.paint_highlight(canvas, list, look, now);
         let items = self.items();
         let mut bottom = list.y;
@@ -640,8 +603,18 @@ impl Panel {
             if row.bottom() > card.bottom() {
                 break;
             }
+            bottom = row.bottom();
             let content = row.inset_xy(space::SM, 0.0);
-            let (glyph, title) = match item {
+            let (glyph, title) = match *item {
+                Item::Open(page) => {
+                    self.paint_entry(canvas, row, index, page, look, now);
+                    continue;
+                }
+                Item::Heading(section) => {
+                    self.paint_heading(canvas, row, section, look, now);
+                    continue;
+                }
+                Item::DoNotDisturb => (icon::BELL, "Do not disturb"),
                 Item::Timer(Timer::Lock) => (icon::LOCK, "Lock after"),
                 Item::Timer(Timer::ScreenOff) => (icon::BRIGHTNESS, "Screen off when locked"),
                 Item::Timer(Timer::Sleep) => (icon::POWER, "Sleep when locked"),
@@ -651,24 +624,32 @@ impl Panel {
             let right = match *item {
                 Item::Timer(timer) => self.paint_time(canvas, content, row, index, timer, look),
                 _ => {
+                    let on = if *item == Item::DoNotDisturb {
+                        self.quiet_switch.get(now)
+                    } else {
+                        self.before_sleep_switch.get(now)
+                    };
+                    // In line with the switches on the first page.
                     let rect = Rect::new(
-                        content.right() - SWITCH.0,
+                        content.right() - CHEVRON - space::XS - SWITCH.0,
                         content.y + (content.h - SWITCH.1) / 2.0,
                         SWITCH.0,
                         SWITCH.1,
                     );
-                    paint_switch(canvas, rect, self.before_sleep_switch.get(now), look);
+                    paint_switch(canvas, rect, on, look);
                     rect.x - space::MD
                 }
             };
             let x = content.x + look.icon_width + space::SM;
+            let title = Text::new(title, look.base, colors.text)
+                .medium()
+                .max_width(right - x);
             canvas.text_in(
-                &Text::new(title, look.base, colors.text).max_width(right - x),
+                &title,
                 Rect::new(x, content.y, right - x, content.h),
                 Align::Start,
             );
             self.hits.push((row, Hit::Item(index)));
-            bottom = row.bottom();
         }
         bottom
     }
@@ -893,6 +874,7 @@ impl Panel {
             Section::Output => "Output",
             Section::Apps => "Applications",
             Section::Microphone => "Microphone",
+            Section::Screen => "Screen & sleep",
         };
         // Set low in its row, so it sits with the rows it heads.
         let label = Rect::new(

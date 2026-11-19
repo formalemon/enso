@@ -254,7 +254,6 @@ fn the_first_page_shows_readings_sliders_and_entries() {
                 Item::Slider(Dial::Volume),
                 Item::Open(Page::Wifi),
                 Item::Open(Page::Bluetooth),
-                Item::Open(Page::Theme),
             ]
         );
         // Everything fits inside the card, which sits in the corner.
@@ -302,24 +301,19 @@ fn tiles_say_what_matters() {
     };
     let pair = |value: &str, label: &str| (value.to_owned(), label.to_owned());
 
+    // The battery is the bar's: it has no tile here.
     let mut hardware = hardware();
     assert_eq!(
         read(&hardware),
-        [
-            pair("82%", "2h 15m left"),
-            pair("Balanced", "Profile"),
-            pair("54°", "2400 rpm"),
-        ]
+        [pair("Balanced", "Profile"), pair("54°", "2400 rpm")]
     );
-
-    let battery = hardware.battery.as_mut().unwrap();
-    battery.status = BatteryStatus::Charging;
-    battery.minutes_left = Some(40);
     hardware.fans[0].rpm = 0;
-    assert_eq!(read(&hardware)[0], pair("82%", "40m to full"));
-    assert_eq!(read(&hardware)[2], pair("54°", "CPU"));
+    assert_eq!(read(&hardware)[1], pair("54°", "CPU"));
 
-    // A desktop: no battery, no profile, nothing to show for them.
+    // A desktop without power profiles shows the temperature alone, and a
+    // machine that says nothing shows no tiles.
+    hardware.profile = None;
+    assert_eq!(read(&hardware), [pair("54°", "CPU")]);
     assert!(draw::tiles(&Hardware::default()).is_empty());
 }
 
@@ -349,7 +343,7 @@ fn keys_move_adjust_and_open() {
     // Navigation wraps.
     press(&mut panel, Key::Char('k'));
     press(&mut panel, Key::Char('k'));
-    assert_eq!(panel.items()[panel.selected], Item::Open(Page::Theme));
+    assert_eq!(panel.items()[panel.selected], Item::Open(Page::Bluetooth));
     press(&mut panel, Key::Down);
     assert_eq!(panel.selected, 0);
 
@@ -413,7 +407,8 @@ fn a_slider_follows_the_pointer_and_stays_ahead_of_the_system() {
 
     // Released, the pointer goes back to selecting rows.
     panel.dragging = None;
-    let (x, y) = centre_of(&panel, |hit| matches!(hit, Hit::Item(_)));
+    let wifi = item_at(&panel, Item::Open(Page::Wifi));
+    let (x, y) = centre_of(&panel, |hit| *hit == Hit::Item(wifi));
     assert_eq!(panel.on_move(x, y), Outcome::Changed);
     assert!(sent(&requests).is_empty());
     assert_eq!(panel.items()[panel.selected], Item::Open(Page::Wifi));
@@ -434,11 +429,33 @@ fn the_volume_leads_to_a_sound_page() {
     let (mut panel, requests) = panel("sound");
     render(&mut panel);
 
-    // The chevron at the end of the volume row opens it, as does Enter.
-    let (x, y) = centre_of(&panel, |hit| *hit == Hit::OpenSound);
-    assert_eq!(panel.on_press(x, y), Outcome::Changed);
-    assert_eq!(panel.page, Page::Sound);
-    press(&mut panel, Key::Escape);
+    // Anywhere on the volume row but its track and its speaker opens it —
+    // the reading, the chevron, the gaps — as does Enter.
+    let row = panel
+        .hits
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::OpenSound(_)))
+        .map(|(rect, _)| *rect)
+        .unwrap();
+    let grip = panel
+        .hits
+        .iter()
+        .find(|(_, hit)| matches!(hit, Hit::Slider(_, Dial::Volume, _)))
+        .map(|(rect, _)| *rect)
+        .unwrap();
+    let (_, y) = row.center();
+    for x in [grip.right() + 4.0, row.right() - 6.0] {
+        assert_eq!(panel.on_press(x, y), Outcome::Changed);
+        assert_eq!(panel.page, Page::Sound, "a press at {x}");
+        press(&mut panel, Key::Escape);
+        render(&mut panel);
+    }
+    // On the track it's the slider.
+    panel.on_press(grip.x + grip.w / 2.0, y);
+    assert_eq!(panel.page, Page::Main);
+    assert!(panel.dragging.is_some());
+    panel.dragging = None;
+    sent(&requests);
     panel.selected = item_at(&panel, Item::Slider(Dial::Volume));
     press(&mut panel, Key::Enter);
     assert_eq!(panel.page, Page::Sound);
@@ -703,7 +720,7 @@ fn a_missing_service_dims_its_row_and_cannot_be_opened() {
     let frame = render(&mut panel);
 
     // No backlight, no sound: the sliders are gone, and so are the tiles.
-    assert_eq!(panel.items().len(), 3);
+    assert_eq!(panel.items().len(), 2);
     assert_eq!(wifi_summary(panel.wifi.as_ref()), "Unavailable");
     panel.selected = 0;
     assert_eq!(press(&mut panel, Key::Enter), Outcome::Changed);
@@ -1092,7 +1109,7 @@ fn screen_and_sleep_sits_beside_the_first_page() {
     let (mut panel, _requests) = panel("screen-turn");
     // Tab turns to it, and goes round back again.
     assert_eq!(press(&mut panel, Key::Tab), Outcome::Changed);
-    assert_eq!(panel.page, Page::Screen);
+    assert_eq!(panel.page, Page::Settings);
     assert_eq!(press(&mut panel, Key::Tab), Outcome::Changed);
     assert_eq!(panel.page, Page::Main);
 
@@ -1100,14 +1117,14 @@ fn screen_and_sleep_sits_beside_the_first_page() {
     assert_eq!(panel.on_swipe(30.0, false), Outcome::Ignored);
     assert_eq!(panel.page, Page::Main);
     assert_eq!(panel.on_swipe(40.0, false), Outcome::Changed);
-    assert_eq!(panel.page, Page::Screen);
+    assert_eq!(panel.page, Page::Settings);
     // Further along the same way there's nothing more.
     assert_eq!(panel.on_swipe(80.0, false), Outcome::Ignored);
     assert_eq!(panel.on_swipe(-80.0, false), Outcome::Changed);
     assert_eq!(panel.page, Page::Main);
     // The wheel tilted sideways turns a page a notch.
     assert_eq!(panel.on_swipe(15.0, true), Outcome::Changed);
-    assert_eq!(panel.page, Page::Screen);
+    assert_eq!(panel.page, Page::Settings);
 
     let frame = render(&mut panel);
     snapshot(&frame, "ctl-screen");
@@ -1125,16 +1142,16 @@ fn screen_and_sleep_sits_beside_the_first_page() {
         panel
             .hits
             .iter()
-            .any(|(_, hit)| *hit == Hit::Dot(Page::Screen))
+            .any(|(_, hit)| *hit == Hit::Dot(Page::Settings))
     );
 }
 
 #[test]
 fn times_step_and_are_kept_for_the_lock_screen() {
     let (mut panel, _requests) = panel("screen-times");
-    panel.open(Page::Screen);
+    panel.open(Page::Settings);
     assert_eq!(panel.lock, LockTimes::default());
-    assert_eq!(panel.items()[panel.selected], Item::Timer(Timer::Lock));
+    panel.selected = item_at(&panel, Item::Timer(Timer::Lock));
 
     // Five minutes, one step longer: ten.
     press(&mut panel, Key::Right);
@@ -1170,6 +1187,50 @@ fn times_step_and_are_kept_for_the_lock_screen() {
     assert_eq!(again.lock, panel.lock);
     let frame = render(&mut panel);
     snapshot(&frame, "ctl-screen-changed");
+}
+
+#[test]
+fn settings_holds_the_theme_and_do_not_disturb() {
+    let (mut panel, _requests) = panel("settings");
+    panel.open(Page::Settings);
+    assert_eq!(
+        panel.items(),
+        [
+            Item::Open(Page::Theme),
+            Item::DoNotDisturb,
+            Item::Heading(Section::Screen),
+            Item::Timer(Timer::Lock),
+            Item::Timer(Timer::ScreenOff),
+            Item::Timer(Timer::Sleep),
+            Item::BeforeSleep,
+        ]
+    );
+    // The theme opens its page, which goes back to Settings, not the first
+    // page — with the theme still selected.
+    assert_eq!(press(&mut panel, Key::Enter), Outcome::Changed);
+    assert_eq!(panel.page, Page::Theme);
+    press(&mut panel, Key::Escape);
+    assert_eq!(panel.page, Page::Settings);
+    assert_eq!(panel.items()[panel.selected], Item::Open(Page::Theme));
+
+    // Do not disturb is kept where enso-notify reads it.
+    press(&mut panel, Key::Down);
+    assert_eq!(panel.items()[panel.selected], Item::DoNotDisturb);
+    press(&mut panel, Key::Char(' '));
+    assert!(panel.quiet);
+    let mut ctx = Context::load_from(panel.ctx.paths.clone());
+    assert!(ctx.section::<Quiet>("notify").do_not_disturb);
+    // The selection steps over the heading.
+    press(&mut panel, Key::Down);
+    assert_eq!(panel.items()[panel.selected], Item::Timer(Timer::Lock));
+
+    let frame = render(&mut panel);
+    assert_eq!(panel.card.h, panel.height_target());
+    assert!(panel.hits.iter().all(|(rect, _)| {
+        panel.card.contains(rect.x, rect.y)
+            && panel.card.contains(rect.right() - 1.0, rect.bottom() - 1.0)
+    }));
+    snapshot(&frame, "ctl-settings");
 }
 
 #[test]

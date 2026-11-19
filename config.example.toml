@@ -126,6 +126,10 @@ history_size = 50
 # Keep the history across restarts and logins (its words, in
 # ~/.local/state/enso/notify/history.toml). false forgets it with the session.
 history_keep = true
+# Do not disturb: notifications go quietly to the history (the bell counts
+# them) instead of showing; critical ones still show. The control center's
+# Settings page switches it too.
+do_not_disturb = false
 
 [ctl]
 width = 340

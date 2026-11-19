@@ -259,12 +259,14 @@ while one is open leaves it as it is.
 Without `enso-ctl` or `enso-notify` installed the island is simply a readout.
 
 **`enso-ctl`** — one card. The first page is the glance and the quick
-controls: battery (with time left), power profile, CPU temperature and fan
-speed; a slider each for screen brightness and volume; and a row each for
-Wi-Fi, Bluetooth, and the theme, the first two with their on/off switch.
+controls: the power profile and the CPU's temperature and fan speed (the
+battery is the bar's); a slider each for screen brightness and volume; and
+a row each for Wi-Fi and Bluetooth, with their on/off switch. Tiles show
+only what the machine has, so a desktop without power profiles shows the
+temperature alone.
 
-The volume row's speaker is its mute button, and the chevron at its end
-leads to the Sound page.
+The volume row's speaker is its mute button and its track is the slider;
+anywhere else on the row leads to the Sound page.
 
 A row opens a page of its own:
 
@@ -280,17 +282,18 @@ A row opens a page of its own:
   one slider, with its own mute, for every application that is playing (all
   of a browser's tabs count as one). Then the microphone: an on/off switch,
   its level, and the microphones to choose between.
-- **Theme** is the picker. Choosing one themes everything `theme set` does:
-  see [Theming](#theming).
+- **Theme**, from Settings, is the picker. Choosing one themes everything
+  `theme set` does: see [Theming](#theming).
 
 Beside the first page, a sideways swipe on the touchpad away — or `Tab`,
-the page keys, or the dots at the card's foot — is **Screen & sleep**: how
-long the machine sits idle before the screen locks, how long the lock screen
-waits before turning the screens off and before putting the machine to
-sleep, and whether it locks just before sleeping. Each time steps with its
-arrows (or `h`/`l`). What's chosen there is kept in
-`~/.local/state/enso/settings.toml`, laid over `config.toml`'s `[lock]`
-without touching it, and the lock watcher follows it at once.
+the page keys, or the dots at the card's foot — is **Settings**: the theme,
+**Do not disturb**, and the screen and sleep: how long the machine sits
+idle before the screen locks, how long the lock screen waits before turning
+the screens off and before putting the machine to sleep, and whether it
+locks just before sleeping. Each time steps with its arrows (or `h`/`l`).
+What's chosen there is kept in `~/.local/state/enso/settings.toml`, laid
+over `config.toml`'s `[notify]` and `[lock]` without touching it, and the
+notification daemon and the lock watcher follow it at once.
 
 Keys: `j`/`k` or arrows move; `Enter` or `l` opens or chooses; `h`, `Esc`, or
 `Backspace` goes back; `h`/`l` adjust a slider or a time; `Tab` turns to the
@@ -424,6 +427,9 @@ showing.
   `notify-send -h int:value:60 -h string:x-canonical-private-synchronous:volume Volume`.
 - **Markup** in the body is understood and shown as plain text.
 - **Reading time.** Nothing expires while the pointer is on the toasts.
+- **Do not disturb** (`do_not_disturb`, or the control center's Settings):
+  notifications go quietly to the history, and the bell counts them;
+  critical ones — a battery about to run out — still show.
 - **History.** `enso-notify history` — or a click on the bar's bell — opens
   a card where the toasts appear, listing the last 50 notifications, newest
   first. Five show at once and the rest are a scroll away: the list glides
@@ -538,9 +544,9 @@ presses the key.
 spawn-at-startup "enso-lock" "watch"
 ```
 
-All four times — `idle_after`, `screen_off_after`, `suspend_after`, and
-`before_sleep` — can be changed from the control center's Screen & sleep
-page as well as in `config.toml`; the watcher picks up a change at once.
+All four — `idle_after`, `screen_off_after`, `suspend_after`, and
+`before_sleep` — can be changed from the control center's Settings page as
+well as in `config.toml`; the watcher picks up a change at once.
 
 Only one lock screen runs at a time: a second, from the key while the first
 is up, steps aside.
@@ -883,3 +889,7 @@ one.
 - **enso-files** — the plan's last phase: saved searches, restoring the
   last session's tabs, checksums, tags, and finding duplicates.
 - **Releases** — builds for aarch64.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
