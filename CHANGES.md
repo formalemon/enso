@@ -15,6 +15,12 @@ places; this file is current. Add to it with each change worth mentioning.
   README's roadmap item "fractional scaling for the single-surface runtime"
   is done.
 
+### enso-keyring
+
+- **Secrets read back as the spec has them.** `GetSecret` answered with the
+  secret's four parts as four arguments rather than one structure, so
+  clients such as `secret-tool lookup` couldn't read what they had stored.
+
 ## 2026-11-18
 
 ### Across the suite

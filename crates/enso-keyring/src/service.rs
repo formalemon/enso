@@ -83,7 +83,8 @@ pub enum Error {
 }
 
 /// `(session, parameters, value, content type)`, as the spec has a secret.
-type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+struct Secret(OwnedObjectPath, Vec<u8>, Vec<u8>, String);
 
 /// Put every collection and item in the index on the bus.
 pub async fn publish(connection: &Connection, state: &State) -> zbus::Result<()> {
@@ -281,7 +282,7 @@ impl Service {
             {
                 secrets.insert(
                     item,
-                    (
+                    Secret(
                         session.clone(),
                         Vec::new(),
                         found.secret.to_vec(),
@@ -398,7 +399,7 @@ impl CollectionObject {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let (_, _, value, content_type) = secret;
+        let Secret(_, _, value, content_type) = secret;
         let now = store::now();
         let item = Item {
             label,
@@ -565,20 +566,22 @@ impl ItemObject {
         Ok(root_path())
     }
 
-    async fn get_secret(&self, session: OwnedObjectPath) -> Result<Secret, Error> {
+    // The 1-tuple matters: zbus spreads a returned struct across the reply's
+    // arguments, but the spec has one argument that *is* the struct, `(oayays)`.
+    async fn get_secret(&self, session: OwnedObjectPath) -> Result<(Secret,), Error> {
         self.with(|item| {
-            (
+            (Secret(
                 session.clone(),
                 Vec::new(),
                 item.secret.to_vec(),
                 item.content_type.clone(),
-            )
+            ),)
         })
         .ok_or_else(|| Error::IsLocked("the keyring is locked".to_owned()))
     }
 
     async fn set_secret(&self, secret: Secret) -> Result<(), Error> {
-        let (_, _, value, content_type) = secret;
+        let Secret(_, _, value, content_type) = secret;
         self.change(|item| {
             item.secret = Zeroizing::new(value);
             item.content_type = content_type;
