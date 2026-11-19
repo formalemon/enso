@@ -186,14 +186,20 @@ impl Greet {
 
     /// The session to start for `user`: their login shell runs the command,
     /// so that their profile sets its environment as a console login would.
+    ///
+    /// greetd runs a session as `sh -c "exec <its words joined by spaces>"`,
+    /// so each word is quoted for that shell: unquoted, `-c "exec
+    /// niri-session"` would come apart into `-c exec niri-session`, a bare
+    /// `exec`, and a session that ends as soon as it starts.
     fn session(&self, user: &User) -> Command {
+        let words = [
+            user.login_shell(),
+            "-l",
+            "-c",
+            &format!("exec {}", self.config.command),
+        ];
         Command::Start {
-            cmd: vec![
-                user.login_shell().to_owned(),
-                "-l".to_owned(),
-                "-c".to_owned(),
-                format!("exec {}", self.config.command),
-            ],
+            cmd: words.iter().map(|word| quoted(word)).collect(),
             env: vec![
                 "XDG_SESSION_TYPE=wayland".to_owned(),
                 "XDG_SESSION_DESKTOP=niri".to_owned(),
@@ -412,6 +418,12 @@ impl Greet {
             Outcome::Exit => cx.exit(),
         }
     }
+}
+
+/// `word` as one word to a POSIX shell: in single quotes, any single quote
+/// in it closed, escaped and reopened.
+fn quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// PAM's question as a placeholder: "Password: " is "Password".
@@ -638,12 +650,40 @@ mod tests {
         assert_eq!(greet.phase, Phase::Leaving);
         assert_eq!(
             pretend.started.as_deref().unwrap(),
-            ["/usr/bin/fish", "-l", "-c", "exec niri-session"]
+            ["'/usr/bin/fish'", "'-l'", "'-c'", "'exec niri-session'"]
         );
         // Keys do nothing more; the greeter goes once the fade has run.
         assert_eq!(press(&mut greet, Key::Char('x'), now), Outcome::Ignored);
         assert!(!greet.tick(now + Duration::from_millis(50)).1);
         assert!(greet.tick(now + Duration::from_secs(1)).1);
+    }
+
+    /// What greetd runs, as greetd runs it: the words joined, behind
+    /// `exec`, by `sh -c`. The session gets its command whole.
+    #[test]
+    fn the_session_survives_greetds_shell() {
+        let greet = greet(GreetConfig {
+            command: r#"printf '%s|' "it's""#.to_owned(),
+            ..GreetConfig::default()
+        });
+        let user = enso_sys::accounts::login_users_in(
+            "kai:x:1000:1000::/home/kai:/bin/sh\n",
+            "/bin/sh\n",
+            "",
+        )
+        .remove(0);
+        let Command::Start { cmd, .. } = greet.session(&user) else {
+            panic!("not a session");
+        };
+        let script = format!("exec {}", cmd.join(" "));
+        // The login shell's profile may print; only the last line counts.
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env("HOME", "/nonexistent")
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(printed.lines().last(), Some("it's|"));
     }
 
     #[test]
