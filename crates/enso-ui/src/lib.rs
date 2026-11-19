@@ -29,6 +29,7 @@ pub mod image;
 mod ime;
 pub mod input;
 mod keymap;
+pub mod mark;
 pub mod picture;
 pub mod presence;
 pub mod screens;

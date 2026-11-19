@@ -6,8 +6,9 @@ use enso_core::{
     style::{Shadow, radius},
 };
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, LineCap, LineJoin, Mask, Paint, Path, PathBuilder,
-    Pattern, PixmapMut, PixmapRef, SpreadMode, Stroke, Transform,
+    BlendMode, Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, Mask, Paint, Path,
+    PathBuilder, Pattern, PixmapMut, PixmapRef, Point, RadialGradient, SpreadMode, Stroke,
+    Transform,
 };
 
 use crate::{
@@ -110,6 +111,11 @@ impl<'a> Canvas<'a> {
     }
 
     /// The whole canvas as a rectangle.
+    /// Output pixels per logical pixel.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
     pub fn bounds(&self) -> Rect {
         let Size { w, h } = self.size();
         Rect::new(0.0, 0.0, w, h)
@@ -456,6 +462,153 @@ impl<'a> Canvas<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// A soft round light centred on (`cx`, `cy`): `color` at `alpha` out to
+    /// `inner`, fading to nothing at `outer`. Logical pixels.
+    pub fn glow(&mut self, (cx, cy): (f32, f32), inner: f32, outer: f32, color: Rgba, alpha: f32) {
+        let alpha = (alpha * self.opacity * f32::from(color.a) / 255.0).clamp(0.0, 1.0);
+        if alpha <= 0.0 || outer <= inner {
+            return;
+        }
+        let (r, b) = if self.bgra {
+            (color.b, color.r)
+        } else {
+            (color.r, color.b)
+        };
+        let channel = |c: u8| f32::from(c) / 255.0;
+        let stop = |at: f32, alpha: f32| {
+            Color::from_rgba(channel(r), channel(color.g), channel(b), alpha)
+                .map(|color| GradientStop::new(at, color))
+        };
+        let (Some(bright), Some(gone)) = (stop(0.0, alpha), stop(1.0, 0.0)) else {
+            return;
+        };
+        let centre = Point::from_xy(cx, cy);
+        let Some(shader) = RadialGradient::new(
+            centre,
+            inner.max(0.0),
+            centre,
+            outer,
+            vec![bright, gone],
+            SpreadMode::Pad,
+            Transform::identity(),
+        ) else {
+            return;
+        };
+        let Some(path) = rounded_rect(
+            Rect::new(cx - outer, cy - outer, outer * 2.0, outer * 2.0),
+            0.0,
+        ) else {
+            return;
+        };
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+        }
+    }
+
+    /// Draw premultiplied pixels — `rgba`, or `bgra` when the canvas is in
+    /// that order — of `size` (the output's own pixels) with their centre at
+    /// the logical point `centre`, `zoom` times their size. At `zoom` 1 they
+    /// land on whole pixels and are copied exactly, not resampled.
+    pub(crate) fn pixels_at(
+        &mut self,
+        rgba: &[u8],
+        bgra: &[u8],
+        size: (u32, u32),
+        centre: (f32, f32),
+        zoom: f32,
+    ) {
+        let bytes = if self.bgra { bgra } else { rgba };
+        let Some(source) = PixmapRef::from_bytes(bytes, size.0, size.1) else {
+            return;
+        };
+        let (w, h) = (size.0 as f32 * zoom, size.1 as f32 * zoom);
+        let exact = (zoom - 1.0).abs() < f32::EPSILON;
+        // In the output's pixels, so the corner can be put on a whole one.
+        let mut x = centre.0 * self.scale - w / 2.0;
+        let mut y = centre.1 * self.scale - h / 2.0;
+        if exact {
+            x = x.round();
+            y = y.round();
+        }
+        let placement = Transform::from_row(zoom, 0.0, 0.0, zoom, x, y);
+        let paint = Paint {
+            shader: Pattern::new(
+                source,
+                SpreadMode::Pad,
+                if exact {
+                    FilterQuality::Nearest
+                } else {
+                    FilterQuality::Bilinear
+                },
+                self.opacity,
+                placement,
+            ),
+            anti_alias: false,
+            ..Paint::default()
+        };
+        let Some(path) = rounded_rect(Rect::new(x, y, w, h), 0.0) else {
+            return;
+        };
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                mask,
+            );
+        }
+    }
+
+    /// Draw the line through `points`, `width` thick with square-cut ends
+    /// (so that lines meeting end to end don't overlap), in `color` at
+    /// `alpha` (unrounded, unlike a colour's own). Logical pixels.
+    pub(crate) fn line(&mut self, points: &[(f32, f32)], width: f32, color: Rgba, alpha: f32) {
+        let mut builder = PathBuilder::new();
+        let Some((first, rest)) = points.split_first() else {
+            return;
+        };
+        builder.move_to(first.0, first.1);
+        for point in rest {
+            builder.line_to(point.0, point.1);
+        }
+        let Some(path) = builder.finish() else {
+            return;
+        };
+        let (r, b) = if self.bgra {
+            (color.b, color.r)
+        } else {
+            (color.r, color.b)
+        };
+        let channel = |c: u8| f32::from(c) / 255.0;
+        let alpha = (alpha * self.opacity).clamp(0.0, 1.0);
+        let Some(color) = Color::from_rgba(channel(r), channel(color.g), channel(b), alpha) else {
+            return;
+        };
+        let mut paint = Paint::default();
+        paint.set_color(color);
+        paint.anti_alias = true;
+        let stroke = Stroke {
+            width,
+            line_cap: LineCap::Butt,
+            line_join: LineJoin::Round,
+            ..Stroke::default()
+        };
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.stroke_path(&path, &paint, &stroke, transform, mask);
         }
     }
 

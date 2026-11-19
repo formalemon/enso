@@ -21,6 +21,7 @@ use enso_sys::{
 };
 use enso_ui::{
     Align, Canvas, Cx, Event, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens, Text,
+    mark::{Mark, Pace},
     widget::{Look, Note, SecretField, secret},
 };
 use niri_ipc::{Action, Request, socket::Socket};
@@ -81,6 +82,8 @@ const MAX_PASSWORD: usize = 256;
 const BACKDROP_SIDE: u32 = 256;
 /// Wrong attempts allowed before each further one costs a wait.
 const FREE_ATTEMPTS: u32 = 3;
+/// The ensō's ring, as a share of the screen's shorter side.
+const MARK_SIZE: f32 = 0.075;
 /// How long "Wrong password" stays up.
 const NOTICE: Duration = Duration::from_secs(3);
 
@@ -159,6 +162,8 @@ pub struct Lock {
     backdrop_shown: Tween<f32>,
     /// The backdrop fitted to each screen size in use.
     fitted: Vec<Picture>,
+    /// The ensō above the clock: painted in as the lock appears.
+    mark: Mark,
 }
 
 impl Lock {
@@ -168,6 +173,7 @@ impl Lock {
 
     fn with_verify(ctx: Context, config: LockConfig, verify: Verify) -> Self {
         let now = Instant::now();
+        let mark = Mark::new(ctx.theme.colors.rose, ctx.theme.colors.text);
         let mut lock = Self {
             ctx,
             config,
@@ -189,6 +195,7 @@ impl Lock {
             backdrop: None,
             backdrop_shown: Tween::new(0.0),
             fitted: Vec::new(),
+            mark,
         };
         lock.refresh_clock();
         lock
@@ -249,6 +256,7 @@ impl Lock {
             return false;
         }
         self.refresh_clock();
+        self.mark.show(&self.ctx.motion, now);
         true
     }
 
@@ -352,6 +360,8 @@ impl Lock {
             self.notice = None;
             due.redraw = true;
         }
+        // The mark breathing, or the light passing over it.
+        due.redraw |= !self.asleep && self.mark.pace(now) != Pace::Rest;
         if let Some(until) = self.locked_out_until {
             if now >= until {
                 self.locked_out_until = None;
@@ -365,6 +375,8 @@ impl Lock {
         if waiting && !self.asleep && after(self.config.screen_off_after) {
             self.asleep = true;
             due.screens_off = true;
+            // Nobody to breathe for.
+            self.mark.rest();
             // What was half typed and left is not a password any more.
             self.clear_password(now);
             // Nor is there anyone to show the backdrop to: its full-size
@@ -387,7 +399,12 @@ impl Lock {
         let lockout = self
             .locked_out_until
             .map(|until| until.min(now + Duration::from_secs(1)));
+        let breath = match self.mark.pace(now) {
+            Pace::After(after) if !self.asleep => Some(now + after),
+            _ => None,
+        };
         [
+            breath,
             (!self.asleep).then_some(self.clock_due),
             self.notice.as_ref().map(|(_, until)| *until),
             lockout,
@@ -556,6 +573,7 @@ impl Screens for Lock {
             self.revealed = true;
             self.presence
                 .set(1.0, self.ctx.motion.apply(Transition::REVEAL), now);
+            self.mark.paint(&self.ctx.motion, now);
         }
         let presence = self.presence.get(now);
 
@@ -582,8 +600,17 @@ impl Screens for Lock {
         } else {
             date.line_height()
         };
-        let column = clock_height + date_height + space::XXL + FIELD_HEIGHT;
+        // The ensō above it all, small: a ring and the room its brush takes.
+        let ring = bounds.w.min(bounds.h) * MARK_SIZE;
+        let mark_height = ring * 2.5 + space::LG;
+        let column = mark_height + clock_height + date_height + space::XXL + FIELD_HEIGHT;
         let top = ((bounds.h - column) / 2.0 - bounds.h * 0.04).max(space::LG) + drift;
+        // Whole as soon as the lock is, whatever fades in around it.
+        canvas.set_opacity(1.0);
+        self.mark
+            .draw(canvas, (bounds.w / 2.0, top + ring * 1.3), ring, now);
+        canvas.set_opacity(presence);
+        let top = top + mark_height;
         canvas.text_in(
             &clock,
             Rect::new(0.0, top, bounds.w, clock_height),
@@ -630,7 +657,8 @@ impl Screens for Lock {
         Paint::when(
             self.presence.is_animating(now)
                 || self.field.is_animating(now)
-                || self.backdrop_shown.is_animating(now),
+                || self.backdrop_shown.is_animating(now)
+                || self.mark.pace(now) == Pace::Frames,
         )
     }
 }
@@ -875,7 +903,8 @@ mod tests {
     fn renders_the_lock_screen() {
         let mut lock = lock();
         let start = Instant::now();
-        let settled = start + Duration::from_secs(1);
+        // Past the ensō's painting, too.
+        let settled = start + Duration::from_secs(4);
         let base = lock.ctx.theme.colors.base;
 
         // The very first frame is already opaque: locked means covered.

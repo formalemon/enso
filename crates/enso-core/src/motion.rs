@@ -23,6 +23,9 @@ pub enum Easing {
     OutQuint,
     /// Overshoots slightly, then settles. For small playful pops.
     OutBack,
+    /// Half a cosine: the gentlest start and end. For slow things that
+    /// should not be seen to begin or stop, like a brush stroke.
+    InOutSine,
 }
 
 impl Easing {
@@ -46,6 +49,7 @@ impl Easing {
                 const C3: f32 = C1 + 1.0;
                 1.0 + C3 * (t - 1.0).powi(3) + C1 * (t - 1.0).powi(2)
             }
+            Self::InOutSine => 0.5 - 0.5 * (std::f32::consts::PI * t).cos(),
         }
     }
 }
@@ -85,6 +89,16 @@ impl Transition {
     /// A refusal: a wrong password's field shaking its head, quickly, the
     /// sway dying away. Linear, because the sway itself is the curve.
     pub const SHAKE: Self = Self::new(380, Easing::Linear);
+    /// The ensō being painted, along the stroke.
+    pub const BRUSH: Self = Self::new(2800, Easing::InOutSine);
+    /// The ensō's idle motion easing in once it is painted.
+    pub const SETTLE: Self = Self::new(1600, Easing::InOutSine);
+    /// One breath of the ensō: a slow swell and back. A cycle, not a tween.
+    pub const BREATH: Self = Self::new(9000, Easing::InOutSine);
+    /// Light travelling the ensō's stroke, once.
+    pub const SHEEN: Self = Self::new(4000, Easing::InOutSine);
+    /// How often the light comes round: its own run and the pause after.
+    pub const SHEEN_EVERY: Self = Self::new(14000, Easing::Linear);
 }
 
 /// The user's motion preferences applied to transition tokens.
