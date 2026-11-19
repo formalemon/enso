@@ -13,7 +13,11 @@ mod card;
 mod player;
 mod wave;
 
-use std::process::ExitCode;
+use std::{
+    io::{self, Write},
+    process::ExitCode,
+    thread,
+};
 
 use enso_core::{Context, ipc};
 use enso_sys::mpris::{Mpris, Player, Status};
@@ -37,6 +41,8 @@ Commands, for the media keys:
   next          skip to the next track
   previous      back to the previous one
   status        say what's playing
+  follow        say `playing` or `idle` each time that changes, until
+                standard input closes (what enso-bar runs, for the clock)
 
 They act on whichever player is playing, or the last one paused.
 
@@ -54,6 +60,7 @@ enum Command {
     Next,
     Previous,
     Status,
+    Follow,
 }
 
 fn main() -> ExitCode {
@@ -67,6 +74,7 @@ fn main() -> ExitCode {
     };
     let result = match command {
         Command::Card(mode) => open(mode),
+        Command::Follow => follow(),
         other => act(&other),
     };
     match result {
@@ -112,6 +120,7 @@ fn parse(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Option<Co
                         "next" => Command::Next,
                         "previous" => Command::Previous,
                         "status" => Command::Status,
+                        "follow" => Command::Follow,
                         other => return Err(format!("no such command: {other}")),
                     },
                 );
@@ -153,6 +162,40 @@ fn open(mode: Mode) -> Result<(), String> {
     enso_ui::run(card, &appearance).map_err(|err| err.to_string())
 }
 
+/// Say whether anything is playing — `playing` or `idle`, a line each time
+/// it changes — for as long as whoever asked keeps standard input open.
+fn follow() -> Result<(), String> {
+    let mpris = Mpris::connect().map_err(|err| err.to_string())?;
+    // Whoever asked going away closes standard input: that's the end.
+    let _ = thread::Builder::new()
+        .name("enso-play-asker".to_owned())
+        .spawn(|| {
+            let _ = io::copy(&mut io::stdin().lock(), &mut io::sink());
+            std::process::exit(0);
+        });
+    let mut said = None;
+    let mut say = || {
+        // A moment where the players can't be read changes nothing.
+        let Ok(players) = mpris.players() else {
+            return true;
+        };
+        let playing = players
+            .iter()
+            .any(|player| player.status == Status::Playing);
+        if said == Some(playing) {
+            return true;
+        }
+        said = Some(playing);
+        let word = if playing { "playing" } else { "idle" };
+        let mut out = io::stdout().lock();
+        writeln!(out, "{word}").and_then(|()| out.flush()).is_ok()
+    };
+    if !say() {
+        return Ok(());
+    }
+    mpris.watch(say).map_err(|err| err.to_string())
+}
+
 /// A media key's command: carried out on the player that matters most —
 /// whichever plays, else the first paused.
 fn act(command: &Command) -> Result<(), String> {
@@ -173,7 +216,7 @@ fn act(command: &Command) -> Result<(), String> {
             println!("{}", status(player));
             Ok(())
         }
-        Command::Card(_) => Ok(()),
+        Command::Card(_) | Command::Follow => Ok(()),
     };
     done.map_err(|err| err.to_string())
 }
@@ -215,6 +258,7 @@ mod tests {
         );
         assert_eq!(words(&["play-pause"]), Ok(Some(Command::PlayPause)));
         assert_eq!(words(&["next"]), Ok(Some(Command::Next)));
+        assert_eq!(words(&["follow"]), Ok(Some(Command::Follow)));
         assert!(words(&["--dropdown=left"]).is_err());
         assert!(words(&["--dropdown", "next"]).is_err());
         assert!(words(&["shuffle"]).is_err());

@@ -50,8 +50,9 @@ clock = "%a %-d %b  %H:%M"
 # Open the control center (enso-ctl, when installed) under the status island
 # while the pointer rests on it.
 control_center = true
-# Show what's playing (enso-play, when installed) under the clock while the
-# pointer rests on it: a YouTube tab, Spotify, any MPRIS player.
+# With enso-play installed: the clock's pill turns to sea while anything plays
+# (a YouTube tab, Spotify, any MPRIS player), what's playing under it while
+# the pointer rests there, and a click on it to play or pause.
 now_playing = true
 # How solid the islands are, from 0.0 to 1.0: a little under 1.0 lets the
 # wallpaper show through, just. What sits on them stays solid.

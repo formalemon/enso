@@ -265,10 +265,18 @@ while one is open leaves it as it is.
 
 Without `enso-ctl` or `enso-notify` installed the island is simply a readout.
 
-The clock in the middle shows **what's playing**: rest the pointer on it and
-`enso-play` hangs a card beneath it — when something is playing; with
-nothing, resting there opens nothing. `now_playing = false` under `[bar]`
-turns it off.
+The clock in the middle knows **what's playing**. While anything plays its
+pill turns to sea at dusk — the theme's iris in the deep water, rising
+through three waves rolling across it at their own speeds to a rose one in
+front — like a tide as playing starts, ebbing when it stops, with the time
+in front of it all along. Every twenty seconds or so a set rolls in: a
+swell sweeps across from the left, lifting the far waves first and the
+nearest highest, a line of foam along its crest. The sea moves thirty times a second, not every frame: about one percent of a core
+while it plays, nothing at rest. Rest the pointer on the clock and `enso-play` hangs a card
+beneath it (with nothing playing, nothing opens); click it to play or
+pause. The bar learns what plays from `enso-play follow`, so it still
+speaks no D-Bus itself. `now_playing = false` under `[bar]` turns all of
+it off.
 
 **`enso-play`** — one small card for any media player on the session bus
 (MPRIS): a YouTube tab in Firefox, Spotify, mpv. The cover on the left (the

@@ -15,8 +15,10 @@ mod bar;
 mod config;
 mod dropdown;
 mod icons;
+mod music;
 mod niri;
 mod sound;
+mod water;
 
 use std::process::ExitCode;
 
@@ -36,8 +38,9 @@ it to see every workspace; click a dot to focus that window, or a group of
 dots to switch to that workspace. The right island shows network, battery,
 and the notification bell; scroll on it to turn the volume, rest the pointer
 on it to open the control center (if enso-ctl is installed), click it for the
-notification history. Rest the pointer on the clock to see what's playing
-(if enso-play is installed).
+notification history. With enso-play installed, the clock turns to sea
+while something plays; rest the pointer on it to see what's playing, click
+it to play or pause.
 
 Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   height   = 36                    bar height in pixels; the status icons
@@ -46,8 +49,8 @@ Configuration is optional: the [bar] table of ~/.config/enso/config.toml.
   clock    = \"%a %-d %b  %H:%M\"    strftime format
   control_center = true            open enso-ctl while the pointer rests on
                                    the status island
-  now_playing = true               open enso-play while the pointer rests on
-                                   the clock
+  now_playing = true               the clock's sea while something plays,
+                                   enso-play under it, a click to pause
   opacity  = 0.9                   how solid the islands are, 0.0 to 1.0
 ";
 

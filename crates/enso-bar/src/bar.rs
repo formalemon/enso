@@ -23,7 +23,7 @@ use std::{
 };
 
 use enso_core::{
-    Context, Figure, Notices, Rgba, Transition, Tween,
+    Context, Easing, Figure, Notices, Rgba, Transition, Tween,
     style::{edge, space, type_scale},
 };
 use enso_sys::{
@@ -39,8 +39,10 @@ use crate::{
     config::{BarConfig, DEFAULT_CLOCK, Position},
     dropdown::{Dropdown, History},
     icons::{self, Charge},
+    music::Music,
     niri::{self, Workspace},
     sound::{self, Level},
+    water,
 };
 
 /// Gap between the islands and the screen edges.
@@ -74,7 +76,12 @@ pub enum Message {
     /// The output's volume changed (`None`: no output).
     Sound(Option<Level>),
     ThemeChanged,
+    /// Whether anything is playing, from enso-play.
+    Playing(bool),
 }
+
+/// How slowly the clock's water fills and drains.
+const POUR: Transition = Transition::new(900, Easing::InOutCubic);
 
 /// How long the bell rings when something new arrives.
 const RING: Duration = Duration::from_millis(900);
@@ -177,6 +184,14 @@ pub struct Bar {
     playing_due: Option<Instant>,
     /// What's playing, opened from the clock.
     playing: Dropdown,
+    /// Whether anything plays, and a click on the clock to play or pause.
+    music: Music,
+    /// How full of water the clock is (`0..=1`): full while playing.
+    water: Tween<f32>,
+    /// When the water next moves on, while it moves.
+    water_due: Option<Instant>,
+    /// When the bar started: the water's clock.
+    epoch: Instant,
     /// What the notification daemon last reported.
     notices: Notices,
     /// The island was clicked: resting on it opens nothing more until the
@@ -219,6 +234,10 @@ impl Bar {
             clock_hovered: false,
             playing_due: None,
             playing: Dropdown::now_playing(),
+            music: Music::new(),
+            water: Tween::new(0.0),
+            water_due: None,
+            epoch: Instant::now(),
             notices: Notices::default(),
             clicked: false,
             ringing: None,
@@ -261,6 +280,7 @@ impl Bar {
         let due = self.clock_due.min(self.poll_due);
         let due = self.intent_due.map_or(due, |intent| intent.min(due));
         let due = self.playing_due.map_or(due, |intent| intent.min(due));
+        let due = self.water_due.map_or(due, |tick| tick.min(due));
         cx.wake_in(due.saturating_duration_since(Instant::now()));
     }
 
@@ -321,6 +341,12 @@ impl Bar {
         } else if self.playing_due.is_none() && self.config.now_playing && !self.playing.is_open() {
             self.playing_due = Some(Instant::now() + HOVER_INTENT);
         }
+    }
+
+    /// Whether the water is moving: filling, draining, or rippling while it
+    /// plays (and still, when motion is turned down).
+    fn water_moving(&self, now: Instant) -> bool {
+        self.water.is_animating(now) || (self.water.target() > 0.0 && self.ctx.motion.is_enabled())
     }
 
     /// Whether resting on the island opens the control center: not when
@@ -550,13 +576,27 @@ impl Bar {
                 .any(|tween| tween.is_animating(now))
     }
 
-    fn draw_clock(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32) {
-        let colors = &self.ctx.theme.colors;
+    fn draw_clock(&mut self, canvas: &mut Canvas<'_>, bar: Rect, size: f32, now: Instant) {
+        let colors = self.ctx.theme.colors.clone();
         let text = Text::new(&self.clock, size, colors.text).medium();
         let width = canvas.measure(&text).w + 2.0 * space::LG;
         let island = bar.centered(width, bar.h);
         self.clock_island = Some(island);
         canvas.pill(island, self.island_color(colors.base));
+        let fill = self.water.get(now);
+        let t = now.saturating_duration_since(self.epoch).as_secs_f32();
+        water::draw(
+            canvas,
+            island,
+            fill,
+            t,
+            water::Look {
+                // Dusk: iris deep water, rising to a rose wave.
+                deep: self.island_color(colors.base.mix(colors.iris, 0.35)),
+                shallow: self.island_color(colors.rose.mix(colors.base, 0.1)),
+                foam: colors.rose.mix(colors.text, 0.45),
+            },
+        );
         canvas.text_in(&text, island, Align::Center);
     }
 
@@ -720,6 +760,11 @@ impl App for Bar {
         niri::watch(move |snapshot| workspaces.send(Message::Workspaces(snapshot)));
         let volume = proxy.clone();
         sound::watch(move |level| volume.send(Message::Sound(level)));
+        if self.config.now_playing {
+            let music = proxy.clone();
+            self.music
+                .follow(move |playing| music.send(Message::Playing(playing)));
+        }
 
         if let Err(err) = watch_dir(&self.ctx.paths.state_dir, move || {
             proxy.send(Message::ThemeChanged)
@@ -738,6 +783,16 @@ impl App for Bar {
             }
             // Kept for scrolling on the island; nothing shows it.
             Event::Message(Message::Sound(level)) => self.sound = level,
+            Event::Message(Message::Playing(playing)) => {
+                let now = Instant::now();
+                let target = if playing { 1.0 } else { 0.0 };
+                if self.water.target() != target {
+                    self.water.set(target, self.ctx.motion.apply(POUR), now);
+                    self.water_due = Some(now);
+                    self.arm(cx);
+                    cx.redraw();
+                }
+            }
             // Anything written to the state directory: the theme choice, or
             // the notification daemon's count.
             Event::Message(Message::ThemeChanged) => {
@@ -766,6 +821,10 @@ impl App for Bar {
                     // rather than left until the next hover.
                     self.dropdown.is_open();
                     self.playing.is_open();
+                }
+                if self.water_due.is_some_and(|due| now >= due) {
+                    cx.redraw();
+                    self.water_due = self.water_moving(now).then(|| now + water::TICK);
                 }
                 if self.playing_due.is_some_and(|due| now >= due) {
                     self.playing_due = None;
@@ -818,6 +877,10 @@ impl App for Bar {
                 if self.status_hovered {
                     self.click_status();
                 }
+                // A click on the clock plays or pauses.
+                if self.clock_hovered && self.config.now_playing {
+                    self.music.play_pause();
+                }
                 let target = self.hits.iter().find(|(rect, _)| rect.contains(x, y));
                 let focused = match target {
                     Some((_, Target::Window(id))) => niri::focus_window(*id),
@@ -837,7 +900,7 @@ impl App for Bar {
         let size = self.ctx.config.appearance.font_size * type_scale::SMALL;
 
         let animating = self.draw_workspaces(canvas, strip, now);
-        self.draw_clock(canvas, strip, size);
+        self.draw_clock(canvas, strip, size, now);
         let glowing = self.draw_status(canvas, strip, now);
         Paint::when(animating || glowing)
     }
@@ -1238,6 +1301,33 @@ mod tests {
         bar.config.now_playing = false;
         bar.clock_hover(Some((clock.x + 1.0, 18.0)));
         assert!(bar.clock_hovered && bar.playing_due.is_none());
+    }
+
+    #[test]
+    fn the_clock_fills_with_the_sea_while_something_plays() {
+        let mut bar = sample("rose-pine-moon");
+        let (dry, _) = frame(&mut bar, later());
+        let clock = bar.clock_island.expect("the clock is drawn");
+        bar.water.jump(1.0);
+        let (wet, _) = frame(&mut bar, later());
+        snapshot(&wet, "bar-playing");
+        // The sea fills the pill, and the time stays in front of it.
+        let low = ((clock.bottom() - 3.0) * 2.0) as u32;
+        let centre = ((clock.x + clock.w / 2.0) * 2.0) as u32;
+        assert_ne!(wet.pixel(centre, low), dry.pixel(centre, low));
+        let text = bar.ctx.theme.colors.text;
+        let lit = (0..wet.height)
+            .flat_map(|y| {
+                ((clock.x * 2.0) as u32..(clock.right() * 2.0) as u32).map(move |x| (x, y))
+            })
+            .filter(|&(x, y)| wet.pixel(x, y)[..3] == [text.r, text.g, text.b])
+            .count();
+        assert!(lit > 50, "{lit}");
+        // Playing, the sea moves; stopped, it ebbs and stills.
+        bar.water.set(1.0, Transition::INSTANT, Instant::now());
+        assert!(bar.water_moving(Instant::now()));
+        bar.water.set(0.0, Transition::INSTANT, Instant::now());
+        assert!(!bar.water_moving(later()));
     }
 
     #[test]

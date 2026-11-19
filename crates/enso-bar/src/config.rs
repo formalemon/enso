@@ -23,8 +23,9 @@ pub struct BarConfig {
     /// Open the control center (`enso-ctl`, when installed) under the status
     /// island while the pointer rests on it.
     pub control_center: bool,
-    /// Show what's playing (`enso-play`, when installed) under the clock
-    /// while the pointer rests on it.
+    /// With `enso-play` installed: the clock turns to sea while something plays,
+    /// what's playing under it while the pointer rests there, and a click on
+    /// it to play or pause.
     pub now_playing: bool,
     /// How solid the islands are, `0.0..=1.0`: a little less than solid lets
     /// the wallpaper show through, just.
