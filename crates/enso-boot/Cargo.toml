@@ -17,11 +17,15 @@ test = true
 uefi = { version = "0.41", default-features = false, features = ["alloc", "global_allocator", "panic_handler"] }
 
 [dependencies]
+# The scene's motion, painted a frame at a time: the part of enso-scene
+# that needs no operating system.
+enso-scene.workspace = true
 # The pictures are kept compressed in the program, and opened at boot.
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
 [build-dependencies]
 enso-core.workspace = true
+enso-scene.workspace = true
 enso-ui.workspace = true
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 

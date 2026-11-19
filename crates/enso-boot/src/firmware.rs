@@ -34,14 +34,21 @@ use uefi::{
     system,
 };
 
-use crate::menu::{self, Act, Choice, Key, Menu, Picture, Screen};
+use enso_scene::life::{Life, Rect};
+
+use crate::menu::{self, Act, Choice, Key, Living, Menu, Picture, Screen};
 
 static SCENE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.bin"));
 static FRAME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frame.bin"));
+static LIFE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/life.bin"));
+static INK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ink.bin"));
 static CARDS: [&[u8]; 2] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/card-0.bin")),
     include_bytes!(concat!(env!("OUT_DIR"), "/card-1.bin")),
 ];
+
+/// Frames a second of the scene's motion.
+const FPS: u32 = 15;
 
 /// Where Windows' own boot manager is, on the same boot partition.
 const WINDOWS: &str = "\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
@@ -60,7 +67,7 @@ fn run() -> Result<(), Status> {
     // more than five minutes; a menu waits as long as it takes.
     let _ = boot::set_watchdog_timer(0, 0x10000, None);
 
-    let mut gop = open_screen().map_err(fail)?;
+    let gop = open_screen().map_err(fail)?;
     let (width, height) = gop.current_mode_info().resolution();
     let scene = menu::open(SCENE).ok_or(Status::LOAD_ERROR)?;
     let cards: Vec<Picture> = CARDS
@@ -71,17 +78,28 @@ fn run() -> Result<(), Status> {
     let mut backdrop = Screen::new(width, height, [0, 0, 0, 255]);
     backdrop.cover(&scene);
     drop(scene);
+    let life = Life::decode(LIFE);
+    let ink = menu::open_ink(INK);
     let mut menu = Menu::default();
-    show_menu(&mut gop, &backdrop, &cards, &menu).map_err(fail)?;
+    let mut display = Display::new(gop, &backdrop);
 
-    let choice = loop {
-        match menu.key(read_key()?) {
-            Act::Nothing => {}
-            Act::Moved => show_menu(&mut gop, &backdrop, &cards, &menu).map_err(fail)?,
-            Act::Start(choice) => break choice,
-            Act::Leave => return Err(Status::ABORTED),
+    let choice = match (&life, &ink) {
+        (Some(life), Some(ink)) => {
+            let living = |chosen: usize| Living {
+                backdrop: &backdrop,
+                life,
+                ink,
+                card: &cards[chosen.min(cards.len() - 1)],
+            };
+            if living(0).fits() {
+                animate(&mut display, &mut menu, &living)?
+            } else {
+                still(&mut display, &mut menu, &backdrop, &cards)?
+            }
         }
+        _ => still(&mut display, &mut menu, &backdrop, &cards)?,
     };
+    let mut gop = display.gop;
     drop(backdrop);
     match choice {
         Choice::Arch => {
@@ -111,18 +129,121 @@ fn open_screen() -> uefi::Result<ScopedProtocol<GraphicsOutput>> {
     boot::open_protocol_exclusive::<GraphicsOutput>(handle)
 }
 
-fn show_menu(
-    gop: &mut GraphicsOutput,
+/// The screen, and what is on it: changed a rectangle at a time.
+struct Display {
+    gop: ScopedProtocol<GraphicsOutput>,
+    screen: Screen,
+    pixels: Vec<BltPixel>,
+}
+
+impl Display {
+    fn new(gop: ScopedProtocol<GraphicsOutput>, backdrop: &Screen) -> Self {
+        Self {
+            gop,
+            screen: backdrop.clone(),
+            pixels: Vec::from_iter(core::iter::repeat_n(
+                BltPixel::new(0, 0, 0),
+                backdrop.width * backdrop.height,
+            )),
+        }
+    }
+
+    /// Put `rect` of the screen as it now is on the display.
+    fn put(&mut self, rect: Rect) -> Result<(), Status> {
+        let width = self.screen.width;
+        for y in rect.y as usize..(rect.y + rect.h) as usize {
+            for x in rect.x as usize..(rect.x + rect.w) as usize {
+                let i = y * width + x;
+                let px = &self.screen.bgra[i * 4..i * 4 + 4];
+                self.pixels[i] = BltPixel::new(px[2], px[1], px[0]);
+            }
+        }
+        self.gop
+            .blt(BltOp::BufferToVideo {
+                buffer: &self.pixels,
+                src: BltRegion::SubRectangle {
+                    coords: (rect.x as usize, rect.y as usize),
+                    px_stride: width,
+                },
+                dest: (rect.x as usize, rect.y as usize),
+                dims: (rect.w as usize, rect.h as usize),
+            })
+            .map_err(|e| e.status())
+    }
+
+    fn whole(&self) -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            w: self.screen.width as u32,
+            h: self.screen.height as u32,
+        }
+    }
+}
+
+/// The menu over the moving scene, until a choice is made: the places
+/// that change redrawn each frame, and the keys looked at between.
+fn animate<'a>(
+    display: &mut Display,
+    menu: &mut Menu,
+    living: &impl Fn(usize) -> Living<'a>,
+) -> Result<Choice, Status> {
+    let whole = display.whole();
+    living(menu.chosen).paint(&mut display.screen, whole, 0.0);
+    display.put(whole)?;
+    let mut frame: u32 = 0;
+    loop {
+        let before = frame as f32 / FPS as f32;
+        frame = frame.wrapping_add(1);
+        let t = frame as f32 / FPS as f32;
+        if let Some(key) = poll_key()? {
+            match menu.key(key) {
+                Act::Nothing => {}
+                Act::Moved => {
+                    living(menu.chosen).paint(&mut display.screen, whole, t);
+                    display.put(whole)?;
+                }
+                Act::Start(choice) => return Ok(choice),
+                Act::Leave => return Err(Status::ABORTED),
+            }
+        }
+        let scene = living(menu.chosen);
+        for rect in scene.life.regions(before, t) {
+            scene.paint(&mut display.screen, rect, t);
+            display.put(rect)?;
+        }
+        boot::stall(core::time::Duration::from_millis(u64::from(1000 / FPS)));
+    }
+}
+
+/// The menu over the still scene, until a choice is made.
+fn still(
+    display: &mut Display,
+    menu: &mut Menu,
     backdrop: &Screen,
     cards: &[Picture],
-    menu: &Menu,
-) -> uefi::Result {
-    let mut screen = backdrop.clone();
-    if let Some(card) = cards.get(menu.chosen) {
-        let (x, y) = menu::card_at((screen.width, screen.height), (card.width, card.height));
-        screen.over(card, x, y);
+) -> Result<Choice, Status> {
+    let draw = |display: &mut Display, chosen: usize| {
+        display.screen = backdrop.clone();
+        if let Some(card) = cards.get(chosen) {
+            let (x, y) = menu::card_at(
+                (display.screen.width, display.screen.height),
+                (card.width, card.height),
+            );
+            display.screen.over(card, x, y);
+        }
+        let whole = display.whole();
+        display.put(whole)
+    };
+    draw(display, menu.chosen)?;
+    loop {
+        match menu.key(read_key()?) {
+            Act::Nothing => {}
+            Act::Moved => draw(display, menu.chosen)?,
+            Act::Start(choice) => return Ok(choice),
+            Act::Leave => return Err(Status::ABORTED),
+        }
     }
-    show(gop, &screen)
 }
 
 /// Put a whole screen up at once.
@@ -148,6 +269,16 @@ fn read_key() -> Result<Key, Status> {
         let event =
             system::with_stdin(|stdin| stdin.wait_for_key_event()).map_err(|e| e.status())?;
         boot::wait_for_event(&[event]).map_err(|e| e.status())?;
+        if let Some(key) = poll_key()? {
+            return Ok(key);
+        }
+    }
+}
+
+/// The key pressed since last asked, if any, without waiting.
+fn poll_key() -> Result<Option<Key>, Status> {
+    loop {
+        // Keys the menu doesn't know are let go, and the next looked at.
         let pressed = system::with_stdin(|stdin| stdin.read_key()).map_err(|e| e.status())?;
         let key = match pressed {
             Some(Pressed::Special(ScanCode::UP)) => Key::Up,
@@ -156,9 +287,11 @@ fn read_key() -> Result<Key, Status> {
             Some(Pressed::Printable(c)) if u16::from(c) == 0x0d => Key::Enter,
             Some(Pressed::Printable(c)) if u16::from(c) == 0x09 => Key::Down,
             Some(_) => Key::Other,
-            None => continue,
+            None => return Ok(None),
         };
-        return Ok(key);
+        if key != Key::Other {
+            return Ok(Some(key));
+        }
     }
 }
 

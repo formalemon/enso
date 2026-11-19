@@ -577,6 +577,11 @@ const BACKDROP_BLUR: u32 = 2;
 /// The voxel scene (terraces, river, mountains) in `colors`, `size`
 /// pixels: the boot menu's picture.
 pub fn scene(colors: &Palette, size: (u32, u32)) -> Picture {
+    scene_with_life(colors, size).0
+}
+
+/// The scene, and what in it moves (see [`enso_scene::life`]).
+pub fn scene_with_life(colors: &Palette, size: (u32, u32)) -> (Picture, enso_scene::Life) {
     let rgb = |c: Rgba| [c.r, c.g, c.b];
     let palette = enso_scene::Palette {
         base: rgb(colors.base),
@@ -592,8 +597,28 @@ pub fn scene(colors: &Palette, size: (u32, u32)) -> Picture {
         foam: rgb(colors.foam),
         iris: rgb(colors.iris),
     };
-    let rgba = enso_scene::render(size.0, size.1, &palette);
-    Picture::from_rgba(size.0, size.1, rgba).unwrap_or_else(|| Picture::solid(1, 1, colors.base))
+    let (rgba, life) = enso_scene::render_with_life(size.0, size.1, &palette);
+    let picture = Picture::from_rgba(size.0, size.1, rgba)
+        .unwrap_or_else(|| Picture::solid(1, 1, colors.base));
+    (picture, life)
+}
+
+/// The colours the scene's motion is painted in: as they are, or
+/// `quiet`, taken half way to the base as the backdrop is.
+pub fn life_ink(colors: &Palette, quiet: bool) -> enso_scene::life::Ink {
+    let tone = |c: Rgba| {
+        let c = if quiet {
+            c.mix(colors.base, BACKDROP_TINT)
+        } else {
+            c
+        };
+        [c.r, c.g, c.b]
+    };
+    enso_scene::life::Ink {
+        glint: tone(colors.text),
+        mist: tone(colors.subtle),
+        petals: [tone(colors.rose), tone(colors.rose.mix(colors.love, 0.55))],
+    }
 }
 
 /// The scene quietened into a backdrop for the ensō: softened, and half

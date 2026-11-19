@@ -11,7 +11,7 @@ license.workspace = true
 [dependencies]
 enso-core.workspace = true
 # The scene behind the ensō on the login screen and the boot's last frame.
-enso-scene.workspace = true
+enso-scene = { workspace = true, features = ["render"] }
 smithay-client-toolkit.workspace = true
 calloop.workspace = true
 kbvm.workspace = true

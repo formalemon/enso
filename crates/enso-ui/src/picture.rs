@@ -79,6 +79,11 @@ impl Picture {
         &self.rgba
     }
 
+    /// The pixels, to paint on in place. Keep them premultiplied.
+    pub fn rgba_mut(&mut self) -> &mut [u8] {
+        &mut self.rgba
+    }
+
     /// Size in pixels.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)

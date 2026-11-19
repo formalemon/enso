@@ -5,6 +5,8 @@
 
 use alloc::{string::String, vec::Vec};
 
+use enso_scene::life::{Ink, Life, Order, Rect};
+
 /// What can be started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Choice {
@@ -183,11 +185,95 @@ impl Screen {
         }
     }
 
+    /// Like [`Screen::over`], but only within `rect`.
+    pub fn over_part(&mut self, picture: &Picture, x: usize, y: usize, rect: Rect) {
+        let (rx, ry) = (rect.x as usize, rect.y as usize);
+        let (rx1, ry1) = (rx + rect.w as usize, ry + rect.h as usize);
+        let rows = y.max(ry)..(y + picture.height).min(ry1).min(self.height);
+        let cols = x.max(rx)..(x + picture.width).min(rx1).min(self.width);
+        for sy in rows {
+            for sx in cols.clone() {
+                let from = ((sy - y) * picture.width + (sx - x)) * 4;
+                let to = (sy * self.width + sx) * 4;
+                let src = &picture.bgra[from..from + 4];
+                let keep = 255 - u32::from(src[3]);
+                for c in 0..3 {
+                    let dst = u32::from(self.bgra[to + c]);
+                    self.bgra[to + c] =
+                        (u32::from(src[c]) + (dst * keep + 127) / 255).min(255) as u8;
+                }
+                self.bgra[to + 3] = 255;
+            }
+        }
+    }
+
     /// Put `picture` in the middle of the screen, unscaled.
     pub fn centre(&mut self, picture: &Picture) {
         let x = self.width.saturating_sub(picture.width) / 2;
         let y = self.height.saturating_sub(picture.height) / 2;
         self.over(picture, x, y);
+    }
+}
+
+/// The colours of the scene's motion as kept: four RGB triples.
+#[cfg_attr(target_os = "uefi", allow(dead_code))] // the build script keeps them
+pub fn keep_ink(ink: &Ink) -> [u8; 12] {
+    let mut out = [0; 12];
+    for (slot, rgb) in out
+        .chunks_mut(3)
+        .zip([ink.glint, ink.mist, ink.petals[0], ink.petals[1]])
+    {
+        slot.copy_from_slice(&rgb);
+    }
+    out
+}
+
+/// The other half of [`keep_ink`].
+pub fn open_ink(bytes: &[u8]) -> Option<Ink> {
+    let rgb = |at: usize| -> Option<[u8; 3]> { bytes.get(at..at + 3)?.try_into().ok() };
+    (bytes.len() == 12).then_some(())?;
+    Some(Ink {
+        glint: rgb(0)?,
+        mist: rgb(3)?,
+        petals: [rgb(6)?, rgb(9)?],
+    })
+}
+
+/// The menu's moving scene: the still picture on the screen, what moves
+/// in it, and the card on top.
+#[derive(Debug)]
+pub struct Living<'a> {
+    pub backdrop: &'a Screen,
+    pub life: &'a Life,
+    pub ink: &'a Ink,
+    pub card: &'a Picture,
+}
+
+impl Living<'_> {
+    /// Whether the motion fits this screen: the scene was drawn for its
+    /// size, and is shown pixel for pixel.
+    pub fn fits(&self) -> bool {
+        usize::from(self.life.width) == self.backdrop.width
+            && usize::from(self.life.height) == self.backdrop.height
+    }
+
+    /// Paint `rect` of `screen` as it looks at `t` seconds: the scene with
+    /// its motion, and the card over it.
+    pub fn paint(&self, screen: &mut Screen, rect: Rect, t: f32) {
+        self.life.paint(
+            &self.backdrop.bgra,
+            &mut screen.bgra,
+            Order::Bgra,
+            rect,
+            t,
+            1.0,
+            self.ink,
+        );
+        let (x, y) = card_at(
+            (screen.width, screen.height),
+            (self.card.width, self.card.height),
+        );
+        screen.over_part(self.card, x, y, rect);
     }
 }
 

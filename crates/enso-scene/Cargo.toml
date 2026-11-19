@@ -8,6 +8,16 @@ repository.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = ["render"]
+# Drawing the picture: needs the standard library (threads). Without it,
+# only `life`, the motion, which the firmware can run.
+render = []
+
+[dependencies]
+# sin and floor without the standard library.
+libm = "0.2"
+
 [dev-dependencies]
 # Writing renders out, to look at.
 png.workspace = true

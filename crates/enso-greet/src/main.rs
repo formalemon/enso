@@ -156,8 +156,15 @@ fn show(greetd: Box<dyn Greetd>, preview: bool) -> ExitCode {
     } else {
         vec![PathBuf::from(setup::BACKDROP)]
     };
-    let backdrop = places.iter().find_map(|path| Picture::open(path).ok());
-    let greet = Greet::new(ctx, config, users, greetd, preview, backdrop);
+    let found = places
+        .iter()
+        .find_map(|path| Picture::open(path).ok().map(|picture| (path, picture)));
+    // What moves in it, kept beside it.
+    let life = found.as_ref().and_then(|(path, _)| {
+        enso_scene::Life::decode(&fs::read(path.with_extension("life")).ok()?)
+    });
+    let backdrop = found.map(|(_, picture)| picture);
+    let greet = Greet::new(ctx, config, users, greetd, preview, backdrop, life);
     match enso_ui::run_screens(greet, &appearance) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -204,7 +211,8 @@ fn enable() -> ExitCode {
     let colors = Context::load_from(Paths::rooted("/nonexistent/enso-greet"))
         .theme
         .colors;
-    let backdrop = mark::backdrop(mark::scene(&colors, (1920, 1080)), colors.base);
+    let (scene, life) = mark::scene_with_life(&colors, (1920, 1080));
+    let backdrop = mark::backdrop(scene, colors.base);
     // The ensō for the boot splash, at the size the login screen draws it
     // on a 1080p screen, in the frames the splash shows.
     let (_, radius) = mark::place(enso_ui::Rect::new(0.0, 0.0, 1920.0, 1080.0));
@@ -224,6 +232,7 @@ fn enable() -> ExitCode {
         base: ctx.theme.colors.base.hex(),
         private_font,
         backdrop,
+        life,
         splash,
     };
     match setup::enable(&setup) {

@@ -31,9 +31,14 @@ pub fn context(font: Option<String>) -> Context {
     ctx
 }
 
-/// The scene, as opaque RGBA.
-pub fn scene(ctx: &Context, size: (u32, u32)) -> Picture {
-    mark::scene(&ctx.theme.colors, size)
+/// The scene, as opaque RGBA, and what in it moves.
+pub fn scene(ctx: &Context, size: (u32, u32)) -> (Picture, enso_scene::Life) {
+    mark::scene_with_life(&ctx.theme.colors, size)
+}
+
+/// The colours of the scene's motion, in full.
+pub fn ink(ctx: &Context) -> enso_scene::life::Ink {
+    mark::life_ink(&ctx.theme.colors, false)
 }
 
 /// The frame Arch starts on: the scene, quietened, exactly as the login

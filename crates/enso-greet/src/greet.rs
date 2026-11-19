@@ -15,6 +15,10 @@ use enso_core::{
     style::{icon, space, type_scale},
     wallpaper::Fit,
 };
+use enso_scene::{
+    Life,
+    life::{Ink, Order},
+};
 use enso_sys::accounts::User;
 use enso_ui::{
     Align, Canvas, Cx, Event, Key, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens,
@@ -125,6 +129,8 @@ pub struct Greet {
     /// to the screen if the screen is another size.
     backdrop: Option<Picture>,
     fitted: Option<Picture>,
+    /// What moves in the backdrop, and the backdrop as it now looks.
+    moving: Option<Moving>,
     /// When the ensō is painted and the name and field are let in.
     reveal_at: Option<Instant>,
 }
@@ -147,7 +153,22 @@ impl Greet {
         greetd: Box<dyn Greetd>,
         preview: bool,
         backdrop: Option<Picture>,
+        life: Option<Life>,
     ) -> Self {
+        let moving = backdrop
+            .as_ref()
+            .zip(life)
+            .filter(|_| ctx.motion.is_enabled())
+            .filter(|(backdrop, life)| {
+                backdrop.size() == (u32::from(life.width), u32::from(life.height))
+            })
+            .map(|(backdrop, life)| Moving {
+                ink: mark::life_ink(&ctx.theme.colors, true),
+                life,
+                frame: backdrop.clone(),
+                since: None,
+                last: 0.0,
+            });
         let mark = Mark::new(ctx.theme.colors.rose, ctx.theme.colors.text);
         let chosen = users
             .iter()
@@ -173,6 +194,7 @@ impl Greet {
             mark,
             backdrop,
             fitted: None,
+            moving,
             reveal_at: None,
         }
     }
@@ -405,7 +427,10 @@ impl Greet {
             Pace::After(after) => Some(after),
             Pace::Frames | Pace::Rest => None,
         };
-        due.into_iter().chain(breath).min()
+        // The backdrop's motion, while there is anyone to see it.
+        let moving =
+            (self.moving.is_some() && self.phase != Phase::Leaving).then_some(MOVING_FRAME);
+        due.into_iter().chain(breath).chain(moving).min()
     }
 
     fn send(&mut self, command: Command) {
@@ -436,6 +461,47 @@ impl Greet {
 /// in it closed, escaped and reopened.
 fn quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+/// How often the backdrop's motion is redrawn: slow things, slowly.
+const MOVING_FRAME: Duration = Duration::from_millis(66);
+/// How long the motion takes to come in: the first frame is the still
+/// picture the boot splash left.
+const MOVING_IN: f32 = 1.5;
+
+/// The backdrop's motion: what moves, in what colours, and the backdrop
+/// as it looks now.
+struct Moving {
+    life: Life,
+    ink: Ink,
+    frame: Picture,
+    /// When the motion started, and the moment last painted.
+    since: Option<Instant>,
+    last: f32,
+}
+
+impl Moving {
+    /// The backdrop at `now`: only what changed since the last frame is
+    /// painted again.
+    fn frame(&mut self, backdrop: &Picture, now: Instant) -> &Picture {
+        let since = *self.since.get_or_insert(now);
+        let t = now.saturating_duration_since(since).as_secs_f32();
+        let x = (t / MOVING_IN).clamp(0.0, 1.0);
+        let strength = x * x * (3.0 - 2.0 * x);
+        for rect in self.life.regions(self.last, t) {
+            self.life.paint(
+                backdrop.rgba(),
+                self.frame.rgba_mut(),
+                Order::Rgba,
+                rect,
+                t,
+                strength,
+                &self.ink,
+            );
+        }
+        self.last = t;
+        &self.frame
+    }
 }
 
 /// PAM's question as a placeholder: "Password: " is "Password".
@@ -486,7 +552,7 @@ impl Screens for Greet {
                 if leave {
                     return cx.exit();
                 }
-                if redraw || self.mark.pace(now) != Pace::Rest {
+                if redraw || self.mark.pace(now) != Pace::Rest || self.moving.is_some() {
                     Outcome::Redraw
                 } else {
                     Outcome::Ignored
@@ -526,7 +592,9 @@ impl Screens for Greet {
         canvas.clear(colors.base);
         if let Some(backdrop) = &self.backdrop {
             let size = screen.pixels();
-            if backdrop.size() == size {
+            if let Some(moving) = self.moving.as_mut().filter(|_| backdrop.size() == size) {
+                canvas.picture(moving.frame(backdrop, now));
+            } else if backdrop.size() == size {
                 canvas.picture(backdrop);
             } else {
                 let fitted = self.fitted.get_or_insert_with(|| {
@@ -623,6 +691,7 @@ mod tests {
             people(),
             Box::new(Pretend::default()),
             false,
+            None,
             None,
         )
     }
@@ -839,6 +908,7 @@ mod tests {
             Box::new(Pretend::default()),
             false,
             None,
+            None,
         );
         let now = Instant::now();
         assert_eq!(greet.begin(now), Outcome::Redraw);
@@ -904,8 +974,9 @@ mod tests {
     fn over_the_backdrop_it_starts_as_the_boot_ends() {
         let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-greet-test"));
         let colors = ctx.theme.colors.clone();
-        // At the screen's own pixels, as enable draws it.
-        let backdrop = mark::backdrop(mark::scene(&colors, (1920, 1080)), colors.base);
+        // At the screen's own pixels, as enable draws it, with what moves.
+        let (scene, life) = mark::scene_with_life(&colors, (1920, 1080));
+        let backdrop = mark::backdrop(scene, colors.base);
         let mut greet = Greet::new(
             ctx,
             GreetConfig::default(),
@@ -913,16 +984,34 @@ mod tests {
             Box::new(Pretend::default()),
             false,
             Some(backdrop.clone()),
+            Some(life),
         );
+        assert!(greet.moving.is_some());
         let now = Instant::now();
         let (first, _) = render(&mut greet, now);
         let mut text = TextEngine::new(&greet.ctx.config.appearance);
         let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
             mark::frame(canvas, colors.base, colors.rose, Some(&backdrop));
         });
+        // Still at first: the splash's last frame, exactly.
         assert!(first.rgba == handed.rgba);
-        let (later, _) = render(&mut greet, now + Duration::from_secs(1));
-        later.snapshot(env!("CARGO_MANIFEST_DIR"), "greet-backdrop");
+        // Then moving, quietly, once the motion has come in.
+        let later = now + Duration::from_secs(3);
+        let (moving, _) = render(&mut greet, later);
+        let mut still = Greet::new(
+            Context::load_from(Paths::rooted("/nonexistent/enso-greet-test")),
+            GreetConfig::default(),
+            people(),
+            Box::new(Pretend::default()),
+            false,
+            Some(backdrop.clone()),
+            None,
+        );
+        render(&mut still, now);
+        let (unmoved, _) = render(&mut still, later);
+        assert!(moving.rgba != unmoved.rgba);
+        assert!(greet.next_wake(later).unwrap() <= MOVING_FRAME);
+        moving.snapshot(env!("CARGO_MANIFEST_DIR"), "greet-backdrop");
     }
 
     fn frame_named(greet: &mut Greet, now: Instant, name: &str) {

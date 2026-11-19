@@ -26,6 +26,8 @@ pub const GREET_CONFIG: &str = "/etc/enso/greet.toml";
 pub const SYSTEM_CONFIG: &str = "/etc/enso/config.toml";
 /// The scene behind the ensō, drawn once by `enable`.
 pub const BACKDROP: &str = "/usr/local/share/enso/greet/backdrop.png";
+/// What moves in it: water, stars, petals, mist.
+pub const BACKDROP_LIFE: &str = "/usr/local/share/enso/greet/backdrop.life";
 /// The boot splash (Plymouth) theme: the same backdrop while the machine
 /// starts, so the screen is never bare between the boot menu and the login.
 pub const PLYMOUTH_THEME: &str = "/usr/share/plymouth/themes/enso";
@@ -51,6 +53,8 @@ pub struct Setup {
     /// The scene behind the ensō, quietened: drawn here, since drawing it
     /// takes seconds the login screen shouldn't spend.
     pub backdrop: enso_ui::Picture,
+    /// What moves in the backdrop.
+    pub life: enso_scene::Life,
     /// The ensō in pictures, for the boot splash to animate.
     pub splash: Splash,
 }
@@ -262,6 +266,8 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     let greet = write("greet.toml", greet_config(&setup.user))?;
     let backdrop = setup.dir.join("backdrop.png");
     setup.backdrop.save_png(&backdrop)?;
+    let life = setup.dir.join("backdrop.life");
+    enso_core::disk::write_atomic(&life, &setup.life.encode(), 0o644)?;
     // The splash theme, whole, in a folder of its own: copied as it is.
     let theme = setup.dir.join("plymouth");
     match fs::remove_dir_all(&theme) {
@@ -303,6 +309,11 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     );
     let _ = writeln!(out, "  sudo install -Dm644 {} {NIRI_CONFIG}", shown(&niri));
     let _ = writeln!(out, "  sudo install -Dm644 {} {BACKDROP}", shown(&backdrop));
+    let _ = writeln!(
+        out,
+        "  sudo install -Dm644 {} {BACKDROP_LIFE}",
+        shown(&life)
+    );
     let _ = writeln!(
         out,
         "  sudo install -Dm644 {} {GREET_CONFIG}",
@@ -366,7 +377,7 @@ pub fn disable(dir: &Path) -> io::Result<String> {
         "To log in on the console again, as root:\n\n\
          \x20 sudo systemctl disable greetd    # from the next start\n\n\
          And to remove the login screen's files:\n\n\
-         \x20 sudo rm {PROGRAM} {NIRI_CONFIG} {GREET_CONFIG} {BACKDROP}\n\
+         \x20 sudo rm {PROGRAM} {NIRI_CONFIG} {GREET_CONFIG} {BACKDROP} {BACKDROP_LIFE}\n\
          \x20 sudo rm -r {PLYMOUTH_THEME} {PLYMOUTH_DROP_IN}    # and plymouth out of HOOKS\n\
 \n\
          {GREETD_CONFIG} can stay: greetd reads it only when enabled.\n\
@@ -406,6 +417,7 @@ mod tests {
             private_font: private_font(&fonts, "Google Sans Flex")
                 .map(|dir| ("Google Sans Flex".to_owned(), dir)),
             backdrop: enso_ui::Picture::solid(4, 3, enso_core::Rgba::rgb(1, 2, 3)),
+            life: enso_scene::Life::default(),
             splash: Splash {
                 side: 2,
                 strokes: vec![enso_ui::Picture::solid(2, 2, enso_core::Rgba::rgb(9, 9, 9)); 3],

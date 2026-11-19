@@ -216,6 +216,12 @@ mod tests {
         }
     }
 
+    fn backdrop_of(scene: &Picture, width: u32, height: u32) -> Screen {
+        let mut backdrop = Screen::new(width as usize, height as usize, [0, 0, 0, 255]);
+        backdrop.cover(scene);
+        backdrop
+    }
+
     fn save(name: &str, screen: &Screen) {
         let mut rgba = screen.bgra.clone();
         art::to_bgra(&mut rgba);
@@ -234,7 +240,7 @@ mod tests {
         let ctx = art::context(None);
         let mut text = TextEngine::new(&ctx.config.appearance);
         let (width, height) = (art::SCREEN.0 / 2, art::SCREEN.1 / 2);
-        let rendered = art::scene(&ctx, (width, height));
+        let (rendered, life) = art::scene(&ctx, (width, height));
         let scene = picture(width, height, rendered.rgba().to_vec());
         for chosen in 0..art::LABELS.len() {
             let card = art::card(&ctx, &mut text, chosen);
@@ -246,6 +252,39 @@ mod tests {
             let (x, y) = menu::card_at((screen.width, screen.height), (card.width, card.height));
             screen.over(&card, x, y);
             save(&format!("boot-menu-{chosen}"), &screen);
+
+            // Moving: redrawing only what changes, frame after frame, ends
+            // where drawing the whole screen at that moment does.
+            let ink = menu::open_ink(&menu::keep_ink(&art::ink(&ctx))).unwrap();
+            let life = enso_scene::Life::decode(&life.encode()).unwrap();
+            let living = menu::Living {
+                backdrop: &backdrop_of(&scene, width, height),
+                life: &life,
+                ink: &ink,
+                card: &card,
+            };
+            assert!(living.fits());
+            let whole = enso_scene::life::Rect {
+                x: 0,
+                y: 0,
+                w: width,
+                h: height,
+            };
+            let mut stepped = screen.clone();
+            living.paint(&mut stepped, whole, 0.0);
+            let mut before = 0.0;
+            for frame in 1..=45 {
+                let t = frame as f32 / 15.0;
+                for rect in life.regions(before, t) {
+                    living.paint(&mut stepped, rect, t);
+                }
+                before = t;
+            }
+            let mut fresh = screen.clone();
+            living.paint(&mut fresh, whole, before);
+            assert!(stepped == fresh, "a frame left something behind");
+            assert!(fresh != screen, "nothing moved");
+            save(&format!("boot-menu-moving-{chosen}"), &fresh);
         }
 
         let frame = art::frame(&ctx, &mut text, &rendered);
