@@ -1,0 +1,29 @@
+[package]
+name = "enso-greet"
+description = "Login screen for greetd: the ensō, your name, and a password"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+# Who can log in: /etc/passwd, /etc/shells, /etc/login.defs.
+enso-sys.workspace = true
+enso-ui.workspace = true
+serde.workspace = true
+# greetd's IPC is JSON.
+serde_json.workspace = true
+toml.workspace = true
+lexopt.workspace = true
+# Leaving: the greeter's own niri is asked to quit, and greetd goes on.
+niri-ipc.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

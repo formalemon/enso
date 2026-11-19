@@ -516,6 +516,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "enso-greet"
+version = "0.2.0"
+dependencies = [
+ "enso-core",
+ "enso-sys",
+ "enso-ui",
+ "lexopt",
+ "niri-ipc",
+ "serde",
+ "serde_json",
+ "toml",
+ "zeroize",
+]
+
+[[package]]
 name = "enso-keyring"
 version = "0.2.0"
 dependencies = [

@@ -1,11 +1,15 @@
 //! The runtime for interfaces that cover every output: one surface per
 //! screen, all drawn by the same [`Screens`] app.
 //!
-//! Two tools are shaped like this. A wallpaper sits behind everything on
+//! Three tools are shaped like this. A wallpaper sits behind everything on
 //! each output and takes no input ([`Role::Wallpaper`]). A lock screen
 //! replaces everything on each output and takes all of it ([`Role::Lock`],
 //! through `ext-session-lock`, the protocol that makes the compositor itself
-//! refuse to show or feed anything else until the client says so).
+//! refuse to show or feed anything else until the client says so). A
+//! greeter covers each output and takes the keyboard too, but as an
+//! ordinary overlay ([`Role::Greeter`]): it runs in a compositor of its
+//! own, where nothing else is shown anyway, and if it dies that compositor
+//! must not be left locked with nobody to unlock it.
 //!
 //! Outputs come and go — a lid closes, a monitor is plugged in — and the
 //! runtime follows, so an app only ever answers "what goes on this screen".
@@ -83,6 +87,17 @@ pub enum Role {
     /// until the app calls [`Cx::exit`]. If the app dies instead, the
     /// compositor keeps the session locked.
     Lock,
+    /// Above everything on every output, with the keyboard to itself, in a
+    /// compositor that runs nothing else. Unlike [`Role::Lock`] nothing is
+    /// held if the app dies.
+    Greeter,
+}
+
+impl Role {
+    /// Whether the surfaces take keys and the pointer.
+    fn takes_input(&self) -> bool {
+        matches!(self, Self::Lock | Self::Greeter)
+    }
 }
 
 /// The output a frame is being drawn for.
@@ -156,7 +171,7 @@ pub fn run_screens<A: Screens>(app: A, appearance: &Appearance) -> Result<(), Er
 
     let role = app.role();
     let (layer_shell, locker) = match &role {
-        Role::Wallpaper { .. } => {
+        Role::Wallpaper { .. } | Role::Greeter => {
             let shell = LayerShell::bind(&globals, &qh)
                 .map_err(|err| Error::new("compositor lacks wlr-layer-shell", err))?;
             (Some(shell), None)
@@ -399,6 +414,21 @@ impl<A: Screens> Runtime<A> {
                 layer.commit();
                 Kind::Layer(layer)
             }
+            (Role::Greeter, Some(shell), _) => {
+                let layer = shell.create_layer_surface(
+                    &self.qh,
+                    wl_surface,
+                    wlr_layer::Layer::Overlay,
+                    Some("enso-greet".to_owned()),
+                    Some(&output),
+                );
+                layer.set_anchor(wlr_layer::Anchor::all());
+                layer.set_size(0, 0);
+                layer.set_exclusive_zone(-1);
+                layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+                layer.commit();
+                Kind::Layer(layer)
+            }
             (Role::Lock, _, Some(lock)) => {
                 Kind::Lock(lock.create_lock_surface(wl_surface, &output, &self.qh))
             }
@@ -507,7 +537,7 @@ impl<A: Screens> Runtime<A> {
         // A wallpaper at rest is drawn once and then only looked at. The
         // compositor has its copy; ours — tens of megabytes on a large
         // screen — goes back to the system until something changes.
-        let keep = paint == Paint::Animating || self.role == Role::Lock;
+        let keep = paint == Paint::Animating || self.role.takes_input();
         surface.pool = keep.then_some(pool);
         Ok(())
     }
@@ -770,7 +800,7 @@ impl<A: Screens> SeatHandler for Runtime<A> {
         capability: Capability,
     ) {
         // A wallpaper takes no input at all.
-        if self.role != Role::Lock {
+        if !self.role.takes_input() {
             return;
         }
         match capability {

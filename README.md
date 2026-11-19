@@ -14,7 +14,8 @@ and one way of moving.
 | `enso-ctl` | Control center panel + CLI: Wi-Fi, Bluetooth, sound, brightness, power, and one theme for the whole desktop — enso, Niri, Alacritty, Neovim, GTK, fonts, the cursor, Firefox, Qt, Flatpak | working |
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, log out, restart, shut down — a key each | working |
-| `enso-lock` | Lock screen: a clock and a password field, on a machine made quiet while nobody is at it | working |
+| `enso-lock` | Lock screen: the ensō, a clock and a password field, on a machine made quiet while nobody is at it | working |
+| `enso-greet` | Login screen, as a greeter for greetd: the ensō, your name, and a password; Tab for someone else | working |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
@@ -92,7 +93,9 @@ binds {
 
 Two tools are started by the session bus instead, once told to be:
 `enso-keyring enable` makes it the keyring, and `enso-files portal enable`
-makes it every application's file chooser.
+makes it every application's file chooser. A third runs before the
+session: `enso-greet enable` readies the login screen and prints the few
+lines root has to run (see [`enso-greet`](#the-tools-up-close)).
 
 With `enso-bar` and `enso-ctl` installed, resting the pointer on the bar's
 right island opens the control center beneath it; with `enso-notify`
@@ -118,7 +121,7 @@ crates/
                  archives, git, search
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
   enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
-  enso-play/                                                     the binaries
+  enso-play/  enso-greet/                                        the binaries
 config.example.toml   every config key with its default
 contrib/              udev rules: the power profile, and udisks for wheel
 ```
@@ -540,9 +543,10 @@ through logind, which lets the person at the keyboard do them without root;
 logging out asks Niri to quit over its socket; locking runs `enso-lock`
 (`lock_command`), found next to `enso-power` or on `PATH`.
 
-**`enso-lock`** — a clock, the date, and a field that fills with dots, over
-the theme's wallpaper blurred into colour and light (or the base colour
-alone). `Enter` checks the password; `Esc` or `Ctrl+u` clears the field; a
+**`enso-lock`** — the ensō, a clock, the date, and a field that fills with
+dots, over the theme's wallpaper blurred into colour and light (or the base
+colour alone). The ensō paints itself in as the lock appears, then breathes
+(see `enso-greet`). `Enter` checks the password; `Esc` or `Ctrl+u` clears the field; a
 wrong one shakes it. After three misses each further one costs a wait,
 doubling to half a minute.
 
@@ -589,6 +593,43 @@ well as in `config.toml`; the watcher picks up a change at once.
 
 Only one lock screen runs at a time: a second, from the key while the first
 is up, steps aside.
+
+**`enso-greet`** — the login screen. It is a greeter for
+[greetd](https://sr.ht/~kennylevinsen/greetd/), which does everything a
+login has to get right: the console, PAM, starting the session as the right
+user. `enso-greet` only draws, and passes PAM's questions and the answers
+between the screen and greetd's socket. It runs in a niri of its own,
+started by greetd as its `greeter` user; once you are in, it asks greetd for
+your session and quits that niri, and greetd starts the session in its place.
+
+On screen: the ensō, your name, and the password field, looking just like
+the lock. Tab or the arrow keys go through the others who can log in
+(ordinary accounts with a login shell). A wrong password shakes the field;
+whatever PAM says — an account locked after too many tries, say — is shown
+as it says it. The session is your login shell running `niri-session`, so
+your profile (`~/.bash_profile` and the like) sets its environment just as a
+console login does.
+
+Setting it up needs root once, and enso never runs anything as root:
+
+```sh
+enso-greet enable    # writes the files, prints the sudo lines to run
+enso-greet preview   # see it now: password "enso", Esc leaves
+enso-greet disable   # prints how to go back to the console login
+```
+
+It runs before anyone logs in, so its settings are system-wide:
+`/etc/enso/greet.toml` (`default_user`, `command`), and the look from
+`/etc/enso/config.toml` — `enable` writes the interface font there if it is
+one only you have, and says how to copy it where the greeter can read it.
+
+**The ensō** (`enso_ui::mark`) is the suite's mark: the circle from the
+Neovim start screen as one brush stroke, twenty-six bristles running dry
+towards its end. It is computed, not drawn from a file, so it is the same
+pixels everywhere. Where it is shown it breathes — a slow swell and a faint
+glow every nine seconds, with a light travelling the stroke every fourteen —
+redrawn a few times a second, never every frame. With motion turned off it
+is simply there.
 
 **`enso-auth`** — when a program asks for something only an administrator
 may do (mounting an internal disk, changing a system setting, `pkexec`),
@@ -924,6 +965,8 @@ one.
   rotation.
 - **enso-lock** — authentication beyond the password (fingerprint), which
   means PAM.
+- **enso-greet** — a session chooser, once there is a second desktop to
+  choose; remembering who logged in last.
 - **enso-power** — a tile in the control center.
 - **enso-files** — the plan's last phase: saved searches, restoring the
   last session's tabs, checksums, tags, and finding duplicates.
