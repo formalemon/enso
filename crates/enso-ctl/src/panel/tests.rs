@@ -1239,6 +1239,26 @@ fn settings_holds_the_theme_and_do_not_disturb() {
     keep(&panel, &requests);
     let mut ctx = Context::load_from(panel.ctx.paths.clone());
     assert!(ctx.section::<Quiet>("notify").do_not_disturb);
+    // Its switch slides at once: with everything else at rest, the frame
+    // after the press is still moving, so the next is asked for.
+    for tween in [
+        &mut panel.highlight,
+        &mut panel.height,
+        &mut panel.slide,
+        &mut panel.wifi_switch,
+        &mut panel.bluetooth_switch,
+        &mut panel.mic_switch,
+        &mut panel.before_sleep_switch,
+    ] {
+        tween.jump(tween.target());
+    }
+    // The card's own reveal began long ago.
+    let long_ago = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+    panel.presence.get(long_ago);
+    let mut text = TextEngine::new(&panel.ctx.config.appearance);
+    Offscreen::render(&mut text, SIZE, 2, |canvas| {
+        assert_eq!(panel.draw(canvas, Instant::now()), Paint::Animating);
+    });
     // The selection steps over the heading.
     press(&mut panel, Key::Down);
     assert_eq!(panel.items()[panel.selected], Item::Timer(Timer::Lock));

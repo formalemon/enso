@@ -177,6 +177,7 @@ impl Panel {
                     &self.bluetooth_switch,
                     &self.mic_switch,
                     &self.before_sleep_switch,
+                    &self.quiet_switch,
                 ]
                 .into_iter()
                 .any(|tween| tween.is_animating(now))
