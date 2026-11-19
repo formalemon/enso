@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 repository = "https://github.com/formalemon/enso"
@@ -12,11 +12,11 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates.
-enso-core = { path = "crates/enso-core", version = "0.2.0" }
-enso-sys = { path = "crates/enso-sys", version = "0.2.0" }
-enso-fs = { path = "crates/enso-fs", version = "0.2.0" }
-enso-ui = { path = "crates/enso-ui", version = "0.2.0" }
-enso-scene = { path = "crates/enso-scene", version = "0.2.0", default-features = false }
+enso-core = { path = "crates/enso-core", version = "0.3.0" }
+enso-sys = { path = "crates/enso-sys", version = "0.3.0" }
+enso-fs = { path = "crates/enso-fs", version = "0.3.0" }
+enso-ui = { path = "crates/enso-ui", version = "0.3.0" }
+enso-scene = { path = "crates/enso-scene", version = "0.3.0", default-features = false }
 
 # Data & config.
 serde = { version = "1", features = ["derive"] }
