@@ -13,6 +13,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod cache;
 mod wall;
 
 use std::{

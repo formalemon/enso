@@ -11,6 +11,8 @@ use enso_core::{
 };
 use enso_ui::{Canvas, Cx, Event, Paint, Picture, Proxy, Role, Screen, Screens, watch::watch_dir};
 
+use crate::cache;
+
 /// Messages from the background threads.
 #[derive(Debug)]
 pub enum Message {
@@ -117,8 +119,22 @@ impl Wall {
                 self.fitted.swap_remove(at).picture
             };
         }
-        let picture = match Picture::open(path) {
-            Ok(picture) => Some(picture.fitted(size.0, size.1, scene.fit, scene.base)),
+        // Ready from the last time, if nothing it depends on has changed:
+        // a read, where decoding a photograph takes a second.
+        let cache = self.ctx.paths.cache_dir.join("wall");
+        let key = cache::key(path, scene.modified, size, scene.fit, scene.base);
+        let picture = match cache::load(&cache, &key, size) {
+            Some(picture) => Ok(picture),
+            None => Picture::open(path).map(|picture| {
+                let fitted = picture.fitted(size.0, size.1, scene.fit, scene.base);
+                if let Err(err) = cache::store(&cache, &key, &fitted) {
+                    eprintln!("enso-wall: cannot keep the fitted picture: {err}");
+                }
+                fitted
+            }),
+        };
+        let picture = match picture {
+            Ok(picture) => Some(picture),
             Err(err) => {
                 if !self.reported.iter().any(|seen| seen == path) {
                     eprintln!("enso-wall: {err}; showing the theme colour instead");
