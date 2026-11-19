@@ -420,13 +420,15 @@ impl Mark {
         self.update(now);
         let (breath, settle, sheen) = self.idle(now);
         let breathing = breath * settle;
+        let brush = self.brush.get(now);
 
+        // The glow comes up as the stroke goes down: nothing before it.
         canvas.glow(
             centre,
             radius * 0.2,
             reach(radius),
             self.ink,
-            GLOW + GLOW_BREATH * breathing,
+            (GLOW + GLOW_BREATH * breathing) * brush,
         );
 
         let scale = canvas.scale();
@@ -438,7 +440,6 @@ impl Mark {
         {
             self.raster = Raster::new(pixels);
         }
-        let brush = self.brush.get(now);
         let Some(raster) = &mut self.raster else {
             return;
         };
@@ -520,14 +521,20 @@ pub fn backdrop(scene: Picture, base: Rgba) -> Picture {
     scene.blurred(BACKDROP_BLUR).tinted(base, BACKDROP_TINT)
 }
 
-/// The still frame the boot hands over with: `backdrop` (or `base` alone),
-/// and the mark in `ink` where [`place`] puts it, whole, with its glow at
-/// rest. The login screen's first frame is exactly this.
-pub fn frame(canvas: &mut Canvas<'_>, base: Rgba, ink: Rgba, backdrop: Option<&Picture>) {
+/// The stage the ensō is painted on: `backdrop` over `base`. The boot's
+/// last frame, and the login screen's first, before the brush comes down.
+pub fn stage(canvas: &mut Canvas<'_>, base: Rgba, backdrop: Option<&Picture>) {
     canvas.clear(base);
     if let Some(backdrop) = backdrop {
         canvas.picture(backdrop);
     }
+}
+
+/// The ensō whole on its stage: `backdrop` (or `base` alone),
+/// and the mark in `ink` where [`place`] puts it, whole, with its glow at
+/// rest.
+pub fn frame(canvas: &mut Canvas<'_>, base: Rgba, ink: Rgba, backdrop: Option<&Picture>) {
+    stage(canvas, base, backdrop);
     let (centre, radius) = place(canvas.bounds());
     Mark::new(ink, ink).draw(canvas, centre, radius, Instant::now());
 }

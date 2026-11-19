@@ -25,6 +25,11 @@ pub const GREET_CONFIG: &str = "/etc/enso/greet.toml";
 pub const SYSTEM_CONFIG: &str = "/etc/enso/config.toml";
 /// The scene behind the ensō, drawn once by `enable`.
 pub const BACKDROP: &str = "/usr/local/share/enso/greet/backdrop.png";
+/// The boot splash (Plymouth) theme: the same backdrop while the machine
+/// starts, so the screen is never bare between the boot menu and the login.
+pub const PLYMOUTH_THEME: &str = "/usr/share/plymouth/themes/enso";
+/// Plymouth leaves its last frame up when it goes, for the login screen.
+pub const PLYMOUTH_DROP_IN: &str = "/etc/systemd/system/plymouth-quit.service.d/enso.conf";
 /// Fonts every user, the greeter too, can read.
 const SYSTEM_FONTS: &str = "/usr/local/share/fonts";
 
@@ -94,6 +99,53 @@ binds {{
     )
 }
 
+fn plymouth_theme() -> String {
+    format!(
+        "# The login screen's backdrop while the machine starts. Written by\n\
+         # `enso-greet enable`.\n\n\
+         [Plymouth Theme]\n\
+         Name=enso\n\
+         Description=The terraces at dusk, quietened, from the boot menu to the login\n\
+         ModuleName=script\n\n\
+         [script]\n\
+         ImageDir={PLYMOUTH_THEME}\n\
+         ScriptFile={PLYMOUTH_THEME}/enso.script\n"
+    )
+}
+
+fn plymouth_script(base: &str) -> String {
+    let channel = |at: usize| {
+        u8::from_str_radix(base.get(at..at + 2).unwrap_or("00"), 16).unwrap_or(0) as f32 / 255.0
+    };
+    let (r, g, b) = (channel(1), channel(3), channel(5));
+    format!(
+        "// The login screen's backdrop, as the boot menu left it, until the\n\
+         // login screen takes over. Written by `enso-greet enable`.\n\n\
+         Window.SetBackgroundTopColor({r:.4}, {g:.4}, {b:.4});\n\
+         Window.SetBackgroundBottomColor({r:.4}, {g:.4}, {b:.4});\n\n\
+         backdrop = Image(\"backdrop.png\");\n\
+         width = Window.GetWidth();\n\
+         height = Window.GetHeight();\n\
+         if (backdrop.GetWidth() != width || backdrop.GetHeight() != height) {{\n\
+         \x20   scale = Math.Max(width / backdrop.GetWidth(), height / backdrop.GetHeight());\n\
+         \x20   backdrop = backdrop.Scale(backdrop.GetWidth() * scale, backdrop.GetHeight() * scale);\n\
+         }}\n\
+         sprite = Sprite(backdrop);\n\
+         sprite.SetPosition((width - backdrop.GetWidth()) / 2, (height - backdrop.GetHeight()) / 2, -100);\n"
+    )
+}
+
+/// Plymouth goes when the system is up, as always, but leaves its last
+/// frame on the screen: the login screen draws over it the same picture.
+fn plymouth_drop_in() -> String {
+    "# Written by `enso-greet enable`: the boot splash's last frame stays up\n\
+     # until the login screen draws over it.\n\
+     [Service]\n\
+     ExecStart=\n\
+     ExecStart=-/usr/bin/plymouth quit --retain-splash\n"
+        .to_owned()
+}
+
 fn greetd_config() -> String {
     format!(
         r#"# greetd, with enso-greet as the login screen. Written by `enso-greet
@@ -148,6 +200,9 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     let greet = write("greet.toml", greet_config(&setup.user))?;
     let backdrop = setup.dir.join("backdrop.png");
     setup.backdrop.save_png(&backdrop)?;
+    let theme = write("enso.plymouth", plymouth_theme())?;
+    let script = write("enso.script", plymouth_script(&setup.base))?;
+    let drop_in = write("plymouth-quit.conf", plymouth_drop_in())?;
     let system = match &setup.private_font {
         Some((family, _)) => Some(write("enso.toml", system_config(family))?),
         None => None,
@@ -202,6 +257,24 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
          `enso-greet disable` says how to undo all of this. After rebuilding,\n\
          run the first line again."
     );
+    let _ = writeln!(
+        out,
+        "\nThe boot splash: the same backdrop while the machine starts, so the\n\
+         screen is never bare between the boot menu and the login (needs\n\
+         plymouth: pacman -S plymouth):\n\n\
+         \x20 sudo install -Dm644 -t {PLYMOUTH_THEME} {theme} {script} {backdrop}\n\
+         \x20 sudo install -Dm644 {drop_in} {PLYMOUTH_DROP_IN}\n\
+         \x20 sudo plymouth-set-default-theme enso\n\n\
+         Then Plymouth in the initramfs, after `systemd` in HOOKS, and rebuilt:\n\n\
+         \x20 sudo sed -i 's/^HOOKS=(base systemd /HOOKS=(base systemd plymouth /' /etc/mkinitcpio.conf\n\
+         \x20 sudo mkinitcpio -P\n\n\
+         And `splash` among the kernel's options (with `quiet`), on the options\n\
+         line of the boot entry in /boot/loader/entries/.",
+        theme = shown(&theme),
+        script = shown(&script),
+        backdrop = shown(&backdrop),
+        drop_in = shown(&drop_in),
+    );
     Ok(out)
 }
 
@@ -216,6 +289,7 @@ pub fn disable(dir: &Path) -> io::Result<String> {
          \x20 sudo systemctl disable greetd    # from the next start\n\n\
          And to remove the login screen's files:\n\n\
          \x20 sudo rm {PROGRAM} {NIRI_CONFIG} {GREET_CONFIG} {BACKDROP}\n\
+         \x20 sudo rm -r {PLYMOUTH_THEME} {PLYMOUTH_DROP_IN}    # and plymouth out of HOOKS\n\
 \n\
          {GREETD_CONFIG} can stay: greetd reads it only when enabled.\n\
          {SYSTEM_CONFIG} and any font copied to {SYSTEM_FONTS} are left: remove them\n\
@@ -274,6 +348,12 @@ mod tests {
         assert!(said.contains("sudo install -Dm755 /build/enso-greet /usr/local/bin/enso-greet"));
         assert!(said.contains("GoogleSansFlex /usr/local/share/fonts/"));
         assert!(said.contains(&format!("backdrop.png {BACKDROP}")));
+        assert!(said.contains("plymouth-set-default-theme enso"));
+        let script = read("enso.script");
+        assert!(script.contains("Image(\"backdrop.png\")"));
+        assert!(script.contains("SetBackgroundTopColor(0.1373, 0.1294, 0.2118)"));
+        assert!(read("enso.plymouth").contains("ModuleName=script"));
+        assert!(read("plymouth-quit.conf").contains("quit --retain-splash"));
         let saved = enso_ui::Picture::open(setup.dir.join("backdrop.png")).unwrap();
         assert!(saved == setup.backdrop);
         assert!(said.contains("sudo systemctl enable greetd && systemctl reboot"));

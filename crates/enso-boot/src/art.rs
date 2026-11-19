@@ -36,13 +36,13 @@ pub fn scene(ctx: &Context, size: (u32, u32)) -> Picture {
     mark::scene(&ctx.theme.colors, size)
 }
 
-/// The frame Arch starts on: the ensō over the scene, quietened, exactly
-/// as the login screen first shows it.
+/// The frame Arch starts on: the scene, quietened, exactly as the login
+/// screen first shows it before it paints the ensō.
 pub fn frame(ctx: &Context, text: &mut TextEngine, scene: &Picture) -> Offscreen {
     let colors = ctx.theme.colors.clone();
     let backdrop = mark::backdrop(scene.clone(), colors.base);
     Offscreen::render(text, backdrop.size(), 1, |canvas| {
-        mark::frame(canvas, colors.base, colors.rose, Some(&backdrop));
+        mark::stage(canvas, colors.base, Some(&backdrop));
     })
 }
 

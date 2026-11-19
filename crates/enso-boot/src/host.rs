@@ -170,8 +170,6 @@ fn remove_steps() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use enso_ui::TextEngine;
 
     use super::*;
@@ -254,15 +252,7 @@ mod tests {
         let colors = ctx.theme.colors.clone();
         let backdrop = enso_ui::mark::backdrop(rendered.clone(), colors.base);
         let greeter = enso_ui::Offscreen::render(&mut text, (width, height), 1, |canvas| {
-            canvas.clear(colors.base);
-            canvas.picture(&backdrop);
-            let (centre, radius) = enso_ui::mark::place(canvas.bounds());
-            enso_ui::mark::Mark::new(colors.rose, colors.text).draw(
-                canvas,
-                centre,
-                radius,
-                Instant::now(),
-            );
+            enso_ui::mark::stage(canvas, colors.base, Some(&backdrop));
         });
         assert!(frame.rgba == greeter.rgba);
     }
