@@ -7,6 +7,7 @@
 //! writes them where the user can read them first, then says exactly what
 //! to run as root; it never runs anything as root itself.
 
+use enso_ui::mark::Splash;
 use std::{
     fmt::Write as _,
     fs, io,
@@ -50,6 +51,8 @@ pub struct Setup {
     /// The scene behind the ensō, quietened: drawn here, since drawing it
     /// takes seconds the login screen shouldn't spend.
     pub backdrop: enso_ui::Picture,
+    /// The ensō in pictures, for the boot splash to animate.
+    pub splash: Splash,
 }
 
 /// The greeter's niri: nothing in it but enso-greet.
@@ -113,14 +116,27 @@ fn plymouth_theme() -> String {
     )
 }
 
-fn plymouth_script(base: &str) -> String {
+/// Frames a second of the splash's animation: Plymouth redraws fifty
+/// times a second, and shows each of these for two of its own.
+pub const SPLASH_FPS: u32 = 25;
+/// Frames between one pass of the light and the next.
+const LIGHT_PAUSE: usize = 8;
+
+/// The splash: the backdrop, and on it the ensō painted a frame at a time,
+/// its glow coming up with it; then the light travelling the finished
+/// stroke, again and again, until the login screen takes over.
+fn plymouth_script(base: &str, splash: &Splash) -> String {
     let channel = |at: usize| {
         u8::from_str_radix(base.get(at..at + 2).unwrap_or("00"), 16).unwrap_or(0) as f32 / 255.0
     };
     let (r, g, b) = (channel(1), channel(3), channel(5));
+    let side = splash.side;
+    let glow_side = splash.glow.size().0;
+    let strokes = splash.strokes.len();
+    let lights = splash.lights.len();
     format!(
-        "// The login screen's backdrop, as the boot menu left it, until the\n\
-         // login screen takes over. Written by `enso-greet enable`.\n\n\
+        "// The ensō painting itself on the login screen's backdrop while the\n\
+         // machine starts. Written by `enso-greet enable`.\n\n\
          Window.SetBackgroundTopColor({r:.4}, {g:.4}, {b:.4});\n\
          Window.SetBackgroundBottomColor({r:.4}, {g:.4}, {b:.4});\n\n\
          backdrop = Image(\"backdrop.png\");\n\
@@ -130,8 +146,54 @@ fn plymouth_script(base: &str) -> String {
          \x20   scale = Math.Max(width / backdrop.GetWidth(), height / backdrop.GetHeight());\n\
          \x20   backdrop = backdrop.Scale(backdrop.GetWidth() * scale, backdrop.GetHeight() * scale);\n\
          }}\n\
-         sprite = Sprite(backdrop);\n\
-         sprite.SetPosition((width - backdrop.GetWidth()) / 2, (height - backdrop.GetHeight()) / 2, -100);\n"
+         wall = Sprite(backdrop);\n\
+         wall.SetPosition(Math.Int((width - backdrop.GetWidth()) / 2), Math.Int((height - backdrop.GetHeight()) / 2), -100);\n\n\
+         // Where the login screen puts the ensō.\n\
+         cx = Math.Int(width / 2);\n\
+         cy = Math.Int(height * 0.41);\n\
+         glow = Sprite(Image(\"glow.png\"));\n\
+         glow.SetPosition(cx - Math.Int({glow_side} / 2), cy - Math.Int({glow_side} / 2), 1);\n\
+         glow.SetOpacity(0);\n\
+         stroke = Sprite();\n\
+         stroke.SetPosition(cx - Math.Int({side} / 2), cy - Math.Int({side} / 2), 2);\n\
+         light = Sprite();\n\
+         light.SetPosition(cx - Math.Int({side} / 2), cy - Math.Int({side} / 2), 3);\n\
+         light.SetOpacity(0);\n\n\
+         strokes = {strokes};\n\
+         lights = {lights};\n\
+         round = {lights} + {LIGHT_PAUSE};\n\
+         tick = 0;\n\
+         shown_stroke = -1;\n\
+         shown_light = -1;\n\n\
+         fun refresh() {{\n\
+         \x20   global.tick = global.tick + 1;\n\
+         \x20   frame = Math.Int(global.tick / 2);\n\
+         \x20   if (frame < strokes) {{\n\
+         \x20       if (frame != global.shown_stroke) {{\n\
+         \x20           stroke.SetImage(Image(\"stroke-\" + frame + \".png\"));\n\
+         \x20           global.shown_stroke = frame;\n\
+         \x20       }}\n\
+         \x20       glow.SetOpacity((frame + 1) / strokes);\n\
+         \x20   }} else {{\n\
+         \x20       if (global.shown_stroke != strokes - 1) {{\n\
+         \x20           stroke.SetImage(Image(\"stroke-\" + (strokes - 1) + \".png\"));\n\
+         \x20           global.shown_stroke = strokes - 1;\n\
+         \x20           glow.SetOpacity(1);\n\
+         \x20       }}\n\
+         \x20       k = frame - strokes;\n\
+         \x20       k = k - Math.Int(k / round) * round;\n\
+         \x20       if (k < lights) {{\n\
+         \x20           if (k != global.shown_light) {{\n\
+         \x20               light.SetImage(Image(\"light-\" + k + \".png\"));\n\
+         \x20               light.SetOpacity(1);\n\
+         \x20               global.shown_light = k;\n\
+         \x20           }}\n\
+         \x20       }} else {{\n\
+         \x20           light.SetOpacity(0);\n\
+         \x20       }}\n\
+         \x20   }}\n\
+         }}\n\n\
+         Plymouth.SetRefreshFunction(refresh);\n"
     )
 }
 
@@ -200,8 +262,26 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     let greet = write("greet.toml", greet_config(&setup.user))?;
     let backdrop = setup.dir.join("backdrop.png");
     setup.backdrop.save_png(&backdrop)?;
-    let theme = write("enso.plymouth", plymouth_theme())?;
-    let script = write("enso.script", plymouth_script(&setup.base))?;
+    // The splash theme, whole, in a folder of its own: copied as it is.
+    let theme = setup.dir.join("plymouth");
+    match fs::remove_dir_all(&theme) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    fs::create_dir_all(&theme)?;
+    let put = |name: &str, text: String| {
+        enso_core::disk::write_atomic(&theme.join(name), text.as_bytes(), 0o644)
+    };
+    put("enso.plymouth", plymouth_theme())?;
+    put("enso.script", plymouth_script(&setup.base, &setup.splash))?;
+    setup.backdrop.save_png(theme.join("backdrop.png"))?;
+    setup.splash.glow.save_png(theme.join("glow.png"))?;
+    for (i, stroke) in setup.splash.strokes.iter().enumerate() {
+        stroke.save_png(theme.join(format!("stroke-{i}.png")))?;
+    }
+    for (i, light) in setup.splash.lights.iter().enumerate() {
+        light.save_png(theme.join(format!("light-{i}.png")))?;
+    }
     let drop_in = write("plymouth-quit.conf", plymouth_drop_in())?;
     let system = match &setup.private_font {
         Some((family, _)) => Some(write("enso.toml", system_config(family))?),
@@ -259,20 +339,18 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     );
     let _ = writeln!(
         out,
-        "\nThe boot splash: the same backdrop while the machine starts, so the\n\
-         screen is never bare between the boot menu and the login (needs\n\
-         plymouth: pacman -S plymouth):\n\n\
-         \x20 sudo install -Dm644 -t {PLYMOUTH_THEME} {theme} {script} {backdrop}\n\
+        "\nThe boot splash: the ensō painting itself on the same backdrop while\n\
+         the machine starts, then shimmering until the login screen is ready\n\
+         (needs plymouth: pacman -S plymouth):\n\n\
+         \x20 sudo rm -rf {PLYMOUTH_THEME} && sudo cp -r {theme} {PLYMOUTH_THEME}\n\
          \x20 sudo install -Dm644 {drop_in} {PLYMOUTH_DROP_IN}\n\
          \x20 sudo plymouth-set-default-theme enso\n\n\
          Then Plymouth in the initramfs, after `systemd` in HOOKS, and rebuilt:\n\n\
          \x20 sudo sed -i 's/^HOOKS=(base systemd /HOOKS=(base systemd plymouth /' /etc/mkinitcpio.conf\n\
-         \x20 sudo mkinitcpio -P\n\n\
+         \x20 sudo mkinitcpio -P    # again whenever the splash changes\n\n\
          And `splash` among the kernel's options (with `quiet`), on the options\n\
          line of the boot entry in /boot/loader/entries/.",
         theme = shown(&theme),
-        script = shown(&script),
-        backdrop = shown(&backdrop),
         drop_in = shown(&drop_in),
     );
     Ok(out)
@@ -328,6 +406,12 @@ mod tests {
             private_font: private_font(&fonts, "Google Sans Flex")
                 .map(|dir| ("Google Sans Flex".to_owned(), dir)),
             backdrop: enso_ui::Picture::solid(4, 3, enso_core::Rgba::rgb(1, 2, 3)),
+            splash: Splash {
+                side: 2,
+                strokes: vec![enso_ui::Picture::solid(2, 2, enso_core::Rgba::rgb(9, 9, 9)); 3],
+                lights: vec![enso_ui::Picture::solid(2, 2, enso_core::Rgba::rgb(8, 8, 8)); 2],
+                glow: enso_ui::Picture::solid(4, 4, enso_core::Rgba::rgb(7, 7, 7)),
+            },
         };
         assert!(private_font(&fonts, "Inter").is_none());
         let said = enable(&setup).unwrap();
@@ -349,10 +433,22 @@ mod tests {
         assert!(said.contains("GoogleSansFlex /usr/local/share/fonts/"));
         assert!(said.contains(&format!("backdrop.png {BACKDROP}")));
         assert!(said.contains("plymouth-set-default-theme enso"));
-        let script = read("enso.script");
+        let script = read("plymouth/enso.script");
         assert!(script.contains("Image(\"backdrop.png\")"));
         assert!(script.contains("SetBackgroundTopColor(0.1373, 0.1294, 0.2118)"));
-        assert!(read("enso.plymouth").contains("ModuleName=script"));
+        assert!(script.contains("strokes = 3;"));
+        assert!(script.contains("Plymouth.SetRefreshFunction(refresh);"));
+        assert!(read("plymouth/enso.plymouth").contains("ModuleName=script"));
+        for file in [
+            "stroke-0.png",
+            "stroke-2.png",
+            "light-1.png",
+            "glow.png",
+            "backdrop.png",
+        ] {
+            assert!(setup.dir.join("plymouth").join(file).is_file(), "{file}");
+        }
+        assert!(said.contains("sudo cp -r"));
         assert!(read("plymouth-quit.conf").contains("quit --retain-splash"));
         let saved = enso_ui::Picture::open(setup.dir.join("backdrop.png")).unwrap();
         assert!(saved == setup.backdrop);

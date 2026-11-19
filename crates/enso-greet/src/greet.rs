@@ -506,12 +506,12 @@ impl Screens for Greet {
         let base_size = self.ctx.config.appearance.font_size;
         let bounds = canvas.bounds();
 
-        // The boot leaves the stage bare; the ensō is painted on it, and
-        // only then do the name and the field come in.
+        // The boot splash painted the ensō while the machine started: it is
+        // whole here from the first frame, and the name and field come in.
         if !self.revealed {
             self.revealed = true;
-            self.mark.paint(&self.ctx.motion, now);
-            self.reveal_at = Some(now + self.ctx.motion.apply(Transition::BRUSH).duration);
+            self.mark.show(&self.ctx.motion, now);
+            self.reveal_at = Some(now);
         }
         if let Some(at) = self.reveal_at
             && now >= at
@@ -864,8 +864,7 @@ mod tests {
         let mut greet = greet(GreetConfig::default());
         let mut pretend = Pretend::default();
         let start = Instant::now();
-        // Past the ensō's painting and the field's arrival.
-        let settled = start + Duration::from_secs(4);
+        let settled = start + Duration::from_secs(1);
         let base = greet.ctx.theme.colors.base;
         let first = greet.begin(start);
         settle(&mut greet, &mut pretend, first, start);
@@ -873,16 +872,14 @@ mod tests {
         let (frame, paint) = render(&mut greet, start);
         assert_eq!(paint, Paint::Animating);
         assert_eq!(frame.pixel(5, 5), [base.r, base.g, base.b, 255]);
-        // The first frame is the one the boot hands over, pixel for pixel.
+        // The first frame is the ensō whole on its stage, as the boot
+        // splash leaves it.
         let mut text = TextEngine::new(&greet.ctx.config.appearance);
         let colors = greet.ctx.theme.colors.clone();
         let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
-            mark::stage(canvas, colors.base, None);
+            mark::frame(canvas, colors.base, colors.rose, None);
         });
         assert!(frame.rgba == handed.rgba);
-        // Painted by now: the name and the field are let in.
-        let (_, paint) = render(&mut greet, start + Duration::from_secs(3));
-        assert_eq!(paint, Paint::Animating);
         let (frame, paint) = render(&mut greet, settled);
         assert_eq!(paint, Paint::Idle);
         assert!(frame.rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
@@ -921,11 +918,10 @@ mod tests {
         let (first, _) = render(&mut greet, now);
         let mut text = TextEngine::new(&greet.ctx.config.appearance);
         let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
-            mark::stage(canvas, colors.base, Some(&backdrop));
+            mark::frame(canvas, colors.base, colors.rose, Some(&backdrop));
         });
         assert!(first.rgba == handed.rgba);
-        render(&mut greet, now + Duration::from_secs(3));
-        let (later, _) = render(&mut greet, now + Duration::from_secs(4));
+        let (later, _) = render(&mut greet, now + Duration::from_secs(1));
         later.snapshot(env!("CARGO_MANIFEST_DIR"), "greet-backdrop");
     }
 

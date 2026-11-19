@@ -22,7 +22,7 @@ use std::{
 use enso_core::{Motion, Palette, Rgba, Transition, Tween};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
-use crate::{Canvas, Picture, Rect};
+use crate::{Canvas, Offscreen, Picture, Rect, TextEngine};
 
 /// Points along the stroke.
 const STEPS: usize = 720;
@@ -456,35 +456,116 @@ impl Mark {
         );
 
         if let Some(p) = sheen {
-            let head = -SHEEN_REACH + 1.3 * (0.5 - 0.5 * (PI * p).cos());
-            let strength = SHEEN_ALPHA * (PI * p).sin() * f64::from(settle);
-            let ring = radius * zoom;
-            let least = 0.6 / scale;
-            let mut points = Vec::with_capacity(GROUP + 1);
-            for g in 0..GROUPS {
-                let t = (1 + g * GROUP) as f64 / STEPS as f64;
-                if (t - head).abs() > SHEEN_REACH {
-                    continue;
-                }
-                let k = strength * (-(t - head).powi(2) / (2.0 * SHEEN_WIDTH.powi(2))).exp();
-                if k <= 0.01 {
-                    continue;
-                }
-                for bristle in bristles() {
-                    let Some(group) = group(bristle, g) else {
-                        continue;
-                    };
-                    points.clear();
-                    points.extend(
-                        group
-                            .iter()
-                            .map(|p| (centre.0 + p.x * ring, centre.1 + p.y * ring)),
-                    );
-                    let width = thickness(group[0].half, ring, least);
-                    canvas.line(&points, width, self.light, group[0].alpha * k as f32);
-                }
-            }
+            light(canvas, self.light, centre, radius * zoom, p, settle);
         }
+    }
+}
+
+/// The light travelling the stroke, `p` of the way through its run (`0..1`)
+/// at `strength` (`0..1`), over a ring of `ring` centred on `centre`.
+fn light(
+    canvas: &mut Canvas<'_>,
+    colour: Rgba,
+    centre: (f32, f32),
+    ring: f32,
+    p: f64,
+    strength: f32,
+) {
+    let head = -SHEEN_REACH + 1.3 * (0.5 - 0.5 * (PI * p).cos());
+    let strength = SHEEN_ALPHA * (PI * p).sin() * f64::from(strength);
+    let least = 0.6 / canvas.scale();
+    let mut points = Vec::with_capacity(GROUP + 1);
+    for g in 0..GROUPS {
+        let t = (1 + g * GROUP) as f64 / STEPS as f64;
+        if (t - head).abs() > SHEEN_REACH {
+            continue;
+        }
+        let k = strength * (-(t - head).powi(2) / (2.0 * SHEEN_WIDTH.powi(2))).exp();
+        if k <= 0.01 {
+            continue;
+        }
+        for bristle in bristles() {
+            let Some(group) = group(bristle, g) else {
+                continue;
+            };
+            points.clear();
+            points.extend(
+                group
+                    .iter()
+                    .map(|p| (centre.0 + p.x * ring, centre.1 + p.y * ring)),
+            );
+            let width = thickness(group[0].half, ring, least);
+            canvas.line(&points, width, colour, group[0].alpha * k as f32);
+        }
+    }
+}
+
+/// The ensō in pictures, for a boot splash that can show pictures but not
+/// draw: the stroke a frame at a time as it is painted, the light a frame
+/// at a time as it travels the finished stroke, and the glow behind.
+/// Strokes and lights are `side` square, centred on the ring's middle;
+/// the glow is larger, centred the same.
+#[derive(Clone, Debug)]
+pub struct Splash {
+    pub side: u32,
+    pub strokes: Vec<Picture>,
+    pub lights: Vec<Picture>,
+    pub glow: Picture,
+}
+
+/// The ensō's pictures for a ring of `radius` output pixels, `fps` frames
+/// a second, the stroke over [`Transition::BRUSH`] and the light over
+/// [`Transition::SHEEN`], as the motion preference has them.
+pub fn splash(
+    ink: Rgba,
+    light_colour: Rgba,
+    radius: f32,
+    fps: u32,
+    motion: &Motion,
+    text: &mut TextEngine,
+) -> Splash {
+    let radius = radius.round().max(1.0);
+    let frames = |transition: Transition| {
+        let seconds = motion.apply(transition).duration.as_secs_f32();
+        ((seconds * fps as f32).round() as usize).max(1)
+    };
+    let to_picture = |pixmap: &Pixmap| {
+        Picture::from_rgba(pixmap.width(), pixmap.height(), pixmap.data().to_vec())
+            .unwrap_or_else(|| Picture::solid(1, 1, Rgba::new(0, 0, 0, 0)))
+    };
+    let mut raster = Raster::new(radius);
+    let side = raster.as_ref().map_or(1, |raster| raster.rgba.width());
+    let strokes = (1..=frames(Transition::BRUSH))
+        .filter_map(|k| {
+            let n = frames(Transition::BRUSH);
+            let eased = Transition::BRUSH.easing.apply(k as f32 / n as f32);
+            let raster = raster.as_mut()?;
+            raster.paint((f64::from(eased) * STEPS as f64).floor() as usize, ink);
+            Some(to_picture(&raster.rgba))
+        })
+        .collect();
+    let middle = side as f32 / 2.0;
+    let lights = (0..frames(Transition::SHEEN))
+        .map(|k| {
+            let p = k as f64 / frames(Transition::SHEEN) as f64;
+            let frame = Offscreen::render(text, (side, side), 1, |canvas| {
+                light(canvas, light_colour, (middle, middle), radius, p, 1.0);
+            });
+            Picture::from_rgba(side, side, frame.rgba)
+                .unwrap_or_else(|| Picture::solid(1, 1, Rgba::new(0, 0, 0, 0)))
+        })
+        .collect();
+    let glow_side = (reach(radius) * 2.0).ceil() as u32;
+    let glow = Offscreen::render(text, (glow_side, glow_side), 1, |canvas| {
+        let c = glow_side as f32 / 2.0;
+        canvas.glow((c, c), radius * 0.2, reach(radius), ink, GLOW);
+    });
+    Splash {
+        side,
+        strokes,
+        lights,
+        glow: Picture::from_rgba(glow_side, glow_side, glow.rgba)
+            .unwrap_or_else(|| Picture::solid(1, 1, Rgba::new(0, 0, 0, 0))),
     }
 }
 

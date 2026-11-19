@@ -205,6 +205,18 @@ fn enable() -> ExitCode {
         .theme
         .colors;
     let backdrop = mark::backdrop(mark::scene(&colors, (1920, 1080)), colors.base);
+    // The ensō for the boot splash, at the size the login screen draws it
+    // on a 1080p screen, in the frames the splash shows.
+    let (_, radius) = mark::place(enso_ui::Rect::new(0.0, 0.0, 1920.0, 1080.0));
+    let mut text = enso_ui::TextEngine::new(&ctx.config.appearance);
+    let splash = mark::splash(
+        colors.rose,
+        colors.text,
+        radius,
+        setup::SPLASH_FPS,
+        &ctx.motion,
+        &mut text,
+    );
     let setup = setup::Setup {
         dir: staging(),
         program,
@@ -212,6 +224,7 @@ fn enable() -> ExitCode {
         base: ctx.theme.colors.base.hex(),
         private_font,
         backdrop,
+        splash,
     };
     match setup::enable(&setup) {
         Ok(said) => {

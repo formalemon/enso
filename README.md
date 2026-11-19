@@ -607,10 +607,11 @@ between the screen and greetd's socket. It runs in a niri of its own,
 started by greetd as its `greeter` user; once you are in, it asks greetd for
 your session and quits that niri, and greetd starts the session in its place.
 
-On screen: the terraces from the boot menu, quietened, and on them the
-ensō painting itself in; then your name and the password field, looking
-just like the lock. `enable` also writes a Plymouth theme of the same
-picture, so the screen isn't bare while the machine starts. Tab or the arrow keys go through the others who can log in
+On screen: the terraces from the boot menu, quietened, the ensō, your
+name and the password field, looking just like the lock. `enable` also
+writes a Plymouth theme: while the machine starts, the ensō paints itself
+on the same terraces and a light runs along it until the login screen is
+ready, which opens with the ensō already whole. Tab or the arrow keys go through the others who can log in
 (ordinary accounts with a login shell). A wrong password shakes the field;
 whatever PAM says — an account locked after too many tries, say — is shown
 as it says it. The session is your login shell running `niri-session`, so
