@@ -8,15 +8,59 @@
 
 use std::path::{Path, PathBuf};
 
-use enso_core::style::{opacity, radius, stroke};
+use enso_core::{
+    Icon, Rgba,
+    style::{icon, opacity, radius, space, stroke, type_scale},
+};
 use enso_fs::uri;
-use enso_ui::{Canvas, Clip, Cx, Rect};
+use enso_ui::{Align, Canvas, Clip, Cx, DragIcon, Rect, Text};
 
 use super::{Files, Hit, tabs::TabHit};
 use crate::{jobs::Op, pane::Source};
 
 /// How far the pointer moves with the button held before it's a drag.
 const DRAG_FROM: f32 = 6.0;
+
+/// What's dragged, under the pointer: a pill this tall, at most this wide.
+const ICON_HEIGHT: f32 = 34.0;
+const ICON_WIDTH: f32 = 280.0;
+
+/// What a drag's pill says, how big, and in which colours.
+#[derive(Clone, Debug)]
+pub(super) struct Held {
+    pub(super) label: String,
+    pub(super) icon: Icon,
+    pub(super) size: f32,
+    pub(super) text: Rgba,
+    pub(super) fill: Rgba,
+    pub(super) edge: Rgba,
+    pub(super) accent: Rgba,
+}
+
+impl Held {
+    /// The pill's width for a label `label_width` wide.
+    pub(super) fn width(&self, label_width: f32) -> f32 {
+        // The edge, the room at each end, the icon and the gap after it.
+        let around = 2.0 + 2.0 * space::MD + self.size + space::SM;
+        (around + label_width + 1.0).min(ICON_WIDTH)
+    }
+
+    /// Draw the pill filling `canvas`.
+    pub(super) fn draw(&self, canvas: &mut Canvas<'_>) {
+        let pill = canvas.bounds().inset(1.0);
+        canvas.fill(pill, radius::pill(pill.h), self.fill);
+        canvas.stroke(pill, radius::pill(pill.h), stroke::HAIRLINE, self.edge);
+        let inner = pill.inset_xy(space::MD, 0.0);
+        canvas.icon(self.icon, self.size, self.accent, inner, Align::Start);
+        let start = inner.x + self.size + space::SM;
+        let label = Rect::new(start, inner.y, inner.right() - start, inner.h);
+        canvas.text_in(
+            &Text::new(&self.label, self.size * 0.9, self.text).max_width(label.w),
+            label,
+            Align::Start,
+        );
+    }
+}
 
 impl Files {
     /// The button went down on `row`: a drag may start from here.
@@ -42,8 +86,45 @@ impl Files {
         if paths.is_empty() {
             return false;
         }
-        cx.start_drag(clip_of(&paths));
+        let held = self.held(&paths);
+        let label = cx
+            .measure(&Text::new(&held.label, held.size * 0.9, held.text))
+            .w;
+        let width = held.width(label).ceil() as u32;
+        let picture = DragIcon::new((width, ICON_HEIGHT as u32), move |canvas| {
+            held.draw(canvas);
+        });
+        cx.start_drag_showing(clip_of(&paths), picture);
         true
+    }
+
+    /// What the pill under the pointer shows for `paths`: the one file's
+    /// name, or how many there are.
+    pub(super) fn held(&self, paths: &[PathBuf]) -> Held {
+        let colors = &self.ctx.theme.colors;
+        let (label, figure) = match paths {
+            [one] => (
+                one.file_name().map_or_else(
+                    || one.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ),
+                if one.is_dir() {
+                    icon::FOLDER
+                } else {
+                    icon::FILE
+                },
+            ),
+            many => (format!("{} items", many.len()), icon::FILE),
+        };
+        Held {
+            label,
+            icon: figure,
+            size: self.font(type_scale::BODY),
+            text: colors.text,
+            fill: colors.overlay,
+            edge: colors.highlight_high,
+            accent: self.ctx.accent(),
+        }
     }
 
     /// What a drag takes: what's chosen, if the cursor's row is among it;

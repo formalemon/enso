@@ -1232,3 +1232,33 @@ fn titles_name_the_folder() {
     assert_eq!(title(Path::new("/home/me/dev"), home), "dev — Files");
     assert_eq!(title(Path::new("/"), home), "/ — Files");
 }
+
+#[test]
+fn a_drag_shows_what_is_held() {
+    let files = files();
+    let mut text = TextEngine::new(&files.ctx.config.appearance);
+    let one = files.held(&["/home/me/dev/enso/Cargo.toml".into()]);
+    let many = files.held(&[
+        "/home/me/dev/enso/Cargo.toml".into(),
+        "/home/me/dev/enso/README.md".into(),
+        "/home/me/dev/enso/CHANGES.md".into(),
+    ]);
+    assert_eq!(one.label, "Cargo.toml");
+    assert_eq!(many.label, "3 items");
+    for (held, name) in [(one, "enso-files-drag-one"), (many, "enso-files-drag-many")] {
+        // Sized to what it says, as the drag sizes it.
+        let mut label = 0.0;
+        Offscreen::render(&mut text, (1, 1), 1, |canvas| {
+            label = canvas
+                .measure(&enso_ui::Text::new(&held.label, held.size * 0.9, held.text))
+                .w;
+        });
+        let width = held.width(label).ceil() as u32;
+        assert!(width > 60 && width <= 280, "{width}");
+        let picture = Offscreen::render(&mut text, (width, 34), 2, |canvas| held.draw(canvas));
+        // Opaque in its middle, clear at its rounded corners.
+        assert_eq!(picture.pixel(picture.width / 2, picture.height / 2)[3], 255);
+        assert_eq!(picture.pixel(0, 0)[3], 0);
+        snapshot(&picture, name);
+    }
+}

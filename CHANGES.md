@@ -23,6 +23,9 @@ places; this file is current. Add to it with each change worth mentioning.
 
 ### enso-files
 
+- **You can see what you're dragging.** A drag carries a small pill
+  beside the pointer: the file's name, or how many items, with a file or
+  folder icon. Before, nothing showed until the drop.
 - **Settings fit a short window.** Where the window is too short for every
   line, the lines scroll between the title and the footer — with the
   wheel, the touchpad, or by moving through them with the keys — instead

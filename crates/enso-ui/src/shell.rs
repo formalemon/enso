@@ -408,6 +408,35 @@ impl Clip {
     }
 }
 
+/// What a drag shows under the pointer, so it's plain something is held:
+/// `size` logical pixels, drawn once as the drag starts, at the window's
+/// scale and with the window's fonts.
+pub struct DragIcon {
+    size: (u32, u32),
+    draw: Box<dyn FnOnce(&mut Canvas<'_>)>,
+}
+
+impl DragIcon {
+    pub fn new(size: (u32, u32), draw: impl FnOnce(&mut Canvas<'_>) + 'static) -> Self {
+        Self {
+            size: (size.0.max(1), size.1.max(1)),
+            draw: Box::new(draw),
+        }
+    }
+}
+
+impl fmt::Debug for DragIcon {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DragIcon")
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Where a drag's icon sits from the pointer's tip: beside it, below and
+/// to the right, so what's under the pointer stays in sight.
+const DRAG_ICON_AT: (i32, i32) = (12, 12);
+
 /// The names plain text goes by on a clipboard, best first.
 pub const TEXT_TYPES: [&str; 5] = [
     "text/plain;charset=utf-8",
@@ -448,7 +477,7 @@ pub(crate) struct Requests {
     toggle_maximized: bool,
     copy: Option<Clip>,
     paste: Option<Vec<String>>,
-    drag: Option<Clip>,
+    drag: Option<(Clip, Option<DragIcon>)>,
 }
 
 /// Handed to an app while it handles an event: lets it measure text and ask
@@ -562,7 +591,13 @@ impl<'a> Cx<'a> {
     /// Start dragging `clip` out of the window, to drop here or in any
     /// other program. Call while the button that began it is still held.
     pub fn start_drag(&mut self, clip: Clip) {
-        self.requests.drag = Some(clip);
+        self.requests.drag = Some((clip, None));
+    }
+
+    /// [`start_drag`](Self::start_drag), with `icon` under the pointer
+    /// for as long as the drag lasts.
+    pub fn start_drag_showing(&mut self, clip: Clip, icon: DragIcon) {
+        self.requests.drag = Some((clip, Some(icon)));
     }
 
     /// Maximise a window, or give it back its own size.
@@ -792,6 +827,7 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         composition: Composition::default(),
         copied: None,
         dragging: None,
+        drag_icon: None,
         dropping: None,
         drag_mime: None,
         internal,
@@ -866,6 +902,8 @@ struct Runtime<A: App> {
     copied: Option<(CopyPasteSource, Clip)>,
     /// What this program is dragging, while it is.
     dragging: Option<(DragSource, Clip)>,
+    /// What the drag shows under the pointer, while it does.
+    drag_icon: Option<(WlSurface, smithay_client_toolkit::shm::slot::Buffer)>,
     /// A drop whose data is on its way: finished once it's here.
     dropping: Option<DragOffer>,
     /// The format being taken from what's dragged over the window.
@@ -972,8 +1010,8 @@ impl<A: App> Runtime<A> {
         if let Some(clip) = requests.copy {
             self.copy(clip);
         }
-        if let Some(clip) = requests.drag {
-            self.start_drag(clip);
+        if let Some((clip, icon)) = requests.drag {
+            self.start_drag(clip, icon);
         }
         if let Some(mimes) = requests.paste {
             self.paste(&mimes);
@@ -1014,7 +1052,8 @@ impl<A: App> Runtime<A> {
         self.copied = Some((source, clip));
     }
 
-    fn start_drag(&mut self, clip: Clip) {
+    fn start_drag(&mut self, clip: Clip, icon: Option<DragIcon>) {
+        self.end_drag_icon();
         let (Some(devices), Some(device), Some(serial)) =
             (&self.data_devices, &self.data_device, self.press_serial)
         else {
@@ -1025,8 +1064,59 @@ impl<A: App> Runtime<A> {
             clip.formats.iter().map(|(mime, _)| mime.as_str()),
             DndAction::Copy | DndAction::Move,
         );
-        source.start_drag(device, self.surface.wl_surface(), None, serial);
+        let icon_surface = icon
+            .as_ref()
+            .map(|_| self.compositor.create_surface(&self.qh));
+        source.start_drag(
+            device,
+            self.surface.wl_surface(),
+            icon_surface.as_ref(),
+            serial,
+        );
         self.dragging = Some((source, clip));
+        if let (Some(surface), Some(icon)) = (icon_surface, icon) {
+            self.show_drag_icon(surface, icon);
+        }
+    }
+
+    /// Draw the drag's icon on its surface. A drag without its picture
+    /// still drags, so a failure here only leaves the surface empty.
+    fn show_drag_icon(&mut self, surface: WlSurface, icon: DragIcon) {
+        // An icon has no viewport: the next whole scale, which the
+        // compositor shrinks to fit where the screen's is fractional.
+        let scale = fractional::drawn(self.scale120, false) / 120;
+        let (width, height) = (icon.size.0 * scale, icon.size.1 * scale);
+        let Ok((buffer, pixels)) = self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            width as i32 * 4,
+            wl_shm::Format::Argb8888,
+        ) else {
+            surface.destroy();
+            return;
+        };
+        pixels.fill(0);
+        let mut canvas = Canvas::new(pixels, width, height, scale as f32, true, &mut self.text);
+        (icon.draw)(&mut canvas);
+        surface.set_buffer_scale(scale as i32);
+        if buffer.attach_to(&surface).is_err() {
+            surface.destroy();
+            return;
+        }
+        if surface.version() >= 5 {
+            surface.offset(DRAG_ICON_AT.0, DRAG_ICON_AT.1);
+        }
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        surface.commit();
+        // Kept until the drag ends: the buffer is the compositor's to show.
+        self.drag_icon = Some((surface, buffer));
+    }
+
+    /// The drag ended: its icon goes.
+    fn end_drag_icon(&mut self) {
+        if let Some((surface, _buffer)) = self.drag_icon.take() {
+            surface.destroy();
+        }
     }
 
     /// The drag over the window now, if it offers something it takes:
@@ -1611,6 +1701,7 @@ impl<A: App> DataSourceHandler for Runtime<A> {
             .is_some_and(|(dragged, _)| dragged.inner() == source)
         {
             self.dragging = None;
+            self.end_drag_icon();
         }
     }
 
@@ -1623,6 +1714,7 @@ impl<A: App> DataSourceHandler for Runtime<A> {
             .is_some_and(|(dragged, _)| dragged.inner() == source)
         {
             self.dragging = None;
+            self.end_drag_icon();
         }
     }
 
