@@ -73,6 +73,11 @@ hotkey-overlay {{
 prefer-no-csd
 screenshot-path null
 
+// Nothing here is an X11 program.
+xwayland-satellite {{
+    off
+}}
+
 spawn-at-startup "{PROGRAM}"
 
 binds {{
@@ -87,7 +92,7 @@ binds {{
 fn greetd_config() -> String {
     format!(
         r#"# greetd, with enso-greet as the login screen. Written by `enso-greet
-# enable`; greetd's own example is kept beside this one as config.toml~.
+# enable`.
 
 [terminal]
 vt = 1
@@ -98,7 +103,9 @@ vt = 1
 source_profile = false
 
 [default_session]
-command = "niri -c {NIRI_CONFIG}"
+# niri's log goes to the journal (`journalctl -b -t enso-greet`), not over
+# the login screen's console.
+command = "systemd-cat --identifier=enso-greet niri -c {NIRI_CONFIG}"
 user = "greeter"
 "#
     )
@@ -172,21 +179,18 @@ pub fn enable(setup: &Setup) -> io::Result<String> {
     }
     let _ = writeln!(
         out,
-        "  sudo install -Dm644 -b -S '~' {} {GREETD_CONFIG}",
+        "  sudo install -Dm644 {} {GREETD_CONFIG}",
         shown(&greetd)
     );
     let _ = writeln!(
         out,
-        "\nTry it without changing how the machine starts. greetd takes the first\n\
-         console, ending whatever was logged in there -- the desktop, if it was\n\
-         started from that console. So save your work and log out first, then\n\
-         on another console (Ctrl+Alt+F2) log in and run\n\n\
-         \x20 sudo systemctl start greetd\n\n\
-         The login screen is on the first console (Ctrl+Alt+F1). To go back,\n\
-         from the other console:\n\n\
-         \x20 sudo systemctl stop greetd && sudo systemctl start getty@tty1\n\n\
-         When it works, make it the login from the next start:\n\n\
-         \x20 sudo systemctl enable greetd\n\n\
+        "\nThen make it the login and restart. It has to start with the machine:\n\
+         while a desktop is running, that desktop holds the screen and the\n\
+         login screen can't have it.\n\n\
+         \x20 sudo systemctl enable greetd && systemctl reboot\n\n\
+         Should it not come up: Ctrl+Alt+F2, log in there, and\n\n\
+         \x20 sudo systemctl disable greetd && systemctl reboot\n\n\
+         brings the console login back. What it said: journalctl -b -t enso-greet\n\n\
          `enso-greet disable` says how to undo all of this. After rebuilding,\n\
          run the first line again."
     );
@@ -202,11 +206,10 @@ pub fn disable(dir: &Path) -> io::Result<String> {
     Ok(format!(
         "To log in on the console again, as root:\n\n\
          \x20 sudo systemctl disable greetd    # from the next start\n\n\
-         (or at once, from another console, ending any session greetd started:\n\
-         `sudo systemctl stop greetd && sudo systemctl start getty@tty1`)\n\n\
          And to remove the login screen's files:\n\n\
          \x20 sudo rm {PROGRAM} {NIRI_CONFIG} {GREET_CONFIG}\n\
-         \x20 sudo mv {GREETD_CONFIG}~ {GREETD_CONFIG}    # greetd's own example back\n\n\
+\n\
+         {GREETD_CONFIG} can stay: greetd reads it only when enabled.\n\
          {SYSTEM_CONFIG} and any font copied to {SYSTEM_FONTS} are left: remove them\n\
          too if nothing else uses them.\n"
     ))
@@ -251,7 +254,8 @@ mod tests {
         assert!(niri.contains(&format!("spawn-at-startup \"{PROGRAM}\"")));
         assert!(niri.contains("background-color \"#232136\""));
         let greetd = read("config.toml");
-        assert!(greetd.contains(&format!("command = \"niri -c {NIRI_CONFIG}\"")));
+        assert!(greetd.contains(&format!("niri -c {NIRI_CONFIG}\"")));
+        assert!(greetd.contains("systemd-cat --identifier=enso-greet"));
         assert!(greetd.contains("user = \"greeter\""));
         let greet: crate::greet::GreetConfig = toml::from_str(&read("greet.toml")).unwrap();
         assert_eq!(greet.default_user, "kai");
@@ -260,8 +264,8 @@ mod tests {
 
         assert!(said.contains("sudo install -Dm755 /build/enso-greet /usr/local/bin/enso-greet"));
         assert!(said.contains("GoogleSansFlex /usr/local/share/fonts/"));
-        assert!(said.contains("sudo systemctl start greetd"));
-        assert!(said.contains("sudo systemctl enable greetd"));
+        assert!(said.contains("sudo systemctl enable greetd && systemctl reboot"));
+        assert!(!said.contains("systemctl start greetd"));
 
         let undone = disable(&setup.dir).unwrap();
         assert!(!setup.dir.exists());
