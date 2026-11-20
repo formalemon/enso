@@ -38,11 +38,11 @@ carries `enso-<version>-x86_64-linux.tar.gz`, every tool in one folder, and
 its SHA-256:
 
 ```sh
-curl -LO https://github.com/formalemon/enso/releases/download/v0.3.0/enso-v0.3.0-x86_64-linux.tar.gz
-curl -LO https://github.com/formalemon/enso/releases/download/v0.3.0/enso-v0.3.0-x86_64-linux.tar.gz.sha256
-sha256sum -c enso-v0.3.0-x86_64-linux.tar.gz.sha256
-tar xf enso-v0.3.0-x86_64-linux.tar.gz
-cp enso-v0.3.0-x86_64-linux/enso-* ~/.local/bin/
+curl -LO https://github.com/formalemon/enso/releases/download/v0.4.0/enso-v0.4.0-x86_64-linux.tar.gz
+curl -LO https://github.com/formalemon/enso/releases/download/v0.4.0/enso-v0.4.0-x86_64-linux.tar.gz.sha256
+sha256sum -c enso-v0.4.0-x86_64-linux.tar.gz.sha256
+tar xf enso-v0.4.0-x86_64-linux.tar.gz
+cp enso-v0.4.0-x86_64-linux/enso-* ~/.local/bin/
 ```
 
 **From source**, with Rust 1.89 or newer:
@@ -1184,7 +1184,7 @@ pictures the references, for when a change is meant.
 Tests that could raise a real prompt (enso-auth, enso-keyring) run without
 a compositor: `env -u WAYLAND_DISPLAY cargo test --workspace`.
 
-**Releasing** is pushing a tag: `git tag v0.3.0 && git push origin v0.3.0`.
+**Releasing** is pushing a tag: `git tag v0.4.0 && git push origin v0.4.0`.
 The release workflow builds every tool, packs them with their SHA-256, and
 publishes the release, its notes written from the commits since the last
 one.
