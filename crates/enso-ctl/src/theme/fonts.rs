@@ -43,7 +43,13 @@ struct Families<'a> {
     mono: Option<&'a str>,
 }
 
-fn named(family: &str) -> Option<&str> {
+/// enso's font size, in pixels, as the whole points GTK and Qt size fonts
+/// in: 3/4 of a point each.
+pub(super) fn points(pixels: f32) -> f32 {
+    (pixels * 0.75).round().max(6.0)
+}
+
+pub(super) fn named(family: &str) -> Option<&str> {
     let family = family.trim();
     (!matches!(
         family,
@@ -63,8 +69,7 @@ pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
         return Ok(Outcome::absent("the system's own"));
     }
     let host = job.host;
-    // GTK sizes fonts in points, enso in pixels: 3/4 of a point each.
-    let points = (appearance.font_size * 0.75).round().max(6.0);
+    let points = points(appearance.font_size);
     let with_size = |family: &str| format!("{family} {points}");
 
     if host.session {

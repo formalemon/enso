@@ -17,7 +17,9 @@
 //!   `niri.kdl`, and passes it on to what it starts.
 //! - **Firefox** gets a stylesheet for its own interface, to import from a
 //!   profile's `userChrome.css`.
-//! - **Qt** gets a colour scheme for qt5ct and qt6ct to pick.
+//! - **Qt** is pointed at qt6ct — or, without it, Qt's GTK 3 platform theme —
+//!   through `niri.kdl`; qt6ct is set up with a colour scheme, the fonts,
+//!   and the portal's file dialogs.
 //! - **Flatpak** is let read what GTK was given.
 //!
 //! enso never edits a config file a person writes by hand: it writes files of
@@ -125,6 +127,11 @@ pub struct Host {
     /// Whether this is the user's real session, whose services (dconf) may
     /// be spoken to.
     pub session: bool,
+    /// Where Qt looks for plugins: `$QT_PLUGIN_PATH`, then where
+    /// distributions install Qt 6's.
+    pub qt_plugins: Vec<PathBuf>,
+    /// `$QT_QPA_PLATFORMTHEME`, when the session already names one.
+    pub qt_platform_theme: Option<String>,
 }
 
 impl Host {
@@ -140,7 +147,7 @@ impl Host {
             .first()
             .map_or_else(|| config.clone(), |dir| parent(dir));
         let session = ctx.paths == Paths::from_env();
-        let (home, path, shared) = if session {
+        let (home, path, shared, qt_plugins, qt_platform_theme) = if session {
             let shared = env::var_os("XDG_DATA_DIRS")
                 .filter(|dirs| !dirs.is_empty())
                 .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
@@ -150,9 +157,22 @@ impl Host {
                     .map(|path| env::split_paths(&path).collect())
                     .unwrap_or_default(),
                 env::split_paths(&shared).collect(),
+                env::var_os("QT_PLUGIN_PATH")
+                    .map(|dirs| env::split_paths(&dirs).collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .chain(
+                        ["/usr/lib/qt6/plugins", "/usr/lib64/qt6/plugins"]
+                            .into_iter()
+                            .map(PathBuf::from),
+                    )
+                    .collect(),
+                env::var("QT_QPA_PLATFORMTHEME")
+                    .ok()
+                    .filter(|name| !name.is_empty()),
             )
         } else {
-            (parent(&config), Vec::new(), Vec::new())
+            (parent(&config), Vec::new(), Vec::new(), Vec::new(), None)
         };
         let icons = [data.join("icons"), home.join(".icons")]
             .into_iter()
@@ -165,6 +185,8 @@ impl Host {
             path,
             icons,
             session,
+            qt_plugins,
+            qt_platform_theme,
         }
     }
 
@@ -192,6 +214,9 @@ pub struct Job<'a> {
     pub ctx: &'a Context,
     pub theme: &'a Theme,
     pub host: &'a Host,
+    /// Every place this theme goes to, as some places write for others:
+    /// Niri's file carries Qt's setting.
+    pub places: &'a [Place],
 }
 
 impl Job<'_> {
@@ -359,7 +384,12 @@ pub fn apply(ctx: &Context, theme: &Theme, places: &[Place]) -> Vec<Report> {
 }
 
 fn apply_on(host: &Host, ctx: &Context, theme: &Theme, places: &[Place]) -> Vec<Report> {
-    let job = Job { ctx, theme, host };
+    let job = Job {
+        ctx,
+        theme,
+        host,
+        places,
+    };
     // enso's own tools watch the state directory and recolour at once.
     let mut reports = vec![Report {
         place: "enso",
@@ -584,6 +614,7 @@ pub(crate) mod sandbox {
                 ctx: &self.ctx,
                 theme: self.theme(id),
                 host: &self.host,
+                places: &Place::ALL,
             }
         }
 
@@ -808,6 +839,7 @@ mod tests {
             ctx: &sandbox.ctx,
             theme: &theme,
             host: &sandbox.host,
+            places: &Place::ALL,
         };
         assert_eq!(job.accent().to_string(), "#ea9a97");
     }

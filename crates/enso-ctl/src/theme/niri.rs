@@ -17,12 +17,16 @@
 //! program it starts. Niri merges the `cursor` section across files, so a
 //! `hide-when-typing` of your own stays — but an `xcursor-theme` of your own
 //! included after this file wins over it.
+//!
+//! And it carries Qt's platform theme, when there is one to name (see
+//! [`qt`](super::qt)): an `environment` section, which Niri gives every
+//! program it starts from then on.
 
 use std::path::Path;
 
 use enso_core::{Theme, style::radius};
 
-use super::{Job, Outcome, cursor, files, mentions};
+use super::{Job, Outcome, cursor, files, mentions, qt};
 
 /// Name of the generated file inside the state directory.
 const FILE: &str = "niri.kdl";
@@ -60,8 +64,9 @@ fn includes(dir: &Path) -> bool {
     mentions(&files(dir, &["kdl"], 2), "//", &format!("enso/{FILE}"))
 }
 
-/// The palette as Niri config: only colours (and the cursor), so that gaps,
-/// widths, and everything else stay the user's own.
+/// The palette as Niri config: only colours (and the cursor, and Qt's
+/// platform theme), so that gaps, widths, and everything else stay the
+/// user's own.
 pub fn render(job: &Job<'_>) -> String {
     let theme: &Theme = job.theme;
     let c = job.colors();
@@ -79,6 +84,9 @@ pub fn render(job: &Job<'_>) -> String {
             cursor.name.replace('\\', "\\\\").replace('"', "\\\""),
             cursor.size
         )
+    });
+    let environment = qt::platform_theme(job).map_or_else(String::new, |name| {
+        format!("\nenvironment {{\n    QT_QPA_PLATFORMTHEME \"{name}\"\n}}\n")
     });
     format!(
         r#"// {banner}
@@ -124,7 +132,7 @@ recent-windows {{
         corner-radius {corner}
     }}
 }}
-{pointer}"#,
+{pointer}{environment}"#,
         banner = job.banner(),
     )
 }
@@ -147,6 +155,20 @@ mod tests {
         assert!(dawn.contains(r##"color "#00000033""##));
         // Balanced braces: the cheapest check that Niri can read it.
         assert_eq!(moon.matches('{').count(), moon.matches('}').count());
+        // No Qt plugin in the sandbox: no environment.
+        assert!(!moon.contains("environment"));
+    }
+
+    #[test]
+    fn carries_qt_platform_theme_when_there_is_one() {
+        let mut sandbox = Sandbox::new("niri-qt");
+        for (plugin, name) in [("libqgtk3.so", "gtk3"), ("libqt6ct.so", "qt6ct")] {
+            qt::tests::install_plugin(&mut sandbox, plugin);
+            let text = render(&sandbox.job("rose-pine-moon"));
+            let tail = format!("\nenvironment {{\n    QT_QPA_PLATFORMTHEME \"{name}\"\n}}\n");
+            assert!(text.ends_with(&tail), "{text}");
+            assert_eq!(text.matches('{').count(), text.matches('}').count());
+        }
     }
 
     #[test]

@@ -1036,7 +1036,7 @@ which is the thing to run after installing one, or after adding a line.
 | The cursor | `cursor-theme` and `cursor-size` in dconf; GTK 3's two cursor keys; `~/.local/share/icons/default` inheriting the chosen theme; and a `cursor` section in `niri.kdl` | nothing — choose one (see [The cursor](#the-cursor)) | at once |
 | GTK's palette | `gtk-4.0.css`: the colours libadwaita is built from; `gtk-3.0.css`: the same, and GTK 3's stock widgets recoloured | `@import url("file:///home/you/.local/state/enso/gtk-4.0.css");` in `~/.config/gtk-4.0/gtk.css`, and likewise for `gtk-3.0` | when a program next starts |
 | Firefox | `firefox.css`: tabs, toolbars, address bar, menus | the same kind of `@import` in a profile's `chrome/userChrome.css`, with `toolkit.legacyUserProfileCustomizations.stylesheets` on in `about:config` | when Firefox next starts |
-| Qt | a colour scheme, `colors/enso.conf`, for qt5ct and qt6ct | choose the custom colour scheme `enso` in the tool's Appearance tab | within a few seconds |
+| Qt | `QT_QPA_PLATFORMTHEME` in `niri.kdl`: `qt6ct`, or `gtk3` without it; for qt6ct, a colour scheme, `colors/enso.conf`, and the keys of `qt6ct.conf` that choose it, the fonts, and the portal's file dialogs | nothing | within a few seconds through qt6ct; through `gtk3`, when a program next starts |
 | Flatpak | four read-only entries in the user's global override | nothing | when a program next starts |
 
 Some particulars:
@@ -1062,9 +1062,17 @@ Some particulars:
   `@enso_accent`, … for a `gtk.css` of your own.
 - **Firefox** already follows dark and light. The stylesheet colours its own
   interface; pages are left to the web.
-- **Qt**'s palette needs qt5ct or qt6ct as the platform theme
-  (`QT_QPA_PLATFORMTHEME=qt6ct`). Without one, Qt 6 still follows dark and
-  light.
+- **Qt** left to itself on Niri draws Fusion's light palette and its own
+  file dialog, whatever the desktop prefers. So enso names a platform theme
+  in `niri.kdl`, which Niri passes to everything it starts. With qt6ct
+  installed it is `qt6ct`, and enso sets four things in `qt6ct.conf`, the
+  exception to the rule above alongside GTK 3's `settings.ini`: the colour
+  scheme, the fonts, and the desktop portal for file dialogs, so a Qt
+  program opens the same file chooser as everything else. The rest of that
+  file stays yours. Without qt6ct it is Qt's own `gtk3`, which takes GTK 3's
+  palette and font but opens GTK's file dialog. A `QT_QPA_PLATFORMTHEME` of
+  your own, naming anything else, is left alone; so are qt5ct programs,
+  which get the colour scheme to choose.
 - **Flatpak** programs cannot see `~/.config/gtk-4.0` or enso's stylesheets
   from inside their sandbox. enso lets them, read-only, by adding
   `xdg-config/gtk-3.0`, `xdg-config/gtk-4.0`, and the two stylesheets to
