@@ -1,5 +1,6 @@
-//! The notification history: a card that opens where the toasts appear and
-//! lists what has come in, newest first.
+//! The notification history: a card that opens where the toasts appear —
+//! out of the bar's bell, when there is a bar along the top — and lists what
+//! has come in, newest first.
 //!
 //! A handful of rows show at once; the rest are reached by scrolling, which
 //! glides rather than steps and shows no scroll bar — the list simply fades
@@ -15,7 +16,7 @@ use enso_core::{
     Easing, Motion, Palette, Rgba, Transition, Tween,
     style::{radius, space, type_scale},
 };
-use enso_ui::{Align, Canvas, Nav, Rect, Text};
+use enso_ui::{Align, Canvas, Nav, Rect, Text, emerge::Perch};
 
 use crate::stack::{Notification, Urgency};
 
@@ -53,6 +54,8 @@ pub struct Look<'a> {
     pub width: f32,
     /// Where the card's top-left corner rests on the surface.
     pub origin: (f32, f32),
+    /// The bar's bell, when the card grows out of it.
+    pub perch: Perch,
 }
 
 /// What a click on the card asks for.
@@ -99,6 +102,8 @@ pub struct Center {
     /// Notifications that went by unattended since the card was last open.
     unseen: u32,
     open: bool,
+    /// The card grows out of the bar's bell, rather than dropping in.
+    emerging: bool,
     /// `0` hidden, `1` fully shown.
     presence: Tween<f32>,
     /// While closing: when the card will be gone.
@@ -145,6 +150,7 @@ impl Center {
             items: Vec::new(),
             unseen: 0,
             open: false,
+            emerging: false,
             presence: Tween::new(0.0),
             gone_at: None,
             scroll: Tween::new(0.0),
@@ -310,6 +316,12 @@ impl Center {
         self.open || self.gone_at.is_some()
     }
 
+    /// Grow the card out of the bar's bell from now on (see
+    /// [`enso_ui::emerge`]), or drop it in.
+    pub fn set_emerging(&mut self, emerging: bool) {
+        self.emerging = emerging;
+    }
+
     /// Open the card: everything unseen is now seen.
     pub fn open(&mut self, now: Instant) {
         if self.open {
@@ -321,15 +333,21 @@ impl Center {
         self.visited = false;
         self.leave_at = None;
         self.pointer = None;
-        self.presence
-            .set(1.0, self.motion.apply(Transition::REVEAL), now);
+        let (reveal, before) = if self.emerging {
+            // Out of the bell: the rows wait until the card is out.
+            let emerge = self.motion.apply(Transition::EMERGE);
+            (emerge, emerge.duration.mul_f32(0.6))
+        } else {
+            (self.motion.apply(Transition::REVEAL), Duration::ZERO)
+        };
+        self.presence.set(1.0, reveal, now);
         self.scroll.jump(0.0);
         self.viewport.jump(self.viewport_target());
         // The rows follow the card in, one after another.
         let step = self.motion.apply(Transition::REVEAL).duration / 5;
         for (index, item) in self.items.iter_mut().enumerate() {
             item.slot.jump(index as f32);
-            item.arrives = now + step * (index.min(self.rows) as u32 + 1);
+            item.arrives = now + before + step * (index.min(self.rows) as u32 + 1);
         }
     }
 
@@ -339,7 +357,11 @@ impl Center {
         }
         self.open = false;
         self.leave_at = None;
-        let dismiss = self.motion.apply(Transition::DISMISS);
+        let dismiss = self.motion.apply(if self.emerging {
+            Transition::RETURN
+        } else {
+            Transition::DISMISS
+        });
         self.presence.set(0.0, dismiss, now);
         self.gone_at = Some(now + dismiss.duration);
     }
@@ -478,15 +500,23 @@ impl Center {
         let scroll = self.scroll.get(now);
         let small = look.size * type_scale::SMALL;
 
-        let card = Rect::new(
+        let rest = Rect::new(
             look.origin.0,
-            look.origin.1 + (presence - 1.0) * DROP,
+            look.origin.1,
             look.width,
             HEADER + list_height + INSET,
         );
+        let (card, presence) = if self.emerging && look.perch.island.is_some() {
+            // Out of the bell; what it holds shows once it is out.
+            let card = look.perch.card(canvas, rest, presence, colors);
+            (card, look.perch.shown(presence))
+        } else {
+            let card = rest.translate(0.0, (presence - 1.0) * DROP);
+            canvas.set_opacity(presence);
+            canvas.card(card, colors.surface, colors.highlight_med);
+            (card, presence)
+        };
         self.card = card;
-        canvas.set_opacity(presence);
-        canvas.card(card, colors.surface, colors.highlight_med);
 
         // Heading, and the way to empty the list.
         let header = Rect::new(card.x, card.y, card.w, HEADER).inset_xy(space::LG, 0.0);

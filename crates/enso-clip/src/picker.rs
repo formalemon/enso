@@ -369,9 +369,11 @@ mod tests {
             w: 140.0,
             h: 28.0,
             opacity: 0.9,
+            ..Island::default()
         };
         let perch = Perch {
             island: Some(island),
+            ..Perch::default()
         };
         let mut picker = Picker::with(ctx, entries, true).on(None, perch);
         let colors = picker.ctx.theme.colors.clone();

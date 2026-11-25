@@ -15,11 +15,14 @@ use std::{
 
 use enso_core::{
     Context, Notices, Rgba, ipc,
+    island::Which,
     style::{edge, radius, space, type_scale},
 };
 use enso_ui::{
     Align, Anchor, App, Button, Canvas, Cx, Event, Key, Keyboard, Layer, Paint, PointerEvent,
-    Proxy, Rect, SurfaceSpec, Text, watch::watch_dir,
+    Proxy, Rect, SurfaceSpec, Text,
+    emerge::{self, Perch},
+    watch::watch_dir,
 };
 use serde::Deserialize;
 
@@ -233,8 +236,13 @@ pub struct Daemon {
     center: Center,
     /// What the rest of the suite was last told.
     told: Option<Notices>,
-    /// Space above the first card (see [`top_gap`]).
+    /// Space above the first card (see [`top_gap`]); while the history
+    /// grows out of the bell, from the top of the screen.
     top: f32,
+    /// The bar's bell, when the history grows out of it.
+    perch: Perch,
+    /// The screen the surface is on, once it has been shown there.
+    output: Option<String>,
     /// Toasts up that are only for now: neither kept nor counted.
     passing: HashSet<u32>,
 }
@@ -252,6 +260,8 @@ impl Daemon {
         }
         Self {
             top: top_gap(&ctx),
+            perch: Perch::default(),
+            output: None,
             center,
             told: None,
             stack: Stack::new(options, ctx.motion),
@@ -393,7 +403,31 @@ impl Daemon {
             size: self.size(),
             width: self.config.width as f32,
             origin: (SHADOW, self.top),
+            perch: self.perch,
         }
+    }
+
+    /// The screen the history is for: the one the surface is on, or, before
+    /// it has been anywhere, the one with the focus.
+    fn screen(&self) -> Option<String> {
+        self.output.clone().or_else(emerge::focused_output)
+    }
+
+    /// With a bar along the top, the history grows out of its bell: the
+    /// surface reaches over the bar while it does, and the card hangs as
+    /// far below it as any card.
+    fn perch_on_bell(&mut self, cx: &mut Cx<'_>) {
+        let perch = Perch::on(self.screen().as_deref(), Which::Bell);
+        match perch.island {
+            Some(island) => {
+                let width = self.config.width as f32 + SHADOW + EDGE;
+                self.perch = perch.seen_from(island.screen - width);
+                self.top = island.bar + edge::BELOW_BAR;
+                cx.set_exclusive_zone(-1);
+            }
+            None => self.perch = Perch::default(),
+        }
+        self.center.set_emerging(self.perch.island.is_some());
     }
 
     /// Keep the state file — the bar's bell — in step, and the history's
@@ -434,20 +468,33 @@ impl Daemon {
             }
             self.buttons.clear();
             self.pointer = None;
+            self.perch_on_bell(cx);
             self.center.open(now);
             // Focus on a click, never unasked: opening it from the bar
             // must not take the keyboard from what is being typed.
             cx.set_keyboard(Keyboard::OnDemand);
         } else {
+            self.closing();
             self.center.close(now);
         }
         self.sync(cx);
+    }
+
+    /// The history is about to go back into the bell: lit as it is now.
+    fn closing(&mut self) {
+        let screen = self.screen();
+        self.perch.relight(screen.as_deref());
     }
 
     /// The history card has finished closing: back to being a toast column.
     fn history_gone(&mut self, cx: &mut Cx<'_>) {
         cx.set_input_region(None);
         cx.set_keyboard(Keyboard::None);
+        // Toasts keep clear of the bar again.
+        if self.perch.island.take().is_some() {
+            self.top = top_gap(&self.ctx);
+            cx.set_exclusive_zone(0);
+        }
     }
 
     /// Tell the sender an action was chosen, then let the toast go.
@@ -669,6 +716,7 @@ impl App for Daemon {
         let now = Instant::now();
         match event {
             Event::Message(Message::Ready(connection)) => self.connection = Some(connection),
+            Event::Output(name) => self.output = Some(name),
             Event::Message(Message::Failed(reason)) => {
                 eprintln!("enso-notify: {reason}");
                 self.failed.store(true, Ordering::Relaxed);
@@ -756,7 +804,13 @@ impl App for Daemon {
                     }
                     self.center.missed();
                 }
-                if self.center.tick(now) {
+                let was_open = self.center.is_open();
+                let gone = self.center.tick(now);
+                // The pointer left it a while ago: it goes of its own accord.
+                if was_open && !self.center.is_open() {
+                    self.closing();
+                }
+                if gone {
                     self.history_gone(cx);
                 }
                 self.sync(cx);
@@ -860,6 +914,7 @@ impl App for Daemon {
                 size: self.ctx.config.appearance.font_size,
                 width: self.config.width as f32,
                 origin: (SHADOW, self.top),
+                perch: self.perch,
             };
             return Paint::when(self.center.draw(canvas, &look, now));
         }

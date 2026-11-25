@@ -101,6 +101,10 @@ fn open_panel(mode: cli::PanelMode, page: Option<panel::Page>) -> Result<(), Str
     let config = ctx.section("ctl");
     ctx.report_warnings("enso-ctl");
     let appearance = ctx.config.appearance.clone();
-    enso_ui::run(panel::Panel::new(ctx, config, mode).asking(page), &appearance)
-        .map_err(|err| err.to_string())
+    // With a bar along the top, it grows out of the bar's status island.
+    let (screen, perch) = enso_ui::emerge::Perch::find_from(enso_core::island::Which::Status);
+    let panel = panel::Panel::new(ctx, config, mode)
+        .perched(screen, perch)
+        .asking(page);
+    enso_ui::run(panel, &appearance).map_err(|err| err.to_string())
 }

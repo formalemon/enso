@@ -105,8 +105,9 @@ session: `enso-greet enable` readies the login screen and prints the few
 lines root has to run (see [`enso-greet`](#the-tools-up-close)).
 
 With `enso-bar` and `enso-ctl` installed, resting the pointer on the bar's
-right island opens the control center beneath it; with `enso-notify`
-running, clicking the island opens the notification history there instead.
+status island (or clicking it) opens the control center out of it; with
+`enso-notify` running, clicking the bell — on its own island at the very
+end — opens the notification history out of that.
 
 Icons are enso's own drawings (`enso_ui::figure`), the same in every tool:
 one pen, round ends and soft corners, each kept to the middle of a 24-unit
@@ -248,35 +249,44 @@ corners, one hand for all of them:
   as it is charged — in foam on power, gold below 30 %, love below 15 % — with
   a small lightning bolt before the figures while it charges. Where the fill
   runs under the figures they are cut out of it.
+And at the very end, on a round island of its own:
+
 - **The bell**, which rings — a little swing that dies away — when something
   new arrives unattended, and keeps a dot in the accent until it is seen.
 
 Every size is taken from the bar's `height`, so a taller or shorter bar gets
-the same island, larger or smaller. The islands let a little of the
+the same islands, larger or smaller. The islands let a little of the
 wallpaper through (`opacity = 0.9` under `[bar]`; 1.0 is solid); what sits
-on them stays solid. And the island, the control center, the
-notification history, and toasts all keep the same distance from the side
-of the screen, so their right edges line up. Each is there only if the machine has it — a desktop shows no battery —
-except the bell, which always is, so there is always an island to rest on.
-The bell brightens and grows a dot when notifications went by unattended.
+on them stays solid. Each icon is there only if the machine has it — a
+desktop shows no battery — and with nothing at all to say, the status
+island steps aside and leaves the bell. The bell is always there; it
+brightens and grows a dot when notifications went by unattended.
 
-The island warms a shade under the pointer, and does three things:
+Each island at the right has one card, and it grows out of that island —
+the island swells, and the card slides out from under it and hangs beneath
+its end (see *How things arrive* under [Design language](#design-language)).
+Both islands warm a shade under the pointer:
 
-- **Rest** on it for a moment and the control center opens beneath it,
-  closing again once the pointer is on neither. The bar runs
-  `enso-ctl --dropdown` for this — found next to its own binary, or on
-  `PATH`. `control_center = false` under `[bar]` turns it off.
-- **Click** it and the notification history opens in the control center's
-  place (`enso-notify history`); click again to close it.
+- **Rest** on the status island for a moment, or click it, and the control
+  center comes out of it, going back once the pointer is on neither. The bar
+  runs `enso-ctl --dropdown` for this — found next to its own binary, or on
+  `PATH`. `control_center = false` under `[bar]` keeps resting from
+  opening it; a click still does.
+- **Scroll** on the status island to turn the volume, 5 % a notch.
+- **Click** the bell and the notification history comes out of it
+  (`enso-notify history`); click again to close it. Reading what came in
+  is never by way of the controls.
 
 The control center and the history take turns: whichever opens sends the
-other away, however each was opened. And there is only ever one control
+other away, however each was opened — resting on the status island while
+the history is up trades one for the other. There is only ever one control
 center — `enso-ctl` keeps to one copy — so `Mod+C` toggles it: pressed while
 one is open, from the key or from the bar, it closes it; resting on the bar
-while one is open leaves it as it is.
-- **Scroll** on it to turn the volume, 5 % a notch.
+while one is open leaves it as it is. `Mod+N` toggles the history the same
+way.
 
-Without `enso-ctl` or `enso-notify` installed the island is simply a readout.
+Without `enso-ctl` or `enso-notify` installed the islands are simply a
+readout.
 
 **A bar on every screen.** `enso-bar` on its own draws nothing: it keeps
 one `enso-bar --output NAME` on each screen, starting one as a screen is
@@ -593,8 +603,9 @@ showing.
   Files*.
 - **For now only.** A notification marked `transient` shows as a toast
   and is never kept in the history or counted by the bell.
-- **History.** `enso-notify history` — or a click on the bar's bell — opens
-  a card where the toasts appear, listing the last 50 notifications, newest
+- **History.** `enso-notify history` — a click on the bar's bell, or
+  `Mod+N` — opens a card where the toasts appear (out of the bell, with a
+  bar along the top), listing the last 50 notifications, newest
   first. Five show at once and the rest are a scroll away: the list glides
   rather than steps, and instead of a scroll bar it fades toward whichever
   edge has more beyond it. Rows follow the card in one after another; click
@@ -1215,8 +1226,12 @@ How things arrive, everywhere:
   clipboard history, the power menu — dims nothing, and grows out of the
   bar's clock when there is a bar along the top of the screen (`emerge` in
   `enso-ui`); without one it settles a fifth of the way down.
-- **What hangs from an island** — the control center, the month, what's
-  playing — drops from that island, away from the bar's edge.
+- **What belongs to an island at the right** — the control center to the
+  status island, the notification history to the bell — grows out of it
+  the same way, however it was asked for (resting, a click, `Mod+C`,
+  `Mod+N`), and hangs under the island's end.
+- **What hangs from the clock** — the month, what's playing — drops from
+  it, away from the bar's edge.
 - **What asks and waits for an answer** — a password for the system, the
   keyring, a program's own dialog — dims what is behind and sits in the
   middle: it has interrupted you, and says so.

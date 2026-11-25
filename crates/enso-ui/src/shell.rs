@@ -477,6 +477,7 @@ pub(crate) struct Requests {
     visible: Option<bool>,
     input_region: Option<Option<Rect>>,
     keyboard: Option<Keyboard>,
+    exclusive_zone: Option<i32>,
     cursor: Option<Cursor>,
     title: Option<String>,
     begin_move: bool,
@@ -564,6 +565,13 @@ impl<'a> Cx<'a> {
     }
 
     /// Change how the pointer looks while it is over the surface.
+    /// Change how the surface stands towards others' exclusive zones (see
+    /// [`SurfaceSpec::exclusive_zone`]): `-1` to reach over a bar, `0` to
+    /// keep clear of it. A layer surface's alone.
+    pub fn set_exclusive_zone(&mut self, zone: i32) {
+        self.requests.exclusive_zone = Some(zone);
+    }
+
     pub fn set_cursor(&mut self, cursor: Cursor) {
         self.requests.cursor = Some(cursor);
     }
@@ -1014,6 +1022,17 @@ impl<A: App> Runtime<A> {
                 && let Some(layer) = self.surface.layer()
             {
                 layer.set_keyboard_interactivity(keyboard.into());
+                layer.commit();
+            }
+        }
+        if let Some(zone) = requests.exclusive_zone
+            && zone != self.spec.exclusive_zone
+        {
+            self.spec.exclusive_zone = zone;
+            if self.visible
+                && let Some(layer) = self.surface.layer()
+            {
+                layer.set_exclusive_zone(zone);
                 layer.commit();
             }
         }

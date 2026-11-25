@@ -1,16 +1,18 @@
-//! The bar itself: three floating islands — windows, clock, status.
+//! The bar itself: floating islands — windows, clock, status, and the bell.
 //!
-//! The right island is a small cluster — network and volume glyphs, the
-//! battery where there is one, and a bell — that warms a shade under the
-//! pointer, because resting there opens the control center and clicking it
-//! opens the notification history. The bell is always there, so a desktop
-//! with no battery and no Wi-Fi still has an island to rest on.
+//! At the right, each island has one card of its own. The status island —
+//! network and volume glyphs, the battery where there is one, whatever is
+//! out of the ordinary — warms a shade under the pointer, because resting
+//! there (or clicking) opens the control center. The bell sits on an island
+//! of its own at the very end, and a click there opens the notification
+//! history: reading what came in is never by way of the controls. Each card
+//! grows out of its own island (see [`enso_ui::emerge`]).
 //!
-//! Its icons are drawn, not taken from a font (see [`icons`]): Wi-Fi or a
+//! Their icons are drawn, not taken from a font (see [`icons`]): Wi-Fi or a
 //! cable, the battery — a pill holding its percentage, filled
 //! as far as it is charged — and the bell, which rings when something new
 //! arrives. They are sized from the bar's height, so a taller or shorter bar
-//! keeps the same island, larger or smaller.
+//! keeps the same islands, larger or smaller.
 //!
 //! The left island is workspace-centric. At rest it shows one dot per window
 //! on the current workspace, the focused one stretched into a pill. Resting
@@ -51,6 +53,9 @@ use crate::{
 const EDGE: f32 = edge::SCREEN;
 /// Vertical inset of the islands inside the bar.
 const INSET: f32 = edge::ISLAND_INSET;
+/// Between the status island and the bell's: what lies between an island
+/// and the screen's edge, or the card under it.
+const APART: f32 = edge::SCREEN;
 /// Diameter of a window dot, and height of the focused window's pill.
 const DOT: f32 = 8.0;
 /// Width of the focused window's pill.
@@ -197,14 +202,25 @@ pub struct Bar {
     status_glow: Tween<f32>,
     /// The status island, from the last frame, if there is one.
     status: Option<Rect>,
+    /// The status island at rest, without a level widening it: where the
+    /// control center grows out of.
+    status_rest: Option<Rect>,
     /// The pointer is resting on the status island.
     status_hovered: bool,
+    /// The bell's island, from the last frame.
+    bell: Option<Rect>,
+    /// How much the bell's island is lit by the pointer (`0..=1`).
+    bell_glow: Tween<f32>,
+    /// The pointer is on the bell.
+    bell_hovered: bool,
     /// When the pointer will have rested there long enough to mean it.
     intent_due: Option<Instant>,
     /// The control center, opened from the status island.
     dropdown: Dropdown,
-    /// The notification history, opened by clicking the island.
+    /// The notification history, opened by clicking the bell.
     history: History,
+    /// Where the clock island comes to rest.
+    clock_rest: Option<Rect>,
     /// The clock island, from the last frame.
     clock_island: Option<Rect>,
     /// The pointer is on the clock.
@@ -223,9 +239,6 @@ pub struct Bar {
     epoch: Instant,
     /// What the notification daemon last reported.
     notices: Notices,
-    /// The island was clicked: resting on it opens nothing more until the
-    /// pointer has left and come back.
-    clicked: bool,
     /// When the bell began ringing, if it is.
     ringing: Option<Instant>,
     /// The level the island shows as it changes.
@@ -254,8 +267,8 @@ pub struct Bar {
     calendar: Dropdown,
     /// Something is playing, as enso-play last said.
     is_playing: bool,
-    /// Whether to keep a note of where the clock island is, for what grows
-    /// out of it (the launcher): the bar on a screen of its own does.
+    /// Whether to keep a note of where the islands are, for what grows out
+    /// of them: the bar on a screen of its own does.
     notes: bool,
     /// The note last kept, and for which screen.
     noted: Option<(String, island::Island)>,
@@ -296,10 +309,15 @@ impl Bar {
             poll_due: Instant::now(),
             status_glow: Tween::new(0.0),
             status: None,
+            status_rest: None,
             status_hovered: false,
+            bell: None,
+            bell_glow: Tween::new(0.0),
+            bell_hovered: false,
             intent_due: None,
             dropdown: Dropdown::control_center(),
             history: History::new(),
+            clock_rest: None,
             clock_island: None,
             clock_hovered: false,
             playing_due: None,
@@ -309,7 +327,6 @@ impl Bar {
             water_due: None,
             epoch: Instant::now(),
             notices: Notices::default(),
-            clicked: false,
             ringing: None,
             osd: Osd::new(),
             mic: Mic::default(),
@@ -428,11 +445,14 @@ impl Bar {
         cx.wake_in(due.saturating_duration_since(Instant::now()));
     }
 
-    /// Track the pointer against the status island. Everything from the
-    /// island's near end to the screen corner counts. Returns the new state
-    /// when it changes.
+    /// Track the pointer against the status island: from its near end to
+    /// halfway to the bell. Returns the new state when it changes.
     fn status_hover(&mut self, pointer: Option<(f32, f32)>) -> Option<bool> {
-        let hovered = pointer.is_some_and(|(x, _)| self.status.is_some_and(|island| x >= island.x));
+        let split = self.bell.map_or(f32::INFINITY, |bell| bell.x - APART / 2.0);
+        let hovered = pointer.is_some_and(|(x, _)| {
+            self.status
+                .is_some_and(|island| x >= island.x && x < split)
+        });
         (hovered != self.status_hovered).then(|| {
             self.status_hovered = hovered;
             self.status_glow.set(
@@ -444,16 +464,36 @@ impl Bar {
         })
     }
 
+    /// Track the pointer against the bell: from halfway between it and the
+    /// status island to the screen's corner. Returns whether that changed.
+    fn bell_hover(&mut self, pointer: Option<(f32, f32)>) -> bool {
+        let hovered = pointer
+            .is_some_and(|(x, _)| self.bell.is_some_and(|bell| x >= bell.x - APART / 2.0));
+        let changed = hovered != self.bell_hovered;
+        if changed {
+            self.bell_hovered = hovered;
+            self.bell_glow.set(
+                if hovered { 1.0 } else { 0.0 },
+                self.ctx.motion.apply(Transition::HOVER),
+                Instant::now(),
+            );
+        }
+        changed
+    }
+
     /// Follow the pointer for the control center's sake: keep an open panel
-    /// informed, and start (or abandon) the wait before opening one.
+    /// informed, and start (or abandon) the wait before opening one. And
+    /// light the bell under it.
     fn follow_status(&mut self, pointer: Option<(f32, f32)>, cx: &mut Cx<'_>) {
         if let Some(hovering) = self.status_hover(pointer) {
             self.dropdown.tell(hovering);
             cx.redraw();
         }
+        if self.bell_hover(pointer) {
+            cx.redraw();
+        }
         if !self.status_hovered {
             self.intent_due = None;
-            self.clicked = false;
         } else if self.intent_due.is_none() && self.may_open_on_hover() && !self.dropdown.is_open()
         {
             self.intent_due = Some(Instant::now() + HOVER_INTENT);
@@ -539,17 +579,27 @@ impl Bar {
         self.water.is_animating(now) || (self.water.target() > 0.0 && self.ctx.motion.is_enabled())
     }
 
-    /// Whether resting on the island opens the control center: not when
-    /// that is switched off, and not on top of the notification history.
+    /// Whether resting on the status island opens the control center: not
+    /// when that is switched off. Over the notification history too: the
+    /// pointer has gone from the bell to the controls, and the one card
+    /// gives way to the other.
     fn may_open_on_hover(&self) -> bool {
-        self.config.control_center && !self.clicked && !self.notices.open
+        self.config.control_center
     }
 
-    /// A click on the island: the notification history takes the control
-    /// center's place (or closes, if it was open).
+    /// A click on the status island opens the control center at once, not
+    /// waiting for the pointer to rest. One that is up stays: the click
+    /// meant it.
     fn click_status(&mut self) {
         self.intent_due = None;
-        self.clicked = true;
+        if !self.dropdown.is_open() {
+            self.dropdown.open(self.config.position);
+        }
+    }
+
+    /// A click on the bell opens the notification history, or closes it.
+    fn click_bell(&mut self) {
+        self.intent_due = None;
         self.dropdown.close();
         self.history.toggle();
     }
@@ -601,28 +651,49 @@ impl Bar {
         }
     }
 
-    /// Keep a note of where the clock island comes to rest, when it has
-    /// moved: what grows out of it reads it (see [`enso_core::island`]).
-    fn note_clock(&mut self, island: Rect) {
+    /// Keep a note of where the islands come to rest, and which one the
+    /// pointer lights, when that has changed: what grows out of them reads
+    /// it (see [`enso_core::island`]). `screen` is the bar's width.
+    fn note_islands(&mut self, screen: f32) {
         let Some(output) = self.output.clone().filter(|_| self.notes) else {
             return;
+        };
+        let Some(clock) = self.clock_rest else {
+            return;
+        };
+        let spot = |rect: Rect| island::Spot {
+            x: rect.x,
+            y: rect.y,
+            w: rect.w,
+            h: rect.h,
+        };
+        let lit = if self.bell_hovered {
+            Some(island::Which::Bell)
+        } else if self.status_hovered {
+            Some(island::Which::Status)
+        } else {
+            None
         };
         let note = island::Island {
             pid: std::process::id(),
             top: self.config.position == Position::Top,
             bar: self.config.height as f32,
-            x: island.x,
-            y: island.y,
-            w: island.w,
-            h: island.h,
+            x: clock.x,
+            y: clock.y,
+            w: clock.w,
+            h: clock.h,
             opacity: self.opacity(),
+            screen,
+            status: self.status_rest.map(spot),
+            bell: self.bell.map(spot),
+            lit,
         };
         if self.noted.as_ref() == Some(&(output.clone(), note)) {
             return;
         }
         // Said once for each change, not on every frame.
         if let Err(err) = island::publish(&output, &note) {
-            eprintln!("enso-bar: cannot say where the clock is: {err}");
+            eprintln!("enso-bar: cannot say where the islands are: {err}");
         }
         self.noted = Some((output, note));
     }
@@ -857,7 +928,7 @@ impl Bar {
         }
         let width = tween.get(now);
         let moving = tween.is_animating(now);
-        self.note_clock(bar.centered(natural, bar.h));
+        self.clock_rest = Some(bar.centered(natural, bar.h));
         // Laid out at the width it is heading for, and clipped to the
         // island as it grows: the words never squeeze or spill.
         let text = Text::new(&says, size, colors.text)
@@ -919,10 +990,10 @@ impl Bar {
     }
 
     /// What the status island shows, left to right: what's out of the
-    /// ordinary, while it lasts; the network where there is such, the
-    /// battery where there is one, and the bell, always — so there is always
-    /// an island to rest on. The volume shows only as it changes (see
-    /// [`Osd`]), and scrolling on the island turns it.
+    /// ordinary, while it lasts; the network where there is such, and the
+    /// battery where there is one. The volume shows only as it changes (see
+    /// [`Osd`]), and scrolling on the island turns it. The bell has an
+    /// island of its own.
     fn status_items(&self) -> Vec<Item> {
         let mut items = Vec::with_capacity(8);
         // What's out of the ordinary comes first, and only while it is.
@@ -943,7 +1014,6 @@ impl Bar {
         }
         items.extend(self.link.map(Item::Network));
         items.extend(self.charge().map(Item::Battery));
-        items.push(Item::Bell);
         items
     }
 
@@ -1003,13 +1073,51 @@ impl Bar {
         }
     }
 
+    /// The bell's island, at the very end of the bar: a round one when the
+    /// bell fits, which it does. Returns where the next island ends, and
+    /// whether the bell is still moving.
+    fn draw_bell(&mut self, canvas: &mut Canvas<'_>, bar: Rect, now: Instant) -> (f32, bool) {
+        let scale = icons::Scale::new(bar.h);
+        let colors = &self.ctx.theme.colors;
+        let figure = self.figure(Item::Bell).unwrap_or(Figure::Bell);
+        let figure_w = scale.width(figure);
+        let width = (figure_w + 2.0 * scale.pad()).min(bar.h).max(figure_w + scale.gap());
+        let island = Rect::new(bar.right() - width, bar.y, width, bar.h);
+        self.bell = Some(island);
+
+        let glow = self.bell_glow.get(now);
+        let ground = colors.base.mix(colors.overlay, glow);
+        canvas.pill(island, self.island_color(ground));
+        let (swing, ringing) = self.swing(now);
+        let ink = icons::Ink {
+            on: self.tint(Item::Bell).mix(colors.text, glow * 0.5),
+            ground,
+        };
+        let icon_h = scale.icon();
+        let icon = Rect::new(
+            island.x + ((width - figure_w) / 2.0).round(),
+            island.y + ((island.h - icon_h) / 2.0).round(),
+            figure_w,
+            icon_h,
+        );
+        if figure == Figure::Bell {
+            let dot = (self.notices.unseen > 0).then_some(self.ctx.accent());
+            icons::bell(canvas, icon, swing, dot, ink);
+        } else {
+            icons::draw(canvas, figure, icon, ink);
+        }
+        (island.x - APART, ringing || self.bell_glow.is_animating(now))
+    }
+
     /// The status island: what's out of the ordinary, Wi-Fi (or a cable),
-    /// the battery, and the bell, every one drawn at the bar's scale — or,
-    /// for a moment after a level changes, that level. Returns whether it
-    /// is still animating.
+    /// and the battery, every one drawn at the bar's scale, ending where
+    /// the bell's begins — or, for a moment after a level changes, that
+    /// level. Returns whether it is still animating.
     fn draw_status(&mut self, canvas: &mut Canvas<'_>, bar: Rect, now: Instant) -> bool {
         self.status = None;
+        self.status_rest = None;
         self.share = None;
+        let (right, bell_moving) = self.draw_bell(canvas, bar, now);
         let scale = icons::Scale::new(bar.h);
         let battery = icons::Battery::new(scale);
         let items = self.status_items();
@@ -1039,23 +1147,31 @@ impl Bar {
                     .map_or(0.0, |layout| canvas.measure(layout).w.ceil()),
             })
             .collect();
-        let resting =
-            widths.iter().sum::<f32>() + (items.len() - 1) as f32 * scale.gap() + 2.0 * scale.pad();
+        let resting = if items.is_empty() {
+            0.0
+        } else {
+            widths.iter().sum::<f32>() + (items.len() - 1) as f32 * scale.gap() + 2.0 * scale.pad()
+        };
 
         // A level just changed: the island widens to the left to show it.
         let size = self.ctx.config.appearance.font_size * type_scale::SMALL;
         let shown = self.osd.presence(now);
         let level_width = self.osd.width(canvas, scale, size).max(resting);
         let width = resting + (level_width - resting) * shown;
-        let island = Rect::new(bar.right() - width, bar.y, width, bar.h);
+        // Nothing to say and no level to show: no island, only the bell.
+        if width < 1.0 {
+            return bell_moving || self.status_glow.is_animating(now);
+        }
+        let island = Rect::new(right - width, bar.y, width, bar.h);
         self.status = Some(island);
+        if resting > 0.0 {
+            self.status_rest = Some(Rect::new(right - resting, bar.y, resting, bar.h));
+        }
 
         // It warms a shade under the pointer: there is something behind it.
         let glow = self.status_glow.get(now);
         let ground = colors.base.mix(colors.overlay, glow);
         canvas.pill(island, self.island_color(ground));
-        let (swing, ringing) = self.swing(now);
-        let accent = self.ctx.accent();
         let t = now.saturating_duration_since(self.epoch).as_secs_f32();
 
         if shown > 0.0 {
@@ -1088,14 +1204,6 @@ impl Bar {
                     icon_h,
                 );
                 match (item, self.figure(item)) {
-                    (Item::Bell, Some(figure)) => {
-                        let dot = (self.notices.unseen > 0).then_some(accent);
-                        if figure == Figure::Bell {
-                            icons::bell(canvas, icon, swing, dot, ink);
-                        } else {
-                            icons::draw(canvas, figure, icon, ink);
-                        }
-                    }
                     (Item::Share, Some(figure)) => {
                         share = Some(slot.inset_xy(-scale.gap() / 2.0, 0.0));
                         icons::draw(canvas, figure, icon, ink);
@@ -1124,7 +1232,7 @@ impl Bar {
         if shown < 0.5 {
             self.share = share;
         }
-        self.status_glow.is_animating(now) || ringing || self.osd.is_animating(now)
+        self.status_glow.is_animating(now) || bell_moving || self.osd.is_animating(now)
     }
 }
 
@@ -1341,7 +1449,9 @@ impl App for Bar {
                     }
                     return;
                 }
-                if self.status_hovered {
+                if self.bell_hovered {
+                    self.click_bell();
+                } else if self.status_hovered {
                     self.click_status();
                 }
                 // A click on the clock plays or pauses.
@@ -1369,6 +1479,7 @@ impl App for Bar {
         let animating = self.draw_workspaces(canvas, strip, now);
         let reflowing = self.draw_clock(canvas, strip, size, now);
         let glowing = self.draw_status(canvas, strip, now);
+        self.note_islands(canvas.bounds().w);
         Paint::when(animating || reflowing || glowing)
     }
 }
@@ -1700,56 +1811,87 @@ mod tests {
     }
 
     #[test]
-    fn the_status_island_is_hovered_from_its_near_end_to_the_corner() {
+    fn the_status_island_and_the_bell_share_the_end_of_the_bar() {
         let mut bar = sample("rose-pine-moon");
-        // Nothing to hover before the island has been drawn.
+        // Nothing to hover before the islands have been drawn.
         assert_eq!(bar.status_hover(Some((890.0, 18.0))), None);
+        assert!(!bar.bell_hover(Some((899.0, 18.0))));
         frame(&mut bar, Instant::now());
         let island = bar.status.expect("a status island");
-        assert!(island.right() <= 900.0 - EDGE + 0.5);
+        let bell = bar.bell.expect("the bell's island");
+        // The bell at the very end, round, and the status island before it.
+        assert!((bell.right() - (900.0 - EDGE)).abs() < 0.5);
+        assert_eq!(bell.w, bell.h);
+        assert_eq!(island.right(), bell.x - APART);
 
         assert_eq!(bar.status_hover(Some((island.x - 1.0, 18.0))), None);
         assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
-        // Still on it: no news. The corner past its end counts too.
-        assert_eq!(bar.status_hover(Some((899.0, 0.0))), None);
-        assert_eq!(bar.status_hover(Some((450.0, 18.0))), Some(false));
+        // Still on it: no news. Up to halfway to the bell, it counts.
+        assert_eq!(bar.status_hover(Some((bell.x - APART / 2.0 - 1.0, 0.0))), None);
+        // On the bell, or past it in the corner: the bell's, not the
+        // status island's.
+        assert_eq!(bar.status_hover(Some((bell.x + 1.0, 18.0))), Some(false));
+        assert!(bar.bell_hover(Some((bell.x + 1.0, 18.0))));
+        assert!(!bar.bell_hover(Some((899.0, 0.0))));
+        assert!(bar.bell_hovered);
+        assert!(bar.bell_hover(Some((450.0, 18.0))));
         assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
         assert_eq!(bar.status_hover(None), Some(false));
 
-        // A desktop has no battery — nor, perhaps, Wi-Fi or sound — but
-        // always the bell, so always an island to rest on.
-        let with_battery = island.w;
+        // A desktop has no battery — nor, perhaps, Wi-Fi or sound: then
+        // there is only the bell.
         bar.battery = None;
         bar.link = None;
         bar.sound = None;
         frame(&mut bar, later());
-        let island = bar.status.expect("an island with only the bell");
-        assert!(island.w < with_battery / 2.0);
-        assert_eq!(bar.status_hover(Some((island.x + 1.0, 18.0))), Some(true));
+        assert_eq!(bar.status, None);
+        assert!(bar.bell.is_some());
+        assert_eq!(bar.status_hover(Some((bell.x - 20.0, 18.0))), None);
         snapshot(&frame(&mut bar, later()).0, "bar-status-desktop");
     }
 
     #[test]
-    fn resting_opens_the_control_center_and_a_click_the_history() {
+    fn the_status_island_opens_the_controls_and_the_bell_the_history() {
         let mut bar = sample("rose-pine-moon");
         bar.dropdown = Dropdown::with_program("enso-ctl", "the island", "/nonexistent/enso-ctl");
         bar.history = History::with_program("/nonexistent/enso-notify");
         assert!(bar.may_open_on_hover());
-
-        // After a click, resting there opens nothing more…
-        bar.click_status();
-        assert!(bar.clicked && !bar.may_open_on_hover());
-        assert_eq!(bar.intent_due, None);
-        // …and neither does it while the history is open, whoever opened it.
-        bar.clicked = false;
+        // Even over the history: the pointer has moved on to the controls.
         bar.notices.open = true;
-        assert!(!bar.may_open_on_hover());
-        bar.notices.open = false;
         assert!(bar.may_open_on_hover());
 
-        // Switched off in the config, the island still takes the click.
+        // A click opens at once, without the wait.
+        bar.intent_due = Some(Instant::now());
+        bar.click_status();
+        assert_eq!(bar.intent_due, None);
+        bar.intent_due = Some(Instant::now());
+        bar.click_bell();
+        assert_eq!(bar.intent_due, None);
+
+        // Switched off in the config, resting opens nothing; a click still
+        // does.
         bar.config.control_center = false;
         assert!(!bar.may_open_on_hover());
+    }
+
+    /// The note says where every island rests, the bell and the status
+    /// island with the clock, and which one the pointer lights.
+    #[test]
+    fn the_note_says_where_each_island_is_and_which_is_lit() {
+        let mut bar = sample("rose-pine-moon");
+        bar.output = Some("TEST-1".to_owned());
+        bar.notes = true;
+        // A note can't be kept here; what would have been is.
+        frame(&mut bar, later());
+        let (_, note) = bar.noted.clone().expect("a note");
+        let bell = bar.bell.expect("a bell");
+        assert_eq!(note.screen, 900.0);
+        assert_eq!(note.bell.map(|spot| (spot.x, spot.w)), Some((bell.x, bell.w)));
+        assert!(note.status.is_some_and(|spot| spot.x + spot.w == bell.x - APART));
+        assert_eq!(note.lit, None);
+        bar.bell_hover(Some((bell.x + 2.0, 18.0)));
+        frame(&mut bar, later());
+        assert_eq!(bar.noted.clone().map(|(_, note)| note.lit), Some(Some(island::Which::Bell)));
     }
 
     #[test]
@@ -1816,14 +1958,11 @@ mod tests {
         let (waiting, _) = frame(&mut bar, later());
         snapshot(&waiting, "bar-status-unseen");
 
-        // The dot is drawn in the accent, somewhere on the island's end.
-        let island = bar.status.unwrap();
+        // The dot is drawn in the accent, on the bell's island.
+        let island = bar.bell.unwrap();
         let accent = bar.ctx.accent();
         let has_accent = |image: &Offscreen| {
-            let (x0, x1) = (
-                ((island.right() - 40.0) * 2.0) as u32,
-                (island.right() * 2.0) as u32,
-            );
+            let (x0, x1) = ((island.x * 2.0) as u32, (island.right() * 2.0) as u32);
             (x0..x1).any(|x| {
                 (0..image.height).any(|y| image.pixel(x, y) == [accent.r, accent.g, accent.b, 255])
             })
@@ -1942,7 +2081,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_island_shows_network_battery_and_bell() {
+    fn the_status_island_shows_network_and_battery() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
         let kinds = |bar: &Bar| -> Vec<&'static str> {
@@ -1964,23 +2103,24 @@ mod tests {
         };
         // The volume is known (for scrolling) but not shown.
         assert!(bar.sound.is_some());
-        assert_eq!(kinds(&bar), ["wifi", "battery", "bell"]);
+        // The bell is on an island of its own.
+        assert_eq!(kinds(&bar), ["wifi", "battery"]);
         let tints = |bar: &Bar| -> Vec<Rgba> {
             bar.status_items()
                 .into_iter()
                 .map(|item| bar.tint(item))
                 .collect()
         };
-        assert_eq!(tints(&bar), [colors.subtle, colors.subtle, colors.subtle]);
+        assert_eq!(tints(&bar), [colors.subtle, colors.subtle]);
 
         bar.link = Some(Link::Offline);
         bar.battery.as_mut().unwrap().percent = 12;
-        assert_eq!(tints(&bar), [colors.subtle, colors.love, colors.subtle]);
+        assert_eq!(tints(&bar), [colors.subtle, colors.love]);
         snapshot(&frame(&mut bar, later()).0, "bar-status-offline");
 
         bar.link = Some(Link::Wired);
         bar.battery = None;
-        assert_eq!(kinds(&bar), ["cable", "bell"]);
+        assert_eq!(kinds(&bar), ["cable"]);
 
         // Under the pointer the island warms, then settles lit.
         frame(&mut bar, Instant::now());

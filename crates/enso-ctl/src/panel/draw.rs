@@ -223,19 +223,25 @@ impl Panel {
             icon_width: if canvas.glyphs() { 28.0 } else { 38.0 },
         };
 
-        // The card eases in from the edge it hangs off.
-        let from = match self.mode {
-            PanelMode::Dropdown(Edge::Bottom) => 1.0,
-            _ => -1.0,
+        let rest = self.card_rect(canvas.bounds(), self.height.get(now));
+        let (card, presence) = if self.perch.island.is_some() {
+            // It grows out of the bar's status island; what it holds shows
+            // once it is out.
+            let card = self.perch.card(canvas, rest, presence, &look.colors);
+            (card, self.perch.shown(presence))
+        } else {
+            // The card eases in from the edge it hangs off.
+            let from = match self.mode {
+                PanelMode::Dropdown(Edge::Bottom) => 1.0,
+                _ => -1.0,
+            };
+            let card = rest.translate(0.0, from * (1.0 - presence) * space::MD);
+            canvas.set_opacity(presence);
+            canvas.card(card, look.colors.surface, look.colors.highlight_med);
+            (card, presence)
         };
-        let card = self
-            .card_rect(canvas.bounds(), self.height.get(now))
-            .translate(0.0, from * (1.0 - presence) * space::MD);
         self.card = card;
         self.hits.clear();
-
-        canvas.set_opacity(presence);
-        canvas.card(card, look.colors.surface, look.colors.highlight_med);
 
         // A newly opened page fades in while sliding the last little way.
         let slide = self.slide.get(now);

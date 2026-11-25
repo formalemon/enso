@@ -42,6 +42,7 @@ use enso_sys::{
 use enso_ui::{
     Anchor, App, Button, Canvas, Cx, Event, Key, KeyEvent, Keyboard, Layer, Nav, Paint,
     PointerEvent, Presence, Proxy, Rect, SurfaceSpec,
+    emerge::Perch,
     watch::watch_dir,
     widget::{SecretField, secret},
 };
@@ -481,6 +482,14 @@ pub struct Panel {
     /// Sideways travel on the touchpad not yet turned into a page.
     swipe: f32,
 
+    /// The bar's status island, when the card grows out of it, and the
+    /// screen it is on.
+    perch: Perch,
+    screen: Option<String>,
+    /// A dropdown's width when it grows out of the island: as far from the
+    /// screen's right edge as the card and the island reach.
+    reach: Option<f32>,
+
     /// Dropdown only: the pointer is over the card.
     pointer_inside: bool,
     /// Dropdown only: the pointer is over the bar island that opened us.
@@ -538,6 +547,9 @@ impl Panel {
             swipe: 0.0,
             wifi_switch: Tween::new(0.0),
             bluetooth_switch: Tween::new(0.0),
+            perch: Perch::default(),
+            screen: None,
+            reach: None,
             pointer_inside: false,
             // Whoever opened a dropdown is hovering until they say otherwise.
             owner_hovering: matches!(mode, PanelMode::Dropdown(_)),
@@ -763,6 +775,9 @@ impl Panel {
     /// Where the card rests in a surface of `bounds`, at a given height.
     fn card_rect(&self, bounds: Rect, height: f32) -> Rect {
         let width = (self.config.width as f32).min(bounds.w - 2.0 * MARGIN);
+        if self.perch.island.is_some() {
+            return self.perch.rest(bounds, width, height);
+        }
         let x = bounds.right() - width - MARGIN;
         let y = match self.mode {
             PanelMode::Modal => MARGIN,
@@ -968,6 +983,31 @@ impl Panel {
 
     /// Go to a page.
     /// Open on `page` rather than the first, as soon as it can be shown.
+    /// Grow out of the bar's status island on `screen`, when `perch` has
+    /// one: from the keyboard, or under the pointer hanging off a bar along
+    /// the top. Along the bottom it hangs as it always has.
+    pub fn perched(mut self, screen: Option<String>, perch: Perch) -> Self {
+        let Some(island) = perch.island else {
+            return self;
+        };
+        let perch = match self.mode {
+            PanelMode::Modal => perch,
+            PanelMode::Dropdown(Edge::Top) => {
+                let Some(reach) = perch.reach(self.config.width as f32) else {
+                    return self;
+                };
+                let reach = reach + SHADOW_ROOM;
+                self.reach = Some(reach);
+                perch.seen_from(island.screen - reach)
+            }
+            PanelMode::Dropdown(Edge::Bottom) => return self,
+        };
+        self.presence = perch.presence(&self.ctx.motion);
+        self.perch = perch;
+        self.screen = screen;
+        self
+    }
+
     pub fn asking(mut self, page: Option<Page>) -> Self {
         self.asked = page;
         self
@@ -1853,8 +1893,11 @@ impl Panel {
         let (width, height) = cx.size();
         let bounds = Rect::new(0.0, 0.0, width as f32, height as f32);
         let card = self.card_rect(bounds, self.height.target());
+        // Grown out of the island, the surface reaches over the bar: the bar
+        // keeps the pointer there.
+        let top = self.perch.island.map_or(0.0, |island| island.bar);
         let region = match edge {
-            Edge::Top => Rect::new(card.x, 0.0, card.w, card.bottom()),
+            Edge::Top => Rect::new(card.x, top, card.w, card.bottom() - top),
             Edge::Bottom => Rect::new(card.x, card.y, card.w, bounds.h - card.y),
         };
         cx.set_input_region(Some(region));
@@ -1867,7 +1910,11 @@ impl Panel {
                 self.update_input(cx);
                 cx.redraw();
             }
-            Outcome::Close => self.presence.close(cx),
+            Outcome::Close => {
+                // Going back into the island: lit as it is now.
+                self.perch.relight(self.screen.as_deref());
+                self.presence.close(cx);
+            }
         }
     }
 }
@@ -1919,7 +1966,24 @@ impl App for Panel {
 
     fn surface(&self) -> SurfaceSpec {
         match self.mode {
+            PanelMode::Modal if self.perch.island.is_some() => {
+                Perch::surface("enso-ctl", self.screen.clone())
+            }
             PanelMode::Modal => SurfaceSpec::overlay("enso-ctl"),
+            // Out of the status island: over the bar, as far along it as
+            // the island and the card reach.
+            PanelMode::Dropdown(Edge::Top)
+                if let (Some(island), Some(reach)) = (self.perch.island, self.reach) =>
+            {
+                SurfaceSpec {
+                    width: reach as u32,
+                    height: (island.bar + DROP_GAP + Self::max_height() + SHADOW_ROOM).ceil()
+                        as u32,
+                    exclusive_zone: -1,
+                    keyboard: Keyboard::None,
+                    ..SurfaceSpec::new("enso-ctl", Layer::Overlay, Anchor::RIGHT | Anchor::TOP)
+                }
+            }
             // Hangs off the bar's edge of the screen, below (or above) the
             // bar itself, without the keyboard (see `update_input`).
             PanelMode::Dropdown(edge) => SurfaceSpec {

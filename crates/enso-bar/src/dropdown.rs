@@ -10,8 +10,8 @@
 //!
 //! There is only ever one control center (enso-ctl keeps to one copy), and
 //! it and the notification history take turns: each closes the other as it
-//! opens. So a click on the island, which opens the history, also sends the
-//! control center away, and resting there opens nothing while either is up.
+//! opens. So a click on the bell, which opens the history, also sends the
+//! control center away; resting on the status island brings it back.
 
 use std::{
     io::{self, Write},

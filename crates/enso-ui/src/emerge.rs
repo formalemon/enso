@@ -1,16 +1,19 @@
-//! Cards that grow out of the bar: the launcher and the clipboard history
-//! open out of the bar's clock island when there is a bar along the top of
-//! the screen, and settle under it in the middle; elsewhere they settle a
+//! Cards that grow out of the bar. When there is a bar along the top of
+//! the screen, the launcher and the clipboard history open out of its clock
+//! island and settle under it in the middle; the control center opens out
+//! of the status island and the notification history out of the bell, and
+//! each hangs under the end of its island. Elsewhere the pickers settle a
 //! fifth of the way down. Nothing is dimmed behind them either way.
 //!
-//! The bar keeps a note of where its clock island is
-//! ([`enso_core::island`]); [`Perch::find`] asks niri which screen has the
-//! focus and reads the note for it. Without a bar, or without niri, a card
-//! simply opens the other way.
+//! The bar keeps a note of where its islands are ([`enso_core::island`]);
+//! [`Perch::find_from`] reads it for the screen the card is for — the one
+//! named in `$ENSO_OUTPUT` when the bar opened it, otherwise the one niri
+//! says has the focus. Without a bar, or without niri, a card simply opens
+//! the other way.
 
 use enso_core::{
     Easing, Motion, Palette, Rgba, Transition,
-    island::{self, Island},
+    island::{self, Island, Which},
     style::{edge, radius, space},
 };
 use niri_ipc::{Request, Response, socket::Socket};
@@ -24,9 +27,16 @@ const SWELL: (f32, f32) = (7.0, 3.0);
 /// Where an overlay card opens.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Perch {
-    /// The bar's clock island on the screen with the focus, when a bar runs
-    /// along that screen's top: the card grows out of it.
+    /// The bar's island on the card's screen, when a bar runs along that
+    /// screen's top, in the card's surface's coordinates: the card grows
+    /// out of it.
     pub island: Option<Island>,
+    /// Which island that is: a card from the clock hangs in the middle of
+    /// the screen; one from an island at the right end, under that end.
+    pub from: Which,
+    /// The island was lit by the pointer when last looked at, so its swell
+    /// is drawn lit too.
+    pub lit: bool,
 }
 
 /// The screen with the focus, by name, from niri. `None` outside niri,
@@ -39,16 +49,72 @@ pub fn focused_output() -> Option<String> {
     }
 }
 
+/// The screen a card is for: the bar's, when the bar opened it (it says
+/// so in `$ENSO_OUTPUT`), otherwise the one with the focus.
+pub fn screen() -> Option<String> {
+    std::env::var("ENSO_OUTPUT")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .or_else(focused_output)
+}
+
 impl Perch {
-    /// The bar's clock on the screen with the focus, if it has one along
-    /// its top.
+    /// The bar's clock on the card's screen, if it has one along its top.
     pub fn find() -> (Option<String>, Self) {
-        let screen = focused_output();
-        let island = screen
-            .as_deref()
-            .and_then(island::find)
-            .filter(|island| island.top);
-        (screen, Self { island })
+        Self::find_from(Which::Clock)
+    }
+
+    /// The island `from` of the bar on the card's screen.
+    pub fn find_from(from: Which) -> (Option<String>, Self) {
+        let screen = screen();
+        let perch = Self::on(screen.as_deref(), from);
+        (screen, perch)
+    }
+
+    /// The island `from` of the bar on `screen`, if that bar runs along its
+    /// top. One at the right end is only of use if the bar said how wide it
+    /// is: a card's surface finds the island from the screen's right edge.
+    pub fn on(screen: Option<&str>, from: Which) -> Self {
+        let note = screen.and_then(island::find).filter(|note| note.top);
+        let island = note
+            .and_then(|note| note.at(from))
+            .filter(|island| from == Which::Clock || island.screen > 0.0);
+        Self {
+            island,
+            from,
+            lit: note.is_some_and(|note| note.lit == Some(from)),
+        }
+    }
+
+    /// Look again at whether the island is lit: as the card goes back into
+    /// it, the pointer may have come or gone.
+    pub fn relight(&mut self, screen: Option<&str>) {
+        if self.island.is_some() {
+            let note = screen.and_then(island::find);
+            self.lit = note.is_some_and(|note| note.lit == Some(self.from));
+        }
+    }
+
+    /// How far from the screen's right edge a surface anchored there must
+    /// reach to hold a card `width` wide under this island, and the island
+    /// as it swells. `None` without an island.
+    pub fn reach(&self, width: f32) -> Option<f32> {
+        let island = self.island?;
+        let under = island.screen - (island.x + island.w) + width;
+        let swollen = island.screen - island.x + SWELL.0 + 1.0;
+        Some(under.max(swollen).ceil())
+    }
+
+    /// The same, seen from a surface whose left edge is `left` along the
+    /// screen.
+    pub fn seen_from(self, left: f32) -> Self {
+        Self {
+            island: self.island.map(|island| Island {
+                x: island.x - left,
+                ..island
+            }),
+            ..self
+        }
     }
 
     /// Easing in and out: the stages of [`Emergence`] out of the bar, or
@@ -71,9 +137,16 @@ impl Perch {
     }
 
     /// Where a card `width` × `height` rests on a screen of `bounds`:
-    /// hanging under the bar in the middle, or a fifth of the way down.
+    /// hanging under the bar in the middle, or under the end of its island
+    /// at the right; or, without a bar, a fifth of the way down.
     pub fn rest(&self, bounds: Rect, width: f32, height: f32) -> Rect {
         match self.island {
+            Some(island) if self.from != Which::Clock => Rect::new(
+                island.x + island.w - width,
+                island.bar + edge::BELOW_BAR,
+                width,
+                height,
+            ),
             Some(island) => Rect::new(
                 ((bounds.w - width) / 2.0).round(),
                 island.bar + edge::BELOW_BAR,
@@ -89,6 +162,15 @@ impl Perch {
         }
     }
 
+    /// How much of what a card holds shows, `p` of the way open: once it
+    /// has come out of the island, or as it eases in.
+    pub fn shown(&self, p: f32) -> f32 {
+        match self.island {
+            Some(_) => Emergence::at(p).content,
+            None => p,
+        }
+    }
+
     /// Draw the card's body `p` of the way open (as its [`Presence`] says),
     /// to rest at `card`. Returns where its contents go, and leaves the
     /// canvas's opacity at how much of them shows; the caller sets it back.
@@ -96,7 +178,7 @@ impl Perch {
         match self.island {
             Some(island) => {
                 let stage = Emergence::at(p);
-                emerge(canvas, &island, card, &stage, colors);
+                emerge(canvas, &island, self.lit, card, &stage, colors);
                 canvas.set_opacity(stage.content);
                 card
             }
@@ -158,17 +240,20 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 /// Draw the card coming out of `island` towards `card`, as `stage` has it:
-/// the island swelling round its clock as the card slides out from under
-/// it, drops into place and spreads, turning from the island's colour to
-/// its own.
+/// the island swelling round what it shows as the card slides out from
+/// under it, drops into place and spreads, turning from the island's colour
+/// to its own. A `lit` island is the shade the bar lights it under the
+/// pointer, and so is its swell.
 pub fn emerge(
     canvas: &mut Canvas<'_>,
     island: &Island,
+    lit: bool,
     card: Rect,
     stage: &Emergence,
     colors: &Palette,
 ) {
-    let shore = colors.base.alpha(island.opacity);
+    let ground = if lit { colors.overlay } else { colors.base };
+    let shore = ground.alpha(island.opacity);
     let clock = Rect::new(island.x, island.y, island.w, island.h);
     let swollen = Rect::new(
         clock.x - SWELL.0 * stage.swell,
@@ -309,7 +394,9 @@ mod tests {
                 w: 140.0,
                 h: 28.0,
                 opacity: 0.9,
+                ..Island::default()
             }),
+            ..Perch::default()
         };
         assert_eq!(
             bar.rest(screen, 560.0, 56.0),
@@ -321,5 +408,62 @@ mod tests {
             Rect::new(220.0, 160.0, 560.0, 56.0)
         );
         assert_eq!(Perch::surface("x", None).exclusive_zone, -1);
+    }
+
+    /// A card from the bell or the status island hangs under the end of its
+    /// island, and its surface, anchored at the screen's right, reaches far
+    /// enough for both the card and the island's swell.
+    #[test]
+    fn a_card_from_the_right_hangs_under_its_island() {
+        let note = Island {
+            pid: 1,
+            top: true,
+            bar: 36.0,
+            x: 880.0,
+            y: 4.0,
+            w: 160.0,
+            h: 28.0,
+            opacity: 0.9,
+            screen: 1920.0,
+            status: Some(island::Spot {
+                x: 1700.0,
+                y: 4.0,
+                w: 168.0,
+                h: 28.0,
+            }),
+            bell: Some(island::Spot {
+                x: 1876.0,
+                y: 4.0,
+                w: 36.0,
+                h: 28.0,
+            }),
+            lit: None,
+        };
+        let status = Perch {
+            island: note.at(Which::Status),
+            from: Which::Status,
+            lit: false,
+        };
+        // Wider than the island: as far as the card goes.
+        let reach = status.reach(340.0).expect("an island");
+        assert_eq!(reach, 1920.0 - 1868.0 + 340.0);
+        let seen = status.seen_from(1920.0 - reach);
+        let surface = Rect::new(0.0, 0.0, reach, 600.0);
+        let card = seen.rest(surface, 340.0, 200.0);
+        assert_eq!((card.x, card.right(), card.y), (0.0, 340.0, 40.0));
+        // Narrower than the island: as far as its swell.
+        let bell = Perch {
+            island: note.at(Which::Bell),
+            from: Which::Bell,
+            lit: false,
+        };
+        assert_eq!(bell.reach(20.0), Some(1920.0 - 1876.0 + SWELL.0 + 1.0));
+        // The clock still hangs in the middle.
+        let clock = Perch {
+            island: Some(note),
+            ..Perch::default()
+        };
+        let screen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        assert_eq!(clock.rest(screen, 560.0, 56.0).x, 680.0);
     }
 }

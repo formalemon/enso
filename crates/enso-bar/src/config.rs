@@ -21,7 +21,7 @@ pub struct BarConfig {
     /// `strftime`-style clock format.
     pub clock: String,
     /// Open the control center (`enso-ctl`, when installed) under the status
-    /// island while the pointer rests on it.
+    /// island while the pointer rests on it. A click opens it either way.
     pub control_center: bool,
     /// With `enso-play` installed: the clock turns to sea while something plays,
     /// what's playing under it while the pointer rests there, and a click on

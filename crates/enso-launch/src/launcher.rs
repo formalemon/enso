@@ -1110,11 +1110,13 @@ mod tests {
             w: 260.0,
             h: 28.0,
             opacity: 0.9,
+            ..enso_core::island::Island::default()
         };
         let mut launcher = launcher().on(
             None,
             Perch {
                 island: Some(island),
+                ..Perch::default()
             },
         );
         let colors = launcher.ctx.theme.colors.clone();
