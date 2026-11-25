@@ -1,6 +1,10 @@
 //! The card `enso-clip pick` opens (Mod+V): what was copied, newest
 //! first, with a field to narrow it down. Enter puts the chosen one back on
 //! the clipboard, ready to paste; Delete forgets it.
+//!
+//! Like the launcher, it grows out of the bar's clock when there is a bar
+//! along the top of the screen, with nothing dimmed behind it
+//! ([`enso_ui::emerge`]).
 
 use std::{path::PathBuf, time::Instant};
 
@@ -11,6 +15,7 @@ use enso_core::{
 use enso_ui::{
     Align, App, Button, Canvas, Cx, Event, Image, Key, Nav, Paint, PointerEvent, Presence, Proxy,
     Rect, SurfaceSpec, TEXT_TYPES, Text,
+    emerge::Perch,
     widget::{TextField, field},
 };
 
@@ -61,6 +66,10 @@ pub struct Picker {
     running: bool,
     card: Rect,
     rows: Vec<Rect>,
+    /// The screen to open on: the one with the focus.
+    screen: Option<String>,
+    /// Out of the bar's clock, when there is a bar along that screen's top.
+    perch: Perch,
 }
 
 fn entry(dir: &std::path::Path, id: u64) -> Option<Entry> {
@@ -118,6 +127,11 @@ impl Picker {
                     .collect()
             })
             .unwrap_or_default();
+        Self::with(ctx, entries, ipc::is_listening(DAEMON))
+    }
+
+    /// The card over `entries`; `running` says whether the daemon is.
+    fn with(ctx: Context, entries: Vec<Entry>, running: bool) -> Self {
         let mut picker = Self {
             presence: Presence::new(&ctx.motion),
             ctx,
@@ -127,12 +141,23 @@ impl Picker {
             selected: 0,
             offset: 0,
             highlight: Tween::new(0.0),
-            running: ipc::is_listening(DAEMON),
+            running,
             card: Rect::default(),
             rows: Vec::new(),
+            screen: None,
+            perch: Perch::default(),
         };
         picker.filter();
         picker
+    }
+
+    /// Open on `screen`, out of the bar's clock there if `perch` has it.
+    #[must_use]
+    pub fn on(mut self, screen: Option<String>, perch: Perch) -> Self {
+        self.screen = screen;
+        self.presence = perch.presence(&self.ctx.motion);
+        self.perch = perch;
+        self
     }
 
     fn filter(&mut self) {
@@ -195,7 +220,7 @@ impl App for Picker {
     type Message = Message;
 
     fn surface(&self) -> SurfaceSpec {
-        SurfaceSpec::overlay(NAME)
+        Perch::surface(NAME, self.screen.clone())
     }
 
     fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
@@ -279,19 +304,13 @@ impl App for Picker {
         let size = self.ctx.config.appearance.font_size;
         let title = size * type_scale::TITLE;
         let bounds = canvas.bounds();
-        canvas.clear(colors.base.alpha(opacity::SCRIM * presence));
-
+        // Nothing behind the card: the canvas starts each frame clear.
         let width = WIDTH.min(bounds.w - 2.0 * space::LG);
-        let card = Rect::new(
-            (bounds.w - width) / 2.0,
-            (bounds.h * 0.2).round(),
-            width,
-            SEARCH_HEIGHT + self.list_height(),
-        )
-        .translate(0.0, (presence - 1.0) * space::MD);
+        let rest = self
+            .perch
+            .rest(bounds, width, SEARCH_HEIGHT + self.list_height());
+        let card = self.perch.card(canvas, rest, presence, &colors);
         self.card = card;
-        canvas.set_opacity(presence);
-        canvas.card(card, colors.surface, colors.highlight_med);
 
         let search = Rect::new(card.x, card.y, card.w, SEARCH_HEIGHT).inset_xy(space::LG, 0.0);
         let style = field::Style {
@@ -388,5 +407,87 @@ impl App for Picker {
         }
         canvas.set_opacity(1.0);
         Paint::when(self.presence.is_animating(now) || self.highlight.is_animating(now))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use enso_core::{Paths, island::Island};
+    use enso_ui::{Offscreen, TextEngine};
+
+    use super::*;
+
+    fn text(id: u64, title: &str, detail: &str) -> Entry {
+        Entry {
+            id,
+            title: title.to_owned(),
+            detail: detail.to_owned(),
+            haystack: title.to_lowercase(),
+            thumb: None,
+        }
+    }
+
+    /// The history opening out of the bar's clock, a frame at a time, to
+    /// look at: `target/snapshots/clip-emerge.png`.
+    #[test]
+    fn the_history_opens_out_of_the_bars_clock() {
+        let ctx = Context::load_from(Paths::rooted("/nonexistent/enso-clip-test"));
+        let entries = vec![
+            text(3, "cargo build --release -p enso-boot", ""),
+            text(2, "https://github.com/formalemon/enso", ""),
+            text(1, "fn main() {", "3 lines"),
+        ];
+        let island = Island {
+            pid: 1,
+            top: true,
+            bar: 36.0,
+            x: 330.0,
+            y: 4.0,
+            w: 140.0,
+            h: 28.0,
+            opacity: 0.9,
+        };
+        let perch = Perch {
+            island: Some(island),
+        };
+        let mut picker = Picker::with(ctx, entries, true).on(None, perch);
+        let colors = picker.ctx.theme.colors.clone();
+        let mut engine = TextEngine::new(&picker.ctx.config.appearance);
+        let (width, height) = (800u32, 260u32);
+        let desk = Offscreen::render(&mut engine, (width, height), 1, |canvas| {
+            canvas.clear(colors.pine.mix(colors.overlay, 0.6));
+            let clock = Rect::new(island.x, island.y, island.w, island.h);
+            canvas.pill(clock, colors.base.alpha(island.opacity));
+            let words = Text::new("16:52", 13.0, colors.text).medium();
+            canvas.text_in(&words, clock, Align::Center);
+        });
+        let start = Instant::now();
+        let moments = [0, 40, 80, 130, 200, 300, 420];
+        let mut sheet = Vec::new();
+        for ms in moments {
+            let frame = Offscreen::render(&mut engine, (width, height), 1, |canvas| {
+                picker.draw(canvas, start + Duration::from_millis(ms));
+            });
+            let mut over = desk.rgba.clone();
+            for (dst, src) in over.chunks_mut(4).zip(frame.rgba.chunks(4)) {
+                let keep = 255 - u32::from(src[3]);
+                for c in 0..4 {
+                    dst[c] = (u32::from(src[c]) + (u32::from(dst[c]) * keep + 127) / 255) as u8;
+                }
+            }
+            sheet.extend(over);
+        }
+        Offscreen {
+            width,
+            height: height * moments.len() as u32,
+            rgba: sheet,
+        }
+        .snapshot(env!("CARGO_MANIFEST_DIR"), "clip-emerge");
+        // At rest it hangs under the bar, in the middle, three rows long.
+        assert_eq!(picker.card.y, 40.0);
+        assert_eq!(picker.card.center().0, 400.0);
+        assert_eq!(picker.rows.len(), 3);
     }
 }

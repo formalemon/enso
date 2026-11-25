@@ -8,6 +8,7 @@
 //!   icons, and shapes of one's own.
 //! - [`figure`] — the suite's icons, drawn: one hand, one pen, no icon font.
 //! - [`picture`] — full-screen pictures, fitted to an output once and copied.
+//! - [`emerge`] — overlay cards growing out of the bar's clock island.
 //! - input methods (`ime`) — composing text into the focused field, the
 //!   preedit shown in it.
 //! - [`input`] — keyboard and pointer events, including the suite-wide
@@ -22,6 +23,7 @@
 
 pub mod canvas;
 pub mod clipboard;
+pub mod emerge;
 pub mod figure;
 mod fractional;
 pub mod geom;

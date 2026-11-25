@@ -682,6 +682,7 @@ dependencies = [
  "enso-fs",
  "enso-scene",
  "kbvm",
+ "niri-ipc",
  "rustix",
  "smithay-client-toolkit",
  "tiny-skia",

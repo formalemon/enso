@@ -929,10 +929,10 @@ alone, never written to the disk). It watches the clipboard through
   (`x-kde-passwordManagerHint`) isn't kept, or even looked at.
 
 `enso-clip pick` (Mod+Ctrl+V in sumi) opens the history as a card like
-the launcher's: newest first, pictures as thumbnails, a field to narrow it
-down. `Enter` puts the chosen one on the clipboard, ready to paste;
-`Delete` forgets it. `enso-clip list` prints it; `enso-clip clear`
-forgets everything.
+the launcher's, growing out of the bar's clock the same way: newest first,
+pictures as thumbnails, a field to narrow it down. `Enter` puts the chosen
+one on the clipboard, ready to paste; `Delete` forgets it. `enso-clip
+list` prints it; `enso-clip clear` forgets everything.
 
 ```kdl
 spawn-at-startup "enso-clip"

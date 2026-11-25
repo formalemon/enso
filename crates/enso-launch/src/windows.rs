@@ -45,16 +45,6 @@ fn list() -> io::Result<Vec<Window>> {
         .collect())
 }
 
-/// The screen with the focus, by name: where the launcher opens. `None`
-/// outside niri, which then puts it where it likes.
-pub fn focused_output() -> Option<String> {
-    let reply = Socket::connect().ok()?.send(Request::FocusedOutput).ok()?;
-    match reply {
-        Ok(Response::FocusedOutput(output)) => output.map(|output| output.name),
-        _ => None,
-    }
-}
-
 /// Bring a window forward: its workspace, then it.
 pub fn focus(id: u64) -> io::Result<()> {
     Socket::connect()?

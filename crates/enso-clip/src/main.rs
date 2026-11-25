@@ -44,7 +44,10 @@ fn pick() -> Result<(), String> {
     let ctx = Context::load();
     ctx.report_warnings("enso-clip");
     let appearance = ctx.config.appearance.clone();
-    enso_ui::run(picker::Picker::new(ctx), &appearance).map_err(|err| err.to_string())
+    // The screen it opens on, and the bar's clock there to open out of.
+    let (screen, perch) = enso_ui::emerge::Perch::find();
+    let picker = picker::Picker::new(ctx).on(screen, perch);
+    enso_ui::run(picker, &appearance).map_err(|err| err.to_string())
 }
 
 fn list() -> Result<(), String> {

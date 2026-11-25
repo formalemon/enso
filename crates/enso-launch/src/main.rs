@@ -137,11 +137,10 @@ fn main() -> ExitCode {
 
     let background = launcher::Background::default();
     // The screen it opens on, and the bar's clock there to open out of.
-    let screen = windows::focused_output();
-    let island = screen.as_deref().and_then(enso_core::island::find);
+    let (screen, perch) = enso_ui::emerge::Perch::find();
     let launcher = launcher::Launcher::new(ctx, config, background.clone(), listener)
         .typed(&typed)
-        .on(screen, island);
+        .on(screen, perch);
     let copied = launcher.copied();
     let result = enso_ui::run(launcher, &appearance);
 

@@ -19,6 +19,8 @@ tiny-skia.workspace = true
 cosmic-text.workspace = true
 rustix.workspace = true
 zeroize.workspace = true
+# Which screen has the focus: where an overlay card opens (emerge).
+niri-ipc.workspace = true
 enso-fs = { workspace = true, optional = true }
 
 [features]
