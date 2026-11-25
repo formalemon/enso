@@ -34,7 +34,7 @@ use enso_sys::{
     power::{Battery, BatteryStatus, Sysfs},
 };
 use enso_ui::{
-    Align, Anchor, App, Button, Canvas, Cx, Event, Layer, Paint, PointerEvent, Proxy, Rect,
+    Align, Anchor, App, Button, Canvas, Cx, Event, Layer, Paint, PointerEvent, Proxy, Rect, Shape,
     SurfaceSpec, Text, watch::watch_dir,
 };
 
@@ -979,36 +979,35 @@ impl Bar {
         canvas.pill(island, self.island_color(colors.base));
         let fill = self.water.get(now);
         let t = now.saturating_duration_since(self.epoch).as_secs_f32();
-        water::draw(
+        let sea = water::draw(
             canvas,
             island,
             fill,
             t,
             water::Look {
-                // Dusk: iris deep water, rising to a rose wave — each kept
-                // dark enough that the time reads in front of it.
-                deep: self.island_color(behind_text(
-                    colors.base.mix(colors.iris, 0.35),
-                    colors.base,
-                    colors.text,
-                )),
-                shallow: self.island_color(behind_text(
-                    colors.rose.mix(colors.base, 0.1),
-                    colors.base,
-                    colors.text,
-                )),
+                // Dusk: iris deep water, rising to a rose wave.
+                deep: self.island_color(colors.base.mix(colors.iris, 0.35)),
+                shallow: self.island_color(colors.rose.mix(colors.base, 0.1)),
                 foam: colors.rose.mix(colors.text, 0.45),
             },
         );
-        // On the sea the date can't be the quieter colour — there's no
-        // telling it from the water — so it comes up to the time's as the
-        // tide does, and the time keeps its weight.
+        // Where the water is too light for light words, they are cut dark
+        // out of it, as the battery's figures are out of its fill; on the
+        // deep water they stay light. The date can't be the quieter colour
+        // on the sea — there's no telling it from the water — so it comes
+        // up to the time's as the tide does; the time keeps its weight.
+        let dark = colors.base;
+        let mut shallows = Shape::new();
+        for (water, color) in &sea {
+            if color.legible(colors.text, dark) == dark {
+                shallows.add(water);
+            }
+        }
         let date_color = colors.subtle.mix(colors.text, fill.clamp(0.0, 1.0));
-        let inside = island.inset_xy(space::SM, 0.0);
-        canvas.with_clip(inside, |canvas| match &parts {
+        let say = |canvas: &mut Canvas<'_>, quiet: Rgba, ink: Rgba| match &parts {
             Some((date, time)) => {
-                let date = Text::new(date, size, date_color).tabular();
-                let time = Text::new(time, size, colors.text).medium().tabular();
+                let date = Text::new(date, size, quiet).tabular();
+                let time = Text::new(time, size, ink).medium().tabular();
                 let left = island.x + (island.w - words) / 2.0;
                 let d = canvas.measure(&date).w;
                 canvas.text_in(&date, Rect::new(left, island.y, d, island.h), Align::Start);
@@ -1016,8 +1015,13 @@ impl Bar {
                 canvas.text_in(&time, Rect::new(at, island.y, words - d, island.h), Align::Start);
             }
             None => {
-                canvas.text_in(&text, island, Align::Center);
+                canvas.text_in(&Text { color: ink, ..text }, island, Align::Center);
             }
+        };
+        let inside = island.inset_xy(space::SM, 0.0);
+        canvas.with_clip(inside, |canvas| {
+            canvas.with_clip_shape(&shallows, false, |canvas| say(canvas, date_color, colors.text));
+            canvas.with_clip_shape(&shallows, true, |canvas| say(canvas, dark, dark));
         });
         moving
     }
@@ -1551,15 +1555,6 @@ impl App for Bar {
         self.note_islands(canvas.bounds().w);
         Paint::when(animating || reflowing || glowing)
     }
-}
-
-/// `color`, mixed towards `ground` as far as it takes for `text` to read in
-/// front of it (4.5 : 1, as body text wants), and no further.
-fn behind_text(color: Rgba, ground: Rgba, text: Rgba) -> Rgba {
-    (0..=10)
-        .map(|step| color.mix(ground, step as f32 / 10.0))
-        .find(|candidate| text.contrast(*candidate) >= 4.5)
-        .unwrap_or(ground)
 }
 
 #[cfg(test)]

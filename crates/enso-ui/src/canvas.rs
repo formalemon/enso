@@ -39,8 +39,8 @@ pub struct Canvas<'a> {
     text_input: Option<Rect>,
 }
 
-/// A clip rectangle: as a mask for shapes, and as physical pixel bounds
-/// (`x0, y0, x1, y1`, end-exclusive) for text.
+/// A clip: a mask that shapes and text are drawn through, and the physical
+/// pixel bounds (`x0, y0, x1, y1`, end-exclusive) it lies within.
 struct Clip {
     mask: Mask,
     bounds: (i32, i32, i32, i32),
@@ -176,6 +176,39 @@ impl<'a> Canvas<'a> {
     pub fn with_clip(&mut self, rect: Rect, draw: impl FnOnce(&mut Self)) {
         let previous = self.clip.take();
         self.set_clip(Some(rect));
+        draw(self);
+        self.clip = previous;
+    }
+
+    /// Run `draw` confined to `shape` — or, with `inside` false, to all but
+    /// it — within whatever limit there already is, then restore that
+    /// limit. Its edge is soft, so what is split along it is split cleanly:
+    /// words drawn once on each side in two colours read as one.
+    pub fn with_clip_shape(&mut self, shape: &Shape, inside: bool, draw: impl FnOnce(&mut Self)) {
+        let Some(path) = shape.path() else {
+            // Nothing: inside it is nowhere, outside it everywhere.
+            if !inside {
+                draw(self);
+            }
+            return;
+        };
+        let Some(mut mask) = Mask::new(self.width, self.height) else {
+            return;
+        };
+        mask.fill_path(&path, FillRule::Winding, true, self.transform());
+        if !inside {
+            mask.invert();
+        }
+        let bounds = match &self.clip {
+            Some(clip) => {
+                for (cover, limit) in mask.data_mut().iter_mut().zip(clip.mask.data()) {
+                    *cover = (u16::from(*cover) * u16::from(*limit) / 255) as u8;
+                }
+                clip.bounds
+            }
+            None => (0, 0, self.width as i32, self.height as i32),
+        };
+        let previous = self.clip.replace(Clip { mask, bounds });
         draw(self);
         self.clip = previous;
     }
@@ -408,6 +441,9 @@ impl<'a> Canvas<'a> {
             .clip
             .as_ref()
             .map_or((0, 0, width, self.height as i32), |clip| clip.bounds);
+        // Within the bounds, as much as the clip lets through: all of it for
+        // a rectangle, a soft edge for a shape.
+        let cover = self.clip.as_ref().map(|clip| clip.mask.data());
         let (bgra, opacity) = (self.bgra, self.opacity);
         let pixels = &mut *self.pixels;
         self.text
@@ -415,10 +451,15 @@ impl<'a> Canvas<'a> {
                 if px < x0 || py < y0 || px >= x1 || py >= y1 {
                     return;
                 }
-                let i = (py as usize * width as usize + px as usize) * 4;
+                let at = py as usize * width as usize + px as usize;
+                let through = cover.map_or(1.0, |cover| f32::from(cover[at]) / 255.0);
+                if through <= 0.0 {
+                    return;
+                }
+                let i = at * 4;
                 blend(
                     &mut pixels[i..i + 4],
-                    premultiply(color.alpha(opacity), bgra),
+                    premultiply(color.alpha(opacity * through), bgra),
                 );
             })
     }
@@ -878,6 +919,14 @@ pub struct Shape {
 impl Shape {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Take in `other`'s pieces too: filled, the two together.
+    pub fn add(&mut self, other: &Shape) -> &mut Self {
+        if let Some(path) = other.path() {
+            self.builder.push_path(&path);
+        }
+        self
     }
 
     /// Begin a new piece of the figure at `(x, y)`.
@@ -1343,6 +1392,61 @@ mod snapshot {
             assert_eq!(marked.pixel(0, 0), [255, 0, 255, 255]);
             assert_eq!(marked.pixel(10, 0), [33, 33, 33, 33]);
         }
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+    use crate::{Offscreen, TextEngine};
+
+    /// A shape clip keeps shapes and text to one side of it, softly, and
+    /// within any rectangle there already was.
+    #[test]
+    fn shapes_and_text_keep_to_a_shape() {
+        let mut text = TextEngine::new(&enso_core::Config::default().appearance);
+        let red = Rgba::rgb(255, 0, 0);
+        let mut left = Shape::new();
+        left.move_to(0.0, 0.0)
+            .line_to(50.0, 0.0)
+            .line_to(50.0, 40.0)
+            .line_to(0.0, 40.0)
+            .close();
+        let frame = Offscreen::render(&mut text, (100, 40), 1, |canvas| {
+            canvas.with_clip(Rect::new(0.0, 0.0, 100.0, 20.0), |canvas| {
+                canvas.with_clip_shape(&left, true, |canvas| {
+                    canvas.fill(Rect::new(0.0, 0.0, 100.0, 40.0), 0.0, red);
+                });
+                canvas.with_clip_shape(&left, false, |canvas| {
+                    let words = Text::new("WWWWWWWWWWWWWWW", 16.0, red);
+                    canvas.text(&words, 0.0, 0.0);
+                });
+            });
+        });
+        let is_red = |x: u32, y: u32| frame.pixel(x, y)[0] > 200 && frame.pixel(x, y)[1] < 60;
+        assert!(is_red(10, 10), "inside the shape and the rectangle");
+        assert!(!is_red(10, 30), "below the rectangle");
+        // Right of the shape, only text, and only above the rectangle's edge.
+        assert!((50..100).any(|x| (0..20).any(|y| frame.pixel(x, y)[3] > 0)));
+        assert!((50..100).all(|x| (20..40).all(|y| frame.pixel(x, y)[3] == 0)));
+        // An empty shape: inside it nothing, outside it everything.
+        let empty = Shape::new();
+        let frame = Offscreen::render(&mut text, (10, 10), 1, |canvas| {
+            canvas.with_clip_shape(&empty, true, |canvas| {
+                canvas.fill(Rect::new(0.0, 0.0, 10.0, 10.0), 0.0, red);
+            });
+        });
+        assert!(!is_red_at(&frame, 5, 5));
+        let frame = Offscreen::render(&mut text, (10, 10), 1, |canvas| {
+            canvas.with_clip_shape(&empty, false, |canvas| {
+                canvas.fill(Rect::new(0.0, 0.0, 10.0, 10.0), 0.0, red);
+            });
+        });
+        assert!(is_red_at(&frame, 5, 5));
+    }
+
+    fn is_red_at(frame: &Offscreen, x: u32, y: u32) -> bool {
+        frame.pixel(x, y)[0] > 200 && frame.pixel(x, y)[1] < 60
     }
 }
 

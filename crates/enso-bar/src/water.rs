@@ -2,7 +2,7 @@
 //! to deep water, with three waves rolling across it at their own speeds —
 //! the far ones darker and slower, the nearest lightest. It rises like a
 //! tide as playing starts and ebbs away when it stops; the time stays in
-//! front of it.
+//! front of it, cut dark out of whatever water is too light for it.
 //!
 //! Every so often a set rolls in: a swell sweeps across from the left,
 //! lifting the far waves first and the nearest highest a moment after, with
@@ -138,19 +138,32 @@ fn under(pill: Rect, top: impl Fn(f32) -> f32) -> Shape {
 }
 
 /// Draw the sea into `pill`, the tide `fill` of the way in, at time `t`.
-pub fn draw(canvas: &mut Canvas<'_>, pill: Rect, fill: f32, t: f32, look: Look) {
+/// Returns the water laid down, deepest first, each with its colour: what
+/// is in front of it can read what lies behind it where.
+pub fn draw(
+    canvas: &mut Canvas<'_>,
+    pill: Rect,
+    fill: f32,
+    t: f32,
+    look: Look,
+) -> Vec<(Shape, Rgba)> {
     if fill <= 0.0 || pill.w <= 0.0 || pill.h <= 0.0 {
-        return;
+        return Vec::new();
     }
+    let mut laid = Vec::with_capacity(WAVES.len() + 1);
     // The deep water, rising with the tide like the waves.
     let deep = |x: f32| pill.h * (1.0 - fill) + extent(x, pill.w, pill.h).0 * fill;
-    canvas.fill_shape(&under(pill, deep), look.deep);
+    let water = under(pill, deep);
+    canvas.fill_shape(&water, look.deep);
+    laid.push((water, look.deep));
     let front = WAVES.len() - 1;
     for i in 0..WAVES.len() {
         let near = (i + 1) as f32 / WAVES.len() as f32;
         let color = look.deep.mix(look.shallow, near);
         let top = |x: f32| surface(i, x, t, pill.w, pill.h, fill);
-        canvas.fill_shape(&under(pill, top), color);
+        let wave = under(pill, top);
+        canvas.fill_shape(&wave, color);
+        laid.push((wave, color));
     }
     // Foam along the nearest wave where a set lifts it, and only well inside
     // the pill's round ends.
@@ -180,6 +193,7 @@ pub fn draw(canvas: &mut Canvas<'_>, pill: Rect, fill: f32, t: f32, look: Look) 
         let peak = (PI * (lag.rem_euclid(SET_EVERY) / SET_FOR).min(1.0)).sin();
         canvas.stroke_shape(&foam, 1.2, look.foam.alpha(0.6 * peak * fill));
     }
+    laid
 }
 
 #[cfg(test)]

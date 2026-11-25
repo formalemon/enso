@@ -330,9 +330,11 @@ The clock in the middle knows **what's playing**. While anything plays its
 pill turns to sea at dusk — the theme's iris in the deep water, rising
 through three waves rolling across it at their own speeds to a rose one in
 front — like a tide as playing starts, ebbing when it stops, with the time
-in front of it all along. The water is only ever as light as lets the
-words read on it, and while it's in, the date comes up to the time's
-colour: a quieter colour can't be told from the sea. Every twenty seconds or so a set rolls in: a
+in front of it all along: where the water is too light for light words
+they are cut dark out of it, as the battery's figures are out of its fill,
+so the date and time sit half in the sea as the waves pass through them.
+While it's in, the date comes up to the time's colour: a quieter colour
+can't be told from the sea. Every twenty seconds or so a set rolls in: a
 swell sweeps across from the left, lifting the far waves first and the
 nearest highest, a line of foam along its crest. The sea moves thirty times a second, not every frame: about one percent of a core
 while it plays, nothing at rest. Rest the pointer on the clock and `enso-play` hangs a card

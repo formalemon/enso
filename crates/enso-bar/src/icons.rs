@@ -191,7 +191,7 @@ impl Battery {
     /// A touch taller than the other icons: it holds figures, and figures
     /// want room to be read.
     fn height(self) -> f32 {
-        (self.scale.icon() * 1.15).round()
+        (self.scale.icon() * 1.08).round()
     }
 
     /// Everything inside the pill is a share of its height, so it keeps its
@@ -219,7 +219,7 @@ impl Battery {
     /// The figures' size: as much of the pill as leaves them clear of its
     /// edges.
     pub fn figures(self) -> f32 {
-        self.part(0.8)
+        self.part(0.72)
     }
 
     /// The whole width, cap included, for figures this wide.
