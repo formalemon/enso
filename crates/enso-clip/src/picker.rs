@@ -10,7 +10,7 @@ use std::{path::PathBuf, time::Instant};
 
 use enso_core::{
     Context, Transition, Tween, ipc,
-    style::{opacity, radius, space, stroke, type_scale},
+    style::{opacity, radius, search, space, stroke, type_scale},
 };
 use enso_ui::{
     Align, App, Button, Canvas, Cx, Event, Image, Key, Nav, Paint, PointerEvent, Presence, Proxy,
@@ -27,11 +27,12 @@ use crate::{
 /// The name the card listens under, so a second Mod+V closes it.
 pub const NAME: &str = "enso-clip-pick";
 
-const WIDTH: f32 = 560.0;
-const SEARCH_HEIGHT: f32 = 56.0;
-const ROW_HEIGHT: f32 = 48.0;
+// The launcher's measures: the same card.
+const WIDTH: f32 = search::WIDTH;
+const SEARCH_HEIGHT: f32 = search::FIELD;
+const ROW_HEIGHT: f32 = search::ROW;
 const ROWS: usize = 8;
-const THUMB: f32 = 32.0;
+const THUMB: f32 = search::CHIP;
 
 #[derive(Debug)]
 pub enum Message {

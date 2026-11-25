@@ -8,7 +8,7 @@
 
 use std::{collections::HashMap, path::PathBuf, time::Instant};
 
-use enso_core::style::{icon, opacity, radius, space, type_scale};
+use enso_core::style::{icon, opacity, radius, space, stroke, type_scale};
 use enso_fs::thumbs::{Size, Thumb};
 use enso_ui::{Align, Canvas, Image, Rect, Text};
 
@@ -140,7 +140,7 @@ impl Files {
                 let entry = *self.pane.entry(index);
                 let selected = self.selection.contains(&path);
                 if cursor == Some(index) && self.behind {
-                    canvas.stroke(tile, radius::CARD, 1.0, colors.highlight_high);
+                    canvas.stroke(tile, radius::CARD, stroke::HAIRLINE, colors.highlight_high);
                 } else if cursor == Some(index) {
                     canvas.fill(tile, radius::CARD, accent.alpha(opacity::TINT));
                     canvas.stroke(tile, radius::CARD, 1.5, accent.alpha(0.6));

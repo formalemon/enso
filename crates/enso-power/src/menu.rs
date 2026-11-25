@@ -1,4 +1,6 @@
-//! The power menu overlay: a short row of choices, one keypress each.
+//! The power menu overlay: a short row of choices, one keypress each. Like
+//! the launcher, nothing is dimmed behind it, and it grows out of the
+//! bar's clock where there is a bar along the top ([`enso_ui::emerge`]).
 //!
 //! The key for each is a letter of its own name, marked in the name itself
 //! in the choice's colour: the L of Lock, the o of Log out. Landing on a
@@ -19,6 +21,7 @@ use enso_core::{
 use enso_ui::{
     Align, App, Button, Canvas, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent, Presence,
     Proxy, Rect, SurfaceSpec, Text,
+    emerge::Perch,
 };
 use serde::Deserialize;
 
@@ -110,6 +113,10 @@ pub struct Menu {
     /// Geometry from the last frame, for hit-testing.
     card: Rect,
     tiles: Vec<Rect>,
+    /// The screen to open on: the one with the focus.
+    screen: Option<String>,
+    /// Out of the bar's clock, when there is a bar along that screen's top.
+    perch: Perch,
 }
 
 impl Menu {
@@ -149,7 +156,18 @@ impl Menu {
             caption: Tween::new(0.0),
             card: Rect::default(),
             tiles: Vec::new(),
+            screen: None,
+            perch: Perch::default(),
         }
+    }
+
+    /// Open on `screen`, out of the bar's clock there if `perch` has it.
+    #[must_use]
+    pub fn on(mut self, screen: Option<String>, perch: Perch) -> Self {
+        self.screen = screen;
+        self.presence = perch.presence(&self.ctx.motion);
+        self.perch = perch;
+        self
     }
 
     fn actions(&self) -> &[Action] {
@@ -292,7 +310,7 @@ impl App for Menu {
     type Message = Message;
 
     fn surface(&self) -> SurfaceSpec {
-        SurfaceSpec::overlay("enso-power")
+        Perch::surface("enso-power", self.screen.clone())
     }
 
     fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
@@ -333,22 +351,18 @@ impl App for Menu {
         let base_size = self.ctx.config.appearance.font_size;
         let bounds = canvas.bounds();
 
-        // Dim what is behind so the card is the only thing asking for attention.
-        canvas.clear(colors.base.alpha(opacity::SCRIM * presence));
-
+        // Nothing dimmed behind it: like the launcher, a card summoned for a
+        // moment, out of the bar's clock where there is a bar.
         let count = self.actions().len() as f32;
         let caption_height = self.caption.get(now);
         let row_width = count * TILE_WIDTH + (count - 1.0) * space::SM;
-        let card = bounds
-            .centered(
-                row_width + 2.0 * space::LG,
-                TILE_HEIGHT + 2.0 * space::LG + caption_height,
-            )
-            .translate(0.0, (presence - 1.0) * space::MD);
+        let rest = self.perch.rest(
+            bounds,
+            row_width + 2.0 * space::LG,
+            TILE_HEIGHT + 2.0 * space::LG + caption_height,
+        );
+        let card = self.perch.card(canvas, rest, presence, &colors);
         self.card = card;
-
-        canvas.set_opacity(presence);
-        canvas.card(card, colors.surface, colors.highlight_med);
 
         let tile = |index: f32| {
             Rect::new(

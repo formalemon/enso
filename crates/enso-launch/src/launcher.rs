@@ -20,7 +20,7 @@ use std::{
 
 use enso_core::{
     Context, Icon, Role, Transition, Tween,
-    style::{icon, opacity, radius, space, stroke, type_scale},
+    style::{icon, opacity, radius, search, space, stroke, type_scale},
 };
 use enso_ui::{
     Align, App as UiApp, Button, Canvas, Clip, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent,
@@ -69,7 +69,7 @@ pub struct LaunchConfig {
 impl Default for LaunchConfig {
     fn default() -> Self {
         Self {
-            width: 560,
+            width: search::WIDTH as u32,
             max_results: 8,
             files: true,
             file_roots: vec!["~".to_owned(), "~/.config".to_owned()],
@@ -91,9 +91,10 @@ impl LaunchConfig {
     }
 }
 
-const SEARCH_HEIGHT: f32 = 56.0;
-const ROW_HEIGHT: f32 = 44.0;
-const CHIP: f32 = 28.0;
+// The search card's measures, shared with the clipboard history.
+const SEARCH_HEIGHT: f32 = search::FIELD;
+const ROW_HEIGHT: f32 = search::ROW;
+const CHIP: f32 = search::CHIP;
 /// File name of the application index inside the cache directory.
 const INDEX: &str = "apps";
 /// File name of the file index inside the cache directory.

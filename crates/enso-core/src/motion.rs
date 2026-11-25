@@ -83,6 +83,14 @@ impl Transition {
     pub const REVEAL: Self = Self::new(220, Easing::OutQuint);
     /// Panels, cards, and toasts leaving.
     pub const DISMISS: Self = Self::new(250, Easing::InOutCubic);
+    /// A card growing out of the bar's clock island: the island swells, the
+    /// card slides out from under it, drops, spreads and settles. Linear,
+    /// because it runs in stages, each with its own easing (enso-ui's
+    /// `emerge`); longer than a reveal, being several moves in one.
+    pub const EMERGE: Self = Self::new(420, Easing::Linear);
+    /// The same card going back into the island: the stages in reverse,
+    /// quicker.
+    pub const RETURN: Self = Self::new(300, Easing::Linear);
     /// The whole screen changing: one wallpaper giving way to another. Longer
     /// than interface motion, because it is scenery rather than an answer.
     pub const SCENE: Self = Self::new(420, Easing::InOutCubic);

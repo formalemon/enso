@@ -644,7 +644,8 @@ pixels at all — about 5 MB — and wakes for nothing but a theme, a wallpaper,
 or a monitor changing.
 
 **`enso-power`** — a row of five: Lock, Sleep, Log out, Restart, Shut down.
-Each has a key, a letter of its own name marked there in the choice's colour
+Like the launcher it opens out of the bar's clock, nothing dimmed behind
+it. Each has a key, a letter of its own name marked there in the choice's colour
 — the **L** of Lock, the **p** of Slee*p* (the S being Shut down's), the **o**
 of Log *o*ut, the **R** of Restart, the **S** of Shut down — so leaving is the
 binding that opens the menu and one letter. Landing
@@ -1170,12 +1171,26 @@ All of it lives in `enso-core` as tokens, so tools never hard-code a look:
 - `style` — radii (14 px cards, 12 px panels, pills), spacing scale, type
   scale, shadows, and the icon vocabulary.
 - `motion` — easing curves, named transitions (`SELECT` 180 ms, `TOGGLE`
-  200 ms, `REVEAL` 220 ms, `DISMISS` 250 ms, and `SCENE` 420 ms for a
-  whole screen changing), and `Tween`, a value that glides
-  to each new target and retargets smoothly mid-flight.
+  200 ms, `REVEAL` 220 ms, `DISMISS` 250 ms, `EMERGE` 420 ms out of the
+  bar and `RETURN` 300 ms back in, and `SCENE` 420 ms for a whole screen
+  changing), and `Tween`, a value that glides to each new target and
+  retargets smoothly mid-flight.
 - `input` (in `enso-ui`) — the shared navigation keys: arrows,
   `Ctrl+n`/`Ctrl+p`, and `j`/`k` where no text field has focus. Overlays
   focus on open and dismiss on `Esc` or a click outside.
+
+How things arrive, everywhere:
+
+- **What you summon with a key** to pick something — the launcher, the
+  clipboard history, the power menu — dims nothing, and grows out of the
+  bar's clock when there is a bar along the top of the screen (`emerge` in
+  `enso-ui`); without one it settles a fifth of the way down.
+- **What hangs from an island** — the control center, the month, what's
+  playing — drops from that island, away from the bar's edge.
+- **What asks and waits for an answer** — a password for the system, the
+  keyring, a program's own dialog — dims what is behind and sits in the
+  middle: it has interrupted you, and says so.
+- Every card settles *down* into place, a few pixels, as it fades in.
 
 ## Development
 

@@ -17,10 +17,6 @@ use niri_ipc::{Request, Response, socket::Socket};
 
 use crate::{Canvas, Presence, Rect, Shape, SurfaceSpec};
 
-/// How long a card takes to grow out of the bar's clock, and to go back
-/// into it. Linear: [`Emergence`] shapes each part of the way.
-pub const EMERGE: Transition = Transition::new(420, Easing::Linear);
-pub const RETURN: Transition = Transition::new(300, Easing::Linear);
 /// How much the clock island swells as the card leaves it, either side
 /// and above and below.
 const SWELL: (f32, f32) = (7.0, 3.0);
@@ -59,7 +55,7 @@ impl Perch {
     /// the usual reveal.
     pub fn presence(&self, motion: &Motion) -> Presence {
         match self.island {
-            Some(_) => Presence::with(motion, EMERGE, RETURN),
+            Some(_) => Presence::with(motion, Transition::EMERGE, Transition::RETURN),
             None => Presence::new(motion),
         }
     }

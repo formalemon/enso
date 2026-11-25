@@ -295,7 +295,8 @@ impl Toggle {
 }
 
 /// Draw a dialog: the window dimmed, and a card of `width × height` in the
-/// middle of `bounds`, sliding up a little as `presence` goes `0 → 1`.
+/// middle of `bounds`, settling down a little into place as `presence`
+/// goes `0 → 1`, as every card does.
 /// Returns the card's inside, padded.
 pub fn dialog(
     canvas: &mut Canvas<'_>,
@@ -310,7 +311,7 @@ pub fn dialog(
     let height = height.min(bounds.h - 2.0 * space::LG);
     let card = bounds
         .centered(width, height)
-        .translate(0.0, (1.0 - presence) * space::MD);
+        .translate(0.0, (presence - 1.0) * space::MD);
     canvas.with_opacity(presence, |canvas| {
         canvas.card(card, look.surface, look.highlight_med);
     });

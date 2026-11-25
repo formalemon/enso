@@ -65,6 +65,16 @@ pub mod stroke {
     pub const FOCUS: f32 = 2.0;
 }
 
+/// The search cards — the launcher, the clipboard history: a field on top,
+/// rows under it, each row starting with a square chip (a letter, an icon,
+/// a picture).
+pub mod search {
+    pub const WIDTH: f32 = 560.0;
+    pub const FIELD: f32 = 56.0;
+    pub const ROW: f32 = 44.0;
+    pub const CHIP: f32 = 28.0;
+}
+
 /// Opacity levels for tints and scrims.
 pub mod opacity {
     /// Backdrop behind modal overlays.

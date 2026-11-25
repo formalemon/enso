@@ -96,7 +96,10 @@ fn main() -> ExitCode {
     let listening = listener.is_some();
 
     let appearance = ctx.config.appearance.clone();
-    let result = enso_ui::run(menu::Menu::new(ctx, config, listener), &appearance);
+    // The screen it opens on, and the bar's clock there to open out of.
+    let (screen, perch) = enso_ui::emerge::Perch::find();
+    let menu = menu::Menu::new(ctx, config, listener).on(screen, perch);
+    let result = enso_ui::run(menu, &appearance);
     if let (true, Some(path)) = (listening, &socket) {
         let _ = fs::remove_file(path);
     }
