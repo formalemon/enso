@@ -158,16 +158,19 @@ pub fn ring(t: f32) -> f32 {
     0.32 * (t * 3.0 * 2.0 * PI).sin() * (1.0 - t).powi(2)
 }
 
-/// How the battery is drawn: its charge, whether it is on power, and the
-/// colour of its fill.
+/// How the battery reads: its charge, whether it is on power, and the
+/// colour of its figures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Charge {
     pub percent: u8,
     pub plugged: bool,
-    pub fill: Rgba,
+    /// The figures' colour: the text's, gold as it runs low, love when it
+    /// is nearly out.
+    pub ink: Rgba,
 }
 
-/// The battery pill's sizes, at a scale.
+/// The battery's sizes, at a scale: its percentage in words, and a small
+/// bolt before it while it is on power.
 #[derive(Clone, Copy, Debug)]
 pub struct Battery {
     scale: Scale,
@@ -188,142 +191,55 @@ impl Battery {
         Self { scale }
     }
 
-    /// A touch taller than the other icons: it holds figures, and figures
-    /// want room to be read.
-    fn height(self) -> f32 {
-        (self.scale.icon() * 1.08).round()
-    }
-
-    /// Everything inside the pill is a share of its height, so it keeps its
-    /// proportions at any size.
-    fn part(self, share: f32) -> f32 {
-        self.height() * share
-    }
-
-    fn pad(self) -> f32 {
-        self.part(0.36)
-    }
-
-    /// The terminal cap after the pill: width, height, and the gap before it.
-    /// Whole pixels, so that everything after the battery stays on them.
-    fn nub(self) -> (f32, f32, f32) {
-        let whole = |share: f32| self.part(share).round().max(1.0);
-        (whole(0.13), whole(0.4), whole(0.13))
-    }
-
-    /// The charging bolt's size, and the space between it and the figures.
+    /// The bolt's width and height — as tall as a figure — and the space
+    /// between it and the figures.
     fn bolt(self) -> (f32, f32, f32) {
-        (self.part(0.38), self.part(0.62), self.part(0.13))
+        let h = (self.scale.icon() * 0.78).round();
+        (h * 0.62, h, (self.scale.icon() * 0.22).round())
     }
 
-    /// The figures' size: as much of the pill as leaves them clear of its
-    /// edges.
+    /// The figures' size: the clock's, on a bar of the usual height, and
+    /// growing with the bar as the icons do.
     pub fn figures(self) -> f32 {
-        self.part(0.72)
+        self.scale.icon() * 0.86
     }
 
-    /// The whole width, cap included, for figures this wide.
-    pub fn width(self, figures: f32, plugged: bool) -> f32 {
-        let (bolt, _, bolt_gap) = self.bolt();
-        let bolt = if plugged { bolt + bolt_gap } else { 0.0 };
-        let (nub, _, nub_gap) = self.nub();
-        (figures + bolt + 2.0 * self.pad())
-            .max(self.part(1.9))
-            .round()
-            + nub
-            + nub_gap
+    /// The whole width, for words this wide.
+    pub fn width(self, words: f32, plugged: bool) -> f32 {
+        let (bolt, _, gap) = self.bolt();
+        let bolt = if plugged { bolt + gap } else { 0.0 };
+        (bolt + words).ceil()
     }
 
-    /// Draw it in `slot` (as wide as [`width`](Self::width) said): a pill on
-    /// a quiet track, filled from the left to its charge and cut off
-    /// straight, with the bolt (on power) and the figures centred in it.
-    /// Figures and bolt are drawn twice, each time confined to one side of
-    /// the fill's edge — cut out of the fill, and over the track in what
-    /// reads on it — so a figure the edge runs through is split cleanly.
-    /// While it charges, `shine` (`0..1`) is a light running
-    /// along the charge.
-    #[allow(clippy::too_many_arguments)]
+    /// Draw it in `slot`: the bolt (on power) in foam, the figures in their
+    /// colour, and the percent sign a step quieter, as a unit is.
     pub fn draw(
         self,
         canvas: &mut Canvas<'_>,
         slot: Rect,
         charge: Charge,
-        label: &Text<'_>,
+        figures: &Text<'_>,
         glow: f32,
-        shine: Option<f32>,
         colors: &Palette,
     ) {
-        let (nub_w, nub_h, nub_gap) = self.nub();
-        let height = self.height();
-        let pill = Rect::new(
-            slot.x,
-            slot.y + ((slot.h - height) / 2.0).round(),
-            slot.w - nub_w - nub_gap,
-            height,
-        );
-        let track = colors.highlight_med;
-        canvas.pill(pill, track);
-        canvas.fill(
-            Rect::new(
-                pill.right() + nub_gap,
-                pill.y + (pill.h - nub_h) / 2.0,
-                nub_w,
-                nub_h,
-            ),
-            nub_w / 2.0,
-            track,
-        );
-
-        let level = pill.w * f32::from(charge.percent.min(100)) / 100.0;
-        let filled = Rect::new(pill.x, pill.y, level, pill.h);
-        let empty = Rect::new(pill.x + level, pill.y, pill.w - level, pill.h);
-        let fill = charge.fill.mix(colors.text, glow * 0.25);
-        canvas.with_clip(filled, |canvas| canvas.pill(pill, fill));
-        // While it charges, now and then a light runs along the charge:
-        // a soft band, brightest in its middle, crossing from left to right.
-        if let Some(shine) = shine {
-            let band = pill.h * 1.8;
-            let x = filled.x - band + shine * (filled.w + band);
-            canvas.with_clip(filled, |canvas| {
-                for step in 0..6 {
-                    let wide = band * (1.0 - step as f32 / 6.0);
-                    let rect = Rect::new(x + (band - wide) / 2.0, pill.y, wide, pill.h);
-                    canvas.fill(rect, 0.0, colors.text.alpha(0.07));
-                }
-            });
+        let (bolt_w, bolt_h, gap) = self.bolt();
+        let (_, middle) = slot.center();
+        let mut x = slot.x;
+        if charge.plugged {
+            let y = (middle - bolt_h / 2.0).round();
+            let shape = BOLT_SHAPE.map(|(u, v)| (x + u * bolt_w, y + v * bolt_h));
+            canvas.polygon(&shape, colors.foam.mix(colors.text, glow * 0.25));
+            x += bolt_w + gap;
         }
-
-        let figures = canvas.measure(label).w;
-        let (bolt_w, bolt_h, bolt_gap) = self.bolt();
-        let bolt = if charge.plugged {
-            bolt_w + bolt_gap
-        } else {
-            0.0
+        let number = Text {
+            color: charge.ink.mix(colors.text, glow * 0.5),
+            ..*figures
         };
-        let start = pill.x + (pill.w - figures - bolt) / 2.0;
-        let (_, middle) = pill.center();
-        // Each side in whichever of the ground's colour and the text's reads
-        // better on it, so no fill or track (or palette) hides the figures.
-        let cut = fill.legible(colors.base, colors.text);
-        let over = track.legible(colors.text, colors.base);
-        for (side, ink) in [(filled, cut), (empty, over)] {
-            canvas.with_clip(side, |canvas| {
-                if charge.plugged {
-                    let (x, y) = (start, middle - bolt_h / 2.0);
-                    let shape = BOLT_SHAPE.map(|(u, v)| (x + u * bolt_w, y + v * bolt_h));
-                    canvas.polygon(&shape, ink);
-                }
-                let text = Text {
-                    color: ink,
-                    ..*label
-                };
-                canvas.text_in(
-                    &text,
-                    Rect::new(start + bolt, pill.y, figures + 1.0, pill.h),
-                    Align::Start,
-                );
-            });
-        }
+        let room = Rect::new(x, slot.y, slot.right() - x, slot.h);
+        let said = canvas.text_in(&number, room, Align::Start);
+        let sign = Text::new("%", figures.size, colors.subtle.mix(colors.text, glow * 0.5));
+        let at = x + said.w;
+        canvas.text_in(&sign, Rect::new(at, slot.y, slot.right() - at, slot.h), Align::Start);
     }
 }
 

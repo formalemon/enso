@@ -31,10 +31,10 @@ use enso_core::{
 };
 use enso_sys::{
     net::{self, Link},
-    power::{Battery, BatteryStatus, Sysfs},
+    power::{Battery, Sysfs},
 };
 use enso_ui::{
-    Align, Anchor, App, Button, Canvas, Cx, Event, Layer, Paint, PointerEvent, Proxy, Rect, Shape,
+    Align, Anchor, App, Button, Canvas, Cx, Event, Layer, Paint, PointerEvent, Proxy, Rect,
     SurfaceSpec, Text, watch::watch_dir,
 };
 
@@ -102,11 +102,6 @@ const MAX_TITLE: f32 = 420.0;
 /// How often the steam over the cup moves on while the machine is kept
 /// awake: slow wisps need no more.
 const STEAM_TICK: Duration = Duration::from_millis(50);
-/// While the battery charges, a light runs along its charge for `SHINE`
-/// seconds, once every `SHINE_EVERY`, a frame each `SHINE_TICK`.
-const SHINE: f32 = 1.4;
-const SHINE_EVERY: f32 = 4.5;
-const SHINE_TICK: Duration = Duration::from_millis(33);
 
 /// How long the bell rings when something new arrives.
 const RING: Duration = Duration::from_millis(900);
@@ -569,48 +564,15 @@ impl Bar {
         }
     }
 
+    /// When the small motions next move on: the steam over the cup while
+    /// the machine is kept awake. Nothing, when nothing moves.
+    fn ambient_next(&self, now: Instant) -> Option<Instant> {
+        (self.ctx.motion.is_enabled() && self.status_items().contains(&Item::Awake))
+            .then(|| now + STEAM_TICK)
+    }
+
     /// Whether the water is moving: filling, draining, or rippling while it
     /// plays (and still, when motion is turned down).
-    /// Whether the battery is filling.
-    fn charging(&self) -> bool {
-        self.battery
-            .as_ref()
-            .is_some_and(|battery| battery.status == BatteryStatus::Charging)
-    }
-
-    /// How far the light has run along the charging battery (`0..1`), while
-    /// it runs.
-    fn shine_at(&self, now: Instant) -> Option<f32> {
-        if !self.charging() || !self.ctx.motion.is_enabled() {
-            return None;
-        }
-        let t = now.saturating_duration_since(self.epoch).as_secs_f32();
-        let into = t % SHINE_EVERY;
-        (into < SHINE).then_some(into / SHINE)
-    }
-
-    /// When the small motions next move on: the steam over the cup while
-    /// the machine is kept awake, the light along the battery while it
-    /// charges. Nothing, when nothing moves.
-    fn ambient_next(&self, now: Instant) -> Option<Instant> {
-        if !self.ctx.motion.is_enabled() {
-            return None;
-        }
-        if self.status_items().contains(&Item::Awake) {
-            return Some(now + STEAM_TICK);
-        }
-        if self.charging() {
-            let t = now.saturating_duration_since(self.epoch).as_secs_f32();
-            let into = t % SHINE_EVERY;
-            return Some(if into < SHINE {
-                now + SHINE_TICK
-            } else {
-                now + Duration::from_secs_f32(SHINE_EVERY - into)
-            });
-        }
-        None
-    }
-
     fn water_moving(&self, now: Instant) -> bool {
         self.water.is_animating(now) || (self.water.target() > 0.0 && self.ctx.motion.is_enabled())
     }
@@ -979,35 +941,25 @@ impl Bar {
         canvas.pill(island, self.island_color(colors.base));
         let fill = self.water.get(now);
         let t = now.saturating_duration_since(self.epoch).as_secs_f32();
-        let sea = water::draw(
+        // Dusk: a sea along the foot of the pill, under the words — iris far
+        // out, rising to a rose wave in front. The words keep the island's
+        // own ground, and their own colours.
+        water::draw(
             canvas,
             island,
             fill,
             t,
             water::Look {
-                // Dusk: iris deep water, rising to a rose wave.
-                deep: self.island_color(colors.base.mix(colors.iris, 0.35)),
+                deep: self.island_color(colors.base.mix(colors.iris, 0.5)),
                 shallow: self.island_color(colors.rose.mix(colors.base, 0.1)),
                 foam: colors.rose.mix(colors.text, 0.45),
             },
         );
-        // Where the water is too light for light words, they are cut dark
-        // out of it, as the battery's figures are out of its fill; on the
-        // deep water they stay light. The date can't be the quieter colour
-        // on the sea — there's no telling it from the water — so it comes
-        // up to the time's as the tide does; the time keeps its weight.
-        let dark = colors.base;
-        let mut shallows = Shape::new();
-        for (water, color) in &sea {
-            if color.legible(colors.text, dark) == dark {
-                shallows.add(water);
-            }
-        }
-        let date_color = colors.subtle.mix(colors.text, fill.clamp(0.0, 1.0));
-        let say = |canvas: &mut Canvas<'_>, quiet: Rgba, ink: Rgba| match &parts {
+        let inside = island.inset_xy(space::SM, 0.0);
+        canvas.with_clip(inside, |canvas| match &parts {
             Some((date, time)) => {
-                let date = Text::new(date, size, quiet).tabular();
-                let time = Text::new(time, size, ink).medium().tabular();
+                let date = Text::new(date, size, colors.subtle).tabular();
+                let time = Text::new(time, size, colors.text).medium().tabular();
                 let left = island.x + (island.w - words) / 2.0;
                 let d = canvas.measure(&date).w;
                 canvas.text_in(&date, Rect::new(left, island.y, d, island.h), Align::Start);
@@ -1015,34 +967,27 @@ impl Bar {
                 canvas.text_in(&time, Rect::new(at, island.y, words - d, island.h), Align::Start);
             }
             None => {
-                canvas.text_in(&Text { color: ink, ..text }, island, Align::Center);
+                canvas.text_in(&text, island, Align::Center);
             }
-        };
-        let inside = island.inset_xy(space::SM, 0.0);
-        canvas.with_clip(inside, |canvas| {
-            canvas.with_clip_shape(&shallows, false, |canvas| say(canvas, date_color, colors.text));
-            canvas.with_clip_shape(&shallows, true, |canvas| say(canvas, dark, dark));
         });
         moving
     }
 
-    /// The battery, if there is one: on power it fills in foam, and as it
-    /// runs low in gold and then love.
+    /// The battery, if there is one: its figures in the text's colour —
+    /// gold as it runs low, then love — and a bolt before them on power.
     fn charge(&self) -> Option<Charge> {
         let colors = &self.ctx.theme.colors;
         let battery = self.battery.as_ref()?;
         let plugged = battery.is_plugged_in();
-        let fill = match (plugged, battery.percent) {
-            (true, _) => colors.foam,
+        let ink = match (plugged, battery.percent) {
             (false, ..=15) => colors.love,
             (false, ..=30) => colors.gold,
-            // Bright, as the figures cut out of it must read at a glance.
-            (false, _) => colors.text,
+            _ => colors.text,
         };
         Some(Charge {
             percent: battery.percent.min(100),
             plugged,
-            fill,
+            ink,
         })
     }
 
@@ -1082,7 +1027,7 @@ impl Bar {
         let colors = &self.ctx.theme.colors;
         match item {
             Item::Bell if self.notices.unseen > 0 => colors.text,
-            Item::Battery(charge) => charge.fill,
+            Item::Battery(charge) => charge.ink,
             // Being heard or seen is worth noticing.
             Item::Share | Item::Mic(false) => colors.love,
             Item::Layout => colors.text,
@@ -1190,24 +1135,28 @@ impl Bar {
         let items = self.status_items();
         let colors = self.ctx.theme.colors.clone();
 
+        // Words in the island are the clock's size on a usual bar, and grow
+        // with a taller one as the icons do.
+        let words = battery.figures();
         let figures = items.iter().find_map(|item| match item {
             Item::Battery(charge) => Some(charge.percent.to_string()),
             _ => None,
         });
         let label = figures
             .as_deref()
-            .map(|figures| Text::new(figures, battery.figures(), colors.text).medium().tabular());
+            .map(|figures| Text::new(figures, words, colors.text).medium().tabular());
+        let sign = canvas.measure(&Text::new("%", words, colors.subtle)).w;
         let layout = self
             .around
             .layout
             .as_deref()
-            .map(|name| Text::new(name, battery.figures(), self.tint(Item::Layout)).medium());
+            .map(|name| Text::new(name, words, self.tint(Item::Layout)).medium());
         let widths: Vec<f32> = items
             .iter()
             .map(|item| match (item, self.figure(*item)) {
                 (_, Some(figure)) => scale.width(figure),
                 (Item::Battery(charge), None) => label.as_ref().map_or(0.0, |label| {
-                    battery.width(canvas.measure(label).w, charge.plugged)
+                    battery.width(canvas.measure(label).w + sign, charge.plugged)
                 }),
                 (_, None) => layout
                     .as_ref()
@@ -1282,8 +1231,7 @@ impl Bar {
                     (_, Some(figure)) => icons::draw(canvas, figure, icon, ink),
                     (Item::Battery(charge), None) => {
                         if let Some(label) = &label {
-                            let shine = self.shine_at(now);
-                            battery.draw(canvas, slot, charge, label, glow, shine, &colors);
+                            battery.draw(canvas, slot, charge, label, glow, &colors);
                         }
                     }
                     (_, None) => {
@@ -2006,10 +1954,13 @@ mod tests {
         bar.water.jump(1.0);
         let (wet, _) = frame(&mut bar, later());
         snapshot(&wet, "bar-playing");
-        // The sea fills the pill, and the time stays in front of it.
+        // The sea along the pill's foot; above it, the words keep the
+        // island's own ground.
         let low = ((clock.bottom() - 3.0) * 2.0) as u32;
+        let high = ((clock.y + 3.0) * 2.0) as u32;
         let centre = ((clock.x + clock.w / 2.0) * 2.0) as u32;
         assert_ne!(wet.pixel(centre, low), dry.pixel(centre, low));
+        assert_eq!(wet.pixel(centre, high), dry.pixel(centre, high));
         let text = bar.ctx.theme.colors.text;
         let lit = (0..wet.height)
             .flat_map(|y| {
@@ -2275,58 +2226,44 @@ mod tests {
         snapshot(&tall, "bar-status-tall");
     }
 
-    /// The battery is a pill filled to its charge, the figures cut out of
-    /// the fill; on power it fills in foam and a bolt comes before them.
+    /// The battery says its charge in figures, in the text's colour; on
+    /// power a bolt in foam comes before them; low, they turn love.
     #[test]
-    fn the_battery_is_a_pill_filled_to_its_charge() {
+    fn the_battery_says_its_charge_in_figures() {
         let mut bar = sample("rose-pine-moon");
         let colors = bar.ctx.theme.colors.clone();
-        let rgba = |c: Rgba| [c.r, c.g, c.b, 255];
-        // The pill's middle row, in physical pixels (the frame is at 2x).
-        let row = |frame: &Offscreen, bar: &Bar| -> Vec<[u8; 4]> {
+        let count = |frame: &Offscreen, bar: &Bar, color: Rgba| {
             let island = bar.status.unwrap();
-            let y = (36.0 / 2.0 * 2.0) as u32;
-            ((island.x * 2.0) as u32..(island.right() * 2.0) as u32)
-                .map(|x| frame.pixel(x, y))
-                .collect()
+            let xs = (island.x * 2.0) as u32..(island.right() * 2.0) as u32;
+            xs.flat_map(|x| (0..frame.height).map(move |y| (x, y)))
+                .filter(|&(x, y)| frame.pixel(x, y) == [color.r, color.g, color.b, 255])
+                .count()
         };
 
         let (discharging, _) = frame(&mut bar, later());
-        let pixels = row(&discharging, &bar);
-        let count = |pixels: &[[u8; 4]], color: Rgba| {
-            pixels.iter().filter(|pixel| **pixel == rgba(color)).count()
-        };
-        assert_eq!(bar.charge().unwrap().fill, colors.text);
-        assert!(count(&pixels, colors.text) > 20, "no fill");
-        assert!(count(&pixels, colors.highlight_med) > 4, "no track");
+        assert_eq!(bar.charge().unwrap().ink, colors.text);
+        assert!(count(&discharging, &bar, colors.text) > 20, "no figures");
+        assert_eq!(count(&discharging, &bar, colors.foam), 0);
         let width = bar.status.unwrap().w;
         snapshot(&discharging, "bar-battery-82");
 
-        // On power: foam, and a bolt that widens the pill. Between the
-        // light's runs along it, foam all along.
+        // On power: a bolt before the figures, which widens the island.
         bar.battery.as_mut().unwrap().status = BatteryStatus::Charging;
-        let between = bar.epoch + Duration::from_secs_f32(SHINE + 1.0);
-        let (charging, _) = frame(&mut bar, between);
-        assert_eq!(bar.charge().unwrap().fill, colors.foam);
-        assert!(count(&row(&charging, &bar), colors.foam) > 20);
+        let (charging, _) = frame(&mut bar, later());
+        assert_eq!(bar.charge().unwrap().ink, colors.text);
+        assert!(count(&charging, &bar, colors.foam) > 10, "no bolt");
         assert!(bar.status.unwrap().w > width);
         snapshot(&charging, "bar-battery-charging");
-        // Now and then, a light runs along the charge.
-        let running = bar.epoch + Duration::from_secs_f32(SHINE * 0.5);
-        let (shining, _) = frame(&mut bar, running);
-        assert!(row(&shining, &bar) != row(&charging, &bar), "no light ran along it");
 
-        // Nearly empty: a sliver of love, and the figures over the track.
+        // Nearly empty: the figures in love.
         bar.battery.as_mut().unwrap().status = BatteryStatus::Discharging;
         bar.battery.as_mut().unwrap().percent = 9;
         let (low, _) = frame(&mut bar, later());
-        assert_eq!(bar.charge().unwrap().fill, colors.love);
-        let pixels = row(&low, &bar);
-        assert!(count(&pixels, colors.love) > 0);
-        assert!(count(&pixels, colors.highlight_med) > count(&pixels, colors.love));
+        assert_eq!(bar.charge().unwrap().ink, colors.love);
+        assert!(count(&low, &bar, colors.love) > 10);
         snapshot(&low, "bar-battery-low");
 
-        // Without a battery, no pill: the island is glyphs and the bell.
+        // Without a battery, no figures: the island is glyphs alone.
         bar.battery = None;
         frame(&mut bar, later());
         assert!(bar.status.unwrap().w < width);

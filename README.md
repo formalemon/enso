@@ -246,12 +246,9 @@ corners, one hand for all of them:
 - **Wi-Fi**, a dot and three arcs lit from the inside out with the signal
   (the rest stay, faintly); offline, all faint and struck through. A cable
   when wired.
-- **The battery**, a pill holding its percentage, filled from the left as far
-  as it is charged — in the text's own colour, foam on power, gold below
-  30 %, love below 15 % — with a small lightning bolt before the figures while
-  it charges. Where the fill runs under the figures they are cut out of it;
-  each side in whichever colour reads better there, so no fill and no
-  palette hides them.
+- **The battery**, its percentage in figures — the text's own colour, gold
+  below 30 %, love below 15 %, the percent sign a step quieter — with a
+  small bolt in foam before them while it charges.
 And at the very end, on a round island of its own:
 
 - **The bell**, which rings — a little swing that dies away — when something
@@ -326,15 +323,13 @@ the rest, and goes when it's over:
 With **Do not disturb** on, the bell is drawn quiet and struck through (a
 click on the bell turns it on and off).
 
-The clock in the middle knows **what's playing**. While anything plays its
-pill turns to sea at dusk — the theme's iris in the deep water, rising
-through three waves rolling across it at their own speeds to a rose one in
-front — like a tide as playing starts, ebbing when it stops, with the time
-in front of it all along: where the water is too light for light words
-they are cut dark out of it, as the battery's figures are out of its fill,
-so the date and time sit half in the sea as the waves pass through them.
-While it's in, the date comes up to the time's colour: a quieter colour
-can't be told from the sea. Every twenty seconds or so a set rolls in: a
+The clock in the middle knows **what's playing**. While anything plays a
+sea at dusk rises along the foot of its pill, under the words — the
+theme's iris in the far wave, through three waves rolling across at their
+own speeds to a rose one in front — like a tide as playing starts, ebbing
+when it stops. The words ride above it on the island's own ground, in
+their own colours; now and then the far wave laps at them. Every twenty
+seconds or so a set rolls in: a
 swell sweeps across from the left, lifting the far waves first and the
 nearest highest, a line of foam along its crest. The sea moves thirty times a second, not every frame: about one percent of a core
 while it plays, nothing at rest. Rest the pointer on the clock and `enso-play` hangs a card
@@ -1225,11 +1220,11 @@ How things are drawn, everywhere:
   page dots are quiet; the one big button is the lightest thing on its
   card.
 - **Small motions, only while they mean something**: steam rises off the
-  cup while the machine is kept awake, a light runs along the battery now
-  and then while it charges, the sun's rays reach as far as the screen is
-  bright, a lock's shackle lifts as you land on it, a switch's knob
-  stretches as it slides. They wake the bar a few times a second while
-  they show, and not at all otherwise.
+  cup while the machine is kept awake, the sun's rays reach as far as the
+  screen is bright, a lock's shackle lifts as you land on it, a switch's
+  knob stretches as it slides, a bell is struck through as it's hushed.
+  They wake the bar a few times a second while they show, and not at all
+  otherwise.
 
 How things arrive, everywhere:
 

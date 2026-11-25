@@ -1,8 +1,8 @@
-//! The sea in the clock's pill while something plays: the whole pill turns
-//! to deep water, with three waves rolling across it at their own speeds —
-//! the far ones darker and slower, the nearest lightest. It rises like a
-//! tide as playing starts and ebbs away when it stops; the time stays in
-//! front of it, cut dark out of whatever water is too light for it.
+//! The sea in the clock's pill while something plays: along the foot of
+//! the pill, under the words, three waves roll across at their own speeds —
+//! the far one darker and slower, the nearest lightest. It rises like a
+//! tide as playing starts and ebbs away when it stops; the words ride above
+//! it on the island's own ground, the far wave now and then lapping at them.
 //!
 //! Every so often a set rolls in: a swell sweeps across from the left,
 //! lifting the far waves first and the nearest highest a moment after, with
@@ -24,12 +24,15 @@ const STEP: f32 = 1.0;
 /// How often a set rolls in, and how long it takes to cross.
 const SET_EVERY: f32 = 22.0;
 const SET_FOR: f32 = 3.4;
-/// How much higher a set lifts each wave, as part of the pill's height —
+/// How much higher a set lifts each wave, as part of the sea's depth —
 /// the nearest most — and how much later it reaches each one.
-const SET_LIFT: [f32; 3] = [0.10, 0.18, 0.30];
+const SET_LIFT: [f32; 3] = [0.10, 0.28, 0.38];
 const SET_LAG: f32 = 0.22;
 
-/// One wave: where it rests (as part of the pill's height, from the top),
+/// How much of the pill the sea takes, from its foot: the words sit above.
+pub const SEA: f32 = 0.34;
+
+/// One wave: where it rests (as part of the sea's depth, from its top),
 /// how high it swells, how long it is, and how fast it rolls (crests a
 /// second; negative rolls the other way).
 struct Wave {
@@ -41,27 +44,27 @@ struct Wave {
 
 const WAVES: [Wave; 3] = [
     Wave {
-        rest: 0.30,
-        swell: 0.10,
+        rest: 0.14,
+        swell: 0.22,
         length: 70.0,
         speed: 0.10,
     },
     Wave {
-        rest: 0.50,
-        swell: 0.09,
+        rest: 0.42,
+        swell: 0.20,
         length: 48.0,
         speed: -0.16,
     },
     Wave {
-        rest: 0.70,
-        swell: 0.08,
+        rest: 0.72,
+        swell: 0.16,
         length: 34.0,
         speed: 0.24,
     },
 ];
 
-/// The sea's colours: the deep water, and the nearest wave; the waves
-/// between are mixed from the two.
+/// The sea's colours: the far wave, and the nearest; the one between is
+/// mixed from the two.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Look {
     pub deep: Rgba,
@@ -110,8 +113,11 @@ fn surface(index: usize, x: f32, t: f32, w: f32, h: f32, fill: f32) -> f32 {
     // A shorter ripple on the long wave, so no two crests match.
     let ripple = (TAU * (x / (wave.length * 0.43) + t * wave.speed * 1.7)).sin() * 0.35;
     let lift = SET_LIFT[index] * set(x, t - index as f32 * SET_LAG, w);
-    let level = h * (wave.rest + wave.swell * (angle.sin() + ripple) / 1.35 - lift);
-    level + (1.0 - fill) * h * (1.0 - wave.rest + wave.swell + SET_LIFT[index] + 0.05)
+    let (top, depth) = (h * (1.0 - SEA), h * SEA);
+    let level = top + depth * (wave.rest + wave.swell * (angle.sin() + ripple) / 1.35 - lift);
+    // Out with the tide, below the pill altogether.
+    let out = depth * (1.0 - wave.rest + wave.swell + SET_LIFT[index]) + h * 0.05;
+    level + (1.0 - fill) * out
 }
 
 /// What of the pill lies below `top(x)`, as a shape: the curve along the
@@ -138,32 +144,16 @@ fn under(pill: Rect, top: impl Fn(f32) -> f32) -> Shape {
 }
 
 /// Draw the sea into `pill`, the tide `fill` of the way in, at time `t`.
-/// Returns the water laid down, deepest first, each with its colour: what
-/// is in front of it can read what lies behind it where.
-pub fn draw(
-    canvas: &mut Canvas<'_>,
-    pill: Rect,
-    fill: f32,
-    t: f32,
-    look: Look,
-) -> Vec<(Shape, Rgba)> {
+pub fn draw(canvas: &mut Canvas<'_>, pill: Rect, fill: f32, t: f32, look: Look) {
     if fill <= 0.0 || pill.w <= 0.0 || pill.h <= 0.0 {
-        return Vec::new();
+        return;
     }
-    let mut laid = Vec::with_capacity(WAVES.len() + 1);
-    // The deep water, rising with the tide like the waves.
-    let deep = |x: f32| pill.h * (1.0 - fill) + extent(x, pill.w, pill.h).0 * fill;
-    let water = under(pill, deep);
-    canvas.fill_shape(&water, look.deep);
-    laid.push((water, look.deep));
     let front = WAVES.len() - 1;
     for i in 0..WAVES.len() {
-        let near = (i + 1) as f32 / WAVES.len() as f32;
+        let near = i as f32 / front as f32;
         let color = look.deep.mix(look.shallow, near);
         let top = |x: f32| surface(i, x, t, pill.w, pill.h, fill);
-        let wave = under(pill, top);
-        canvas.fill_shape(&wave, color);
-        laid.push((wave, color));
+        canvas.fill_shape(&under(pill, top), color);
     }
     // Foam along the nearest wave where a set lifts it, and only well inside
     // the pill's round ends.
@@ -193,7 +183,6 @@ pub fn draw(
         let peak = (PI * (lag.rem_euclid(SET_EVERY) / SET_FOR).min(1.0)).sin();
         canvas.stroke_shape(&foam, 1.2, look.foam.alpha(0.6 * peak * fill));
     }
-    laid
 }
 
 #[cfg(test)]
@@ -207,7 +196,10 @@ mod tests {
             let (x, t) = (i as f32 * 0.9, i as f32 * 0.07);
             for wave in 0..WAVES.len() {
                 let full = surface(wave, x, t, 180.0, h, 1.0);
-                assert!(full > 0.0 && full < h, "{full}");
+                // Under the words: the far wave laps a little above the
+                // sea's top at most, the nearer ones never.
+                let reach = if wave == 0 { 0.35 } else { 0.1 };
+                assert!(full > h * (1.0 - SEA * (1.0 + reach)) && full < h, "{wave}: {full}");
                 assert!(surface(wave, x, t, 180.0, h, 0.0) >= h);
             }
         }
