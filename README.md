@@ -453,7 +453,11 @@ daemon is needed to change it: `contrib/90-enso-power-profile.rules` is a
 udev rule that opens the file to the `wheel` group at boot (the three
 commands to install it are at its top).
 
-**`enso-launch`** — opens as a search field and nothing else; matches appear
+**`enso-launch`** — opens as a search field and nothing else, with nothing
+dimmed behind it. With `enso-bar` along the top of the screen, the field
+grows out of the bar's clock: the island swells, and the card slides out
+from under it to hang below the bar in the middle; it goes back in when it
+closes. Without the bar it sits a fifth of the way down. Matches appear
 once you type: applications from the first letter, files from the second,
 listed under the applications. `Enter` launches the application or opens the
 file with whatever the desktop associates with its type; `Ctrl+Enter` opens

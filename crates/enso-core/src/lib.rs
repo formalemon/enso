@@ -22,6 +22,7 @@ pub mod disk;
 pub mod exe;
 pub mod hex;
 pub mod ipc;
+pub mod island;
 pub mod motion;
 pub mod notices;
 pub mod palette;

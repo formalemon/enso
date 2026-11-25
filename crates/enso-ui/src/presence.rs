@@ -22,10 +22,16 @@ pub struct Presence {
 
 impl Presence {
     pub fn new(motion: &Motion) -> Self {
+        Self::with(motion, Transition::REVEAL, Transition::DISMISS)
+    }
+
+    /// Easing in by `reveal` and out by `dismiss`: for an overlay with a
+    /// motion of its own, a linear pair gives it the time to shape.
+    pub fn with(motion: &Motion, reveal: Transition, dismiss: Transition) -> Self {
         Self {
             value: Tween::new(0.0),
-            reveal: motion.apply(Transition::REVEAL),
-            dismiss: motion.apply(Transition::DISMISS),
+            reveal: motion.apply(reveal),
+            dismiss: motion.apply(dismiss),
             opened: false,
             closing: false,
         }

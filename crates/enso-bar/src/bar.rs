@@ -23,7 +23,7 @@ use std::{
 };
 
 use enso_core::{
-    Awake, Context, Easing, Figure, Notices, Rgba, Transition, Tween, awake,
+    Awake, Context, Easing, Figure, Notices, Rgba, Transition, Tween, awake, island,
     style::{edge, space, type_scale},
 };
 use enso_sys::{
@@ -245,6 +245,11 @@ pub struct Bar {
     calendar: Dropdown,
     /// Something is playing, as enso-play last said.
     is_playing: bool,
+    /// Whether to keep a note of where the clock island is, for what grows
+    /// out of it (the launcher): the bar on a screen of its own does.
+    notes: bool,
+    /// The note last kept, and for which screen.
+    noted: Option<(String, island::Island)>,
 }
 
 impl Bar {
@@ -252,6 +257,7 @@ impl Bar {
     #[must_use]
     pub fn on(mut self, output: String) -> Self {
         self.output = Some(output);
+        self.notes = true;
         self
     }
 
@@ -307,6 +313,8 @@ impl Bar {
             share: None,
             calendar: Dropdown::calendar(),
             is_playing: false,
+            notes: false,
+            noted: None,
         };
         bar.notices = Notices::read(&bar.ctx.paths);
         bar.read_settings();
@@ -528,11 +536,42 @@ impl Bar {
 
     /// An island's fill: its colour, as see-through as the config asks.
     fn island_color(&self, color: Rgba) -> Rgba {
-        color.alpha(if self.config.opacity.is_finite() {
+        color.alpha(self.opacity())
+    }
+
+    /// How solid the islands are.
+    fn opacity(&self) -> f32 {
+        if self.config.opacity.is_finite() {
             self.config.opacity
         } else {
             1.0
-        })
+        }
+    }
+
+    /// Keep a note of where the clock island comes to rest, when it has
+    /// moved: what grows out of it reads it (see [`enso_core::island`]).
+    fn note_clock(&mut self, island: Rect) {
+        let Some(output) = self.output.clone().filter(|_| self.notes) else {
+            return;
+        };
+        let note = island::Island {
+            pid: std::process::id(),
+            top: self.config.position == Position::Top,
+            bar: self.config.height as f32,
+            x: island.x,
+            y: island.y,
+            w: island.w,
+            h: island.h,
+            opacity: self.opacity(),
+        };
+        if self.noted.as_ref() == Some(&(output.clone(), note)) {
+            return;
+        }
+        // Said once for each change, not on every frame.
+        if let Err(err) = island::publish(&output, &note) {
+            eprintln!("enso-bar: cannot say where the clock is: {err}");
+        }
+        self.noted = Some((output, note));
     }
 
     /// Workspaces on this bar's output (all of them until the output is known).
@@ -747,6 +786,7 @@ impl Bar {
         }
         let width = tween.get(now);
         let moving = tween.is_animating(now);
+        self.note_clock(bar.centered(natural, bar.h));
         // Laid out at the width it is heading for, and clipped to the
         // island as it grows: the words never squeeze or spill.
         let text = Text::new(&says, size, colors.text)
@@ -1006,6 +1046,14 @@ fn network(link: Link) -> Figure {
         Link::Wired => Figure::Ethernet,
         Link::Offline => Figure::WifiOff,
         Link::Wifi { bars } => Figure::Wifi(bars),
+    }
+}
+
+impl Drop for Bar {
+    fn drop(&mut self) {
+        if let Some((output, _)) = &self.noted {
+            island::withdraw(output);
+        }
     }
 }
 
