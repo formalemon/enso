@@ -9,14 +9,17 @@
 use std::{path::PathBuf, time::Instant};
 
 use enso_core::{
-    Context, Transition, Tween, ipc,
-    style::{opacity, radius, search, space, stroke, type_scale},
+    Context, ipc,
+    style::{self, opacity, radius, space, type_scale},
 };
 use enso_ui::{
-    Align, App, Button, Canvas, Cx, Event, Image, Key, Nav, Paint, PointerEvent, Presence, Proxy,
-    Rect, SurfaceSpec, TEXT_TYPES, Text,
+    Align, App, Button, Canvas, Cx, Event, Image, Key, Paint, PointerEvent, Presence, Proxy, Rect,
+    SurfaceSpec, TEXT_TYPES, Text,
     emerge::Perch,
-    widget::{TextField, field},
+    widget::{
+        TextField, field,
+        search::{self, List},
+    },
 };
 
 use crate::{
@@ -28,11 +31,10 @@ use crate::{
 pub const NAME: &str = "enso-clip-pick";
 
 // The launcher's measures: the same card.
-const WIDTH: f32 = search::WIDTH;
-const SEARCH_HEIGHT: f32 = search::FIELD;
-const ROW_HEIGHT: f32 = search::ROW;
+const WIDTH: f32 = style::search::WIDTH;
+const SEARCH_HEIGHT: f32 = style::search::FIELD;
 const ROWS: usize = 8;
-const THUMB: f32 = search::CHIP;
+const THUMB: f32 = style::search::CHIP;
 
 #[derive(Debug)]
 pub enum Message {
@@ -60,13 +62,12 @@ pub struct Picker {
     entries: Vec<Entry>,
     /// Indices into `entries` that match what's typed.
     shown: Vec<usize>,
-    selected: usize,
-    offset: usize,
-    highlight: Tween<f32>,
+    /// Which of them is chosen and which are in view, as every search card
+    /// has it.
+    list: List,
     /// The daemon is running.
     running: bool,
     card: Rect,
-    rows: Vec<Rect>,
     /// The screen to open on: the one with the focus.
     screen: Option<String>,
     /// Out of the bar's clock, when there is a bar along that screen's top.
@@ -135,16 +136,13 @@ impl Picker {
     fn with(ctx: Context, entries: Vec<Entry>, running: bool) -> Self {
         let mut picker = Self {
             presence: Presence::new(&ctx.motion),
+            list: List::new(ROWS, &ctx.motion),
             ctx,
             field: TextField::default(),
             entries,
             shown: Vec::new(),
-            selected: 0,
-            offset: 0,
-            highlight: Tween::new(0.0),
             running,
             card: Rect::default(),
-            rows: Vec::new(),
             screen: None,
             perch: Perch::default(),
         };
@@ -171,25 +169,14 @@ impl Picker {
                     .all(|word| self.entries[i].haystack.contains(word))
             })
             .collect();
-        self.select(0);
-    }
-
-    fn select(&mut self, index: usize) {
-        self.selected = index.min(self.shown.len().saturating_sub(1));
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + ROWS {
-            self.offset = self.selected + 1 - ROWS;
-        }
-        self.highlight.set(
-            (self.selected - self.offset) as f32,
-            self.ctx.motion.apply(Transition::SELECT),
-            Instant::now(),
-        );
+        self.list.reset(self.shown.len());
+        // Always room for a line, if only to say there's nothing.
+        self.list.grow(search::height(self.list.visible().max(1)));
     }
 
     fn chosen(&self) -> Option<&Entry> {
-        self.shown.get(self.selected).map(|&i| &self.entries[i])
+        let &index = self.shown.get(self.list.selected()?)?;
+        self.entries.get(index)
     }
 
     /// Put the chosen one on the clipboard, by way of the daemon.
@@ -202,18 +189,13 @@ impl Picker {
 
     /// Forget the chosen one.
     fn forget(&mut self) {
-        let Some(&index) = self.shown.get(self.selected) else {
+        let Some(selected) = self.list.selected() else {
             return;
         };
-        let entry = self.entries.remove(index);
+        let entry = self.entries.remove(self.shown[selected]);
         ipc::tell(DAEMON, &format!("delete {}", entry.id));
-        let selected = self.selected;
         self.filter();
-        self.select(selected);
-    }
-
-    fn list_height(&self) -> f32 {
-        ROW_HEIGHT * self.shown.len().clamp(1, ROWS) as f32 + space::SM
+        self.list.select(selected);
     }
 }
 
@@ -238,12 +220,7 @@ impl App for Picker {
             Event::Message(Message::Dismiss) => self.presence.close(cx),
             Event::Key(key) => {
                 if let Some(nav) = key.nav(false) {
-                    let count = self.shown.len().max(1);
-                    let next = match nav {
-                        Nav::Down => (self.selected + 1) % count,
-                        Nav::Up => (self.selected + count - 1) % count,
-                    };
-                    self.select(next);
+                    self.list.step(nav);
                 } else {
                     match key.key {
                         Key::Escape => return self.presence.close(cx),
@@ -267,28 +244,25 @@ impl App for Picker {
                 cx.redraw();
             }
             Event::Pointer(PointerEvent::Move { x, y }) => {
-                if let Some(row) = self.rows.iter().position(|row| row.contains(x, y))
-                    && self.offset + row != self.selected
+                if let Some(index) = self.list.at(x, y)
+                    && Some(index) != self.list.selected()
                 {
-                    self.select(self.offset + row);
+                    self.list.select(index);
                     cx.redraw();
                 }
             }
+            // The wheel moves the choice, a row a turn.
             Event::Pointer(PointerEvent::Scroll { dy, .. }) => {
-                let count = self.shown.len();
-                if count > 0 {
-                    let step = if dy > 0.0 { 1 } else { count - 1 };
-                    self.select((self.selected + step) % count);
-                    cx.redraw();
-                }
+                self.list.scroll(dy);
+                cx.redraw();
             }
             Event::Pointer(PointerEvent::Press {
                 x,
                 y,
                 button: Button::Left,
             }) => {
-                if let Some(row) = self.rows.iter().position(|row| row.contains(x, y)) {
-                    self.select(self.offset + row);
+                if let Some(index) = self.list.at(x, y) {
+                    self.list.select(index);
                     self.choose(cx);
                 } else if !self.card.contains(x, y) {
                     self.presence.close(cx);
@@ -301,48 +275,24 @@ impl App for Picker {
     fn draw(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
         let presence = self.presence.get(now);
         let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
-        let size = self.ctx.config.appearance.font_size;
-        let title = size * type_scale::TITLE;
+        let look = search::Look {
+            colors: colors.clone(),
+            accent: self.ctx.accent(),
+            size: self.ctx.config.appearance.font_size,
+        };
         let bounds = canvas.bounds();
         // Nothing behind the card: the canvas starts each frame clear.
         let width = WIDTH.min(bounds.w - 2.0 * space::LG);
-        let rest = self
-            .perch
-            .rest(bounds, width, SEARCH_HEIGHT + self.list_height());
+        let list_height = self.list.height(now);
+        let rest = self.perch.rest(bounds, width, SEARCH_HEIGHT + list_height);
         let card = self.perch.card(canvas, rest, presence, &colors);
         self.card = card;
 
-        let search = Rect::new(card.x, card.y, card.w, SEARCH_HEIGHT).inset_xy(space::LG, 0.0);
-        let style = field::Style {
-            size: title,
-            color: colors.text,
-            placeholder: "Search what was copied",
-            placeholder_color: colors.muted,
-            caret: accent,
-            selection: accent.alpha(opacity::TINT * 2.0),
-        };
-        self.field.draw(canvas, search, &style, true);
-        canvas.fill(
-            Rect::new(
-                card.x + space::LG,
-                card.y + SEARCH_HEIGHT - 0.5,
-                card.w - 2.0 * space::LG,
-                stroke::HAIRLINE,
-            ),
-            0.0,
-            colors.highlight_med,
-        );
+        let placeholder = "Search what was copied · Delete forgets";
+        search::head(canvas, card, &mut self.field, placeholder, list_height, &look);
 
-        let list = Rect::new(
-            card.x + space::SM,
-            card.y + SEARCH_HEIGHT + space::XS,
-            card.w - 2.0 * space::SM,
-            0.0,
-        );
-        self.rows.clear();
+        let rows = self.list.draw(canvas, card, now, &look);
         if self.shown.is_empty() {
-            let row = list.row(0, ROW_HEIGHT, 0.0).inset_xy(space::SM, 0.0);
             let said = if !self.running {
                 "enso-clip isn't running: start it with the session"
             } else if self.entries.is_empty() {
@@ -350,64 +300,34 @@ impl App for Picker {
             } else {
                 "Nothing like that was copied"
             };
-            canvas.text_in(&Text::new(said, size, colors.muted), row, Align::Start);
-        } else {
-            let highlight = list
-                .row(0, ROW_HEIGHT, 0.0)
-                .translate(0.0, self.highlight.get(now) * ROW_HEIGHT);
-            canvas.fill(highlight, radius::CONTROL, colors.overlay);
-            for (slot, &index) in self.shown.iter().skip(self.offset).take(ROWS).enumerate() {
-                let row = list.row(slot, ROW_HEIGHT, 0.0);
-                self.rows.push(row);
-                let content = row.inset_xy(space::SM, 0.0);
-                let entry = &self.entries[index];
-                let mut x = content.x;
-                if let Some(thumb) = &entry.thumb {
+            search::note(canvas, card, said, &look);
+        }
+        for row in rows {
+            let entry = &self.entries[self.shown[row.index]];
+            let chip = search::chip(row.content);
+            // A picture shows itself where a row's chip goes, as wide as it
+            // needs, up to two chips; words get a chip of their own.
+            let from = match &entry.thumb {
+                Some(thumb) => {
                     let (w, h) = thumb.size();
                     let aspect = w as f32 / h.max(1) as f32;
-                    let w = (THUMB * aspect).min(THUMB * 2.0);
-                    let rect = Rect::new(x, content.y + (content.h - THUMB) / 2.0, w, THUMB);
-                    canvas.image(thumb, rect, radius::CONTROL / 2.0);
-                    x += w + space::MD;
+                    let wide = (THUMB * aspect).min(THUMB * 2.0);
+                    canvas.image(thumb, Rect::new(chip.x, chip.y, wide, chip.h), radius::CONTROL);
+                    chip.x + wide
                 }
-                let selected = self.offset + slot == self.selected;
-                let mut right = content.right();
-                if selected {
-                    let hint = Text::new(
-                        "Enter copies · Delete forgets",
-                        size * type_scale::SMALL,
-                        colors.subtle,
-                    );
-                    let w = canvas.measure(&hint).w;
-                    canvas.text_in(&hint, content, Align::End);
-                    right -= w + space::MD;
+                None => {
+                    canvas.fill(chip, radius::CONTROL, colors.subtle.alpha(opacity::TINT));
+                    let mark = Text::new("Aa", look.size * type_scale::SMALL, colors.subtle);
+                    canvas.text_in(&mark.medium(), chip, Align::Center);
+                    chip.right()
                 }
-                let name =
-                    Text::new(&entry.title, size, colors.text).max_width((right - x).max(1.0));
-                let used = canvas
-                    .text_in(
-                        &name,
-                        Rect::new(x, content.y, right - x, content.h),
-                        Align::Start,
-                    )
-                    .w;
-                if !entry.detail.is_empty() && right - (x + used + space::MD) > 40.0 {
-                    let rest = Rect::new(
-                        x + used + space::MD,
-                        content.y,
-                        right - x - used - space::MD,
-                        content.h,
-                    );
-                    canvas.text_in(
-                        &Text::new(&entry.detail, size * type_scale::SMALL, colors.muted),
-                        rest,
-                        Align::Start,
-                    );
-                }
-            }
+            } + space::MD;
+            let detail = Some(entry.detail.as_str());
+            let (title, chosen) = (entry.title.as_str(), row.chosen);
+            search::words(canvas, row.content, from, title, detail, Some("Copy"), chosen, &look);
         }
         canvas.set_opacity(1.0);
-        Paint::when(self.presence.is_animating(now) || self.highlight.is_animating(now))
+        Paint::when(self.presence.is_animating(now) || self.list.is_animating(now))
     }
 }
 
@@ -489,6 +409,6 @@ mod tests {
         // At rest it hangs under the bar, in the middle, three rows long.
         assert_eq!(picker.card.y, 40.0);
         assert_eq!(picker.card.center().0, 400.0);
-        assert_eq!(picker.rows.len(), 3);
+        assert_eq!(picker.list.drawn().len(), 3);
     }
 }

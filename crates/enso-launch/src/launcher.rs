@@ -19,14 +19,17 @@ use std::{
 };
 
 use enso_core::{
-    Context, Icon, Role, Transition, Tween,
-    style::{icon, opacity, radius, search, space, stroke, type_scale},
+    Context, Icon,
+    style::{self, icon, opacity, radius, space, type_scale},
 };
 use enso_ui::{
     Align, App as UiApp, Button, Canvas, Clip, Cx, Event, Key, KeyEvent, Nav, Paint, PointerEvent,
     Presence, Proxy, Rect, SurfaceSpec, TEXT_TYPES, Text,
     emerge::Perch,
-    widget::{TextField, field},
+    widget::{
+        TextField, field,
+        search::{self, List},
+    },
 };
 use serde::Deserialize;
 
@@ -69,7 +72,7 @@ pub struct LaunchConfig {
 impl Default for LaunchConfig {
     fn default() -> Self {
         Self {
-            width: search::WIDTH as u32,
+            width: style::search::WIDTH as u32,
             max_results: 8,
             files: true,
             file_roots: vec!["~".to_owned(), "~/.config".to_owned()],
@@ -92,9 +95,8 @@ impl LaunchConfig {
 }
 
 // The search card's measures, shared with the clipboard history.
-const SEARCH_HEIGHT: f32 = search::FIELD;
-const ROW_HEIGHT: f32 = search::ROW;
-const CHIP: f32 = search::CHIP;
+const SEARCH_HEIGHT: f32 = style::search::FIELD;
+const ROW_HEIGHT: f32 = style::search::ROW;
 /// File name of the application index inside the cache directory.
 const INDEX: &str = "apps";
 /// File name of the file index inside the cache directory.
@@ -170,16 +172,11 @@ pub struct Launcher {
     home: String,
     /// Applications first, then files.
     results: Vec<Entry>,
-    selected: usize,
-    /// First visible result.
-    offset: usize,
-    /// Animated position of the selection highlight, in visible rows.
-    highlight: Tween<f32>,
-    /// Animated height of the result list.
-    list_height: Tween<f32>,
+    /// Which result is chosen and which are in view, as every search card
+    /// has it.
+    list: List,
     /// Geometry from the last frame, for hit-testing.
     card: Rect,
-    rows: Vec<Rect>,
     /// The answer, when the query is a sum.
     answer: Option<String>,
     /// The windows open, from niri.
@@ -210,6 +207,7 @@ impl Launcher {
     ) -> Self {
         Self {
             presence: Presence::new(&ctx.motion),
+            list: List::new(config.max_results, &ctx.motion),
             history: History::load(&ctx.paths.state_dir.join(HISTORY)),
             home: std::env::var("HOME").unwrap_or_default(),
             app_results: Vec::new(),
@@ -232,12 +230,7 @@ impl Launcher {
             loaded: false,
             field: TextField::default(),
             results: Vec::new(),
-            selected: 0,
-            offset: 0,
-            highlight: Tween::new(0.0),
-            list_height: Tween::new(0.0),
             card: Rect::default(),
-            rows: Vec::new(),
             screen: None,
             perch: Perch::default(),
         }
@@ -292,7 +285,12 @@ impl Launcher {
 
     /// Identity of the selected row, to find it again after the list changes.
     fn selected_key(&self) -> Option<String> {
-        self.results.get(self.selected).map(|entry| match entry {
+        self.key_of(self.list.selected()?)
+    }
+
+    /// Identity of result `index`.
+    fn key_of(&self, index: usize) -> Option<String> {
+        self.results.get(index).map(|entry| match entry {
             Entry::Answer(_) => "answer".to_owned(),
             Entry::App(index) => app_key(&self.apps[*index].id),
             Entry::Window(index) => format!("window:{}", self.windows[*index].id),
@@ -334,24 +332,13 @@ impl Launcher {
             .chain(self.file_results.iter().cloned().map(Entry::File))
             .collect();
         let kept = keep.and_then(|key| {
-            (0..self.results.len()).find(|index| {
-                self.selected = *index;
-                self.selected_key().as_deref() == Some(key)
-            })
+            (0..self.results.len()).find(|&index| self.key_of(index).as_deref() == Some(key))
         });
-        self.selected = 0;
-        self.offset = 0;
-        let now = Instant::now();
-        self.highlight
-            .set(0.0, self.ctx.motion.apply(Transition::SELECT), now);
+        self.list.reset(self.results.len());
         if let Some(index) = kept {
-            self.select(index);
+            self.list.select(index);
         }
-        self.list_height.set(
-            self.list_target(),
-            self.ctx.motion.apply(Transition::REFLOW),
-            now,
-        );
+        self.reflow();
     }
 
     fn placeholder(&self) -> &'static str {
@@ -378,7 +365,7 @@ impl Launcher {
     }
 
     fn visible_rows(&self) -> usize {
-        self.results.len().min(self.config.max_results.max(1))
+        self.list.visible()
     }
 
     fn list_target(&self) -> f32 {
@@ -388,22 +375,17 @@ impl Launcher {
             0.0
         };
         error
-            + match self.visible_rows() {
+            + search::height(match self.visible_rows() {
                 // Room for the "no matches" line.
-                0 if self.has_no_matches() => ROW_HEIGHT + space::SM,
-                // Just the search field.
-                0 => 0.0,
-                rows => rows as f32 * ROW_HEIGHT + space::SM,
-            }
+                0 if self.has_no_matches() => 1,
+                // Just the search field, or the rows.
+                rows => rows,
+            })
     }
 
     /// Make room for what's said under the list, or take it away.
     fn reflow(&mut self) {
-        self.list_height.set(
-            self.list_target(),
-            self.ctx.motion.apply(Transition::REFLOW),
-            Instant::now(),
-        );
+        self.list.grow(self.list_target());
     }
 
     /// Rank the applications against the current query. An empty query
@@ -548,34 +530,8 @@ impl Launcher {
         self.compose(None);
     }
 
-    fn select(&mut self, index: usize) {
-        if self.results.is_empty() {
-            return;
-        }
-        self.selected = index.min(self.results.len() - 1);
-        // Scroll just enough to keep the selection visible.
-        let rows = self.visible_rows();
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + rows {
-            self.offset = self.selected + 1 - rows;
-        }
-        self.highlight.set(
-            (self.selected - self.offset) as f32,
-            self.ctx.motion.apply(Transition::SELECT),
-            Instant::now(),
-        );
-    }
-
     fn move_selection(&mut self, nav: Nav) {
-        let count = self.results.len();
-        if count == 0 {
-            return;
-        }
-        self.select(match nav {
-            Nav::Down => (self.selected + 1) % count,
-            Nav::Up => (self.selected + count - 1) % count,
-        });
+        self.list.step(nav);
     }
 
     /// Edit the query. Returns whether the key was consumed.
@@ -613,7 +569,7 @@ impl Launcher {
     /// What Ctrl+C copies when nothing in the field is selected: a file's
     /// path, or a sum's answer.
     fn copyable(&self) -> Option<String> {
-        match self.results.get(self.selected)? {
+        match self.results.get(self.list.selected()?)? {
             Entry::Answer(answer) => Some(answer.clone()),
             Entry::File(hit) => Some(hit.path.clone()),
             _ => None,
@@ -624,11 +580,15 @@ impl Launcher {
     /// with `reveal`, the folder the file is in. A running application's
     /// window is gone to rather than another opened, unless `fresh`.
     fn launch_selected(&mut self, reveal: bool, fresh: bool, cx: &mut Cx<'_>) {
-        let Some(key) = self.selected_key() else {
+        let Some((index, key)) = self
+            .list
+            .selected()
+            .and_then(|index| Some((index, self.key_of(index)?)))
+        else {
             return;
         };
         let terminal = self.ctx.config.appearance.terminal_program();
-        let done = match &self.results[self.selected] {
+        let done = match &self.results[index] {
             Entry::Answer(answer) => {
                 // Kept on the clipboard by `main` once the window is gone.
                 if let Ok(mut copied) = self.copied.lock() {
@@ -737,33 +697,6 @@ fn rank(pattern: &fuzzy::Pattern, app: &App) -> Option<i32> {
         .into_iter()
         .flatten()
         .max()
-}
-
-/// A stable accent for an application's letter chip, picked by name.
-fn chip_role(name: &str) -> Role {
-    let hash = name.bytes().fold(0u32, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(byte.into())
-    });
-    Role::ACCENTS[hash as usize % Role::ACCENTS.len()]
-}
-
-/// An application's letter chip: a stand-in for an icon, needing no icon
-/// theme.
-fn letter_chip(
-    canvas: &mut Canvas<'_>,
-    chip: Rect,
-    name: &str,
-    size: f32,
-    colors: &enso_core::Palette,
-) {
-    let tint = colors.get(chip_role(name));
-    canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT + 0.06));
-    let initial: String = name
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().collect())
-        .unwrap_or_default();
-    canvas.text_in(&Text::new(&initial, size, tint).bold(), chip, Align::Center);
 }
 
 /// Go over the letters of `name` that matched in the accent, each where it
@@ -913,20 +846,25 @@ impl UiApp for Launcher {
                 }
             }
             Event::Pointer(PointerEvent::Move { x, y }) => {
-                if let Some(row) = self.rows.iter().position(|row| row.contains(x, y))
-                    && self.offset + row != self.selected
+                if let Some(index) = self.list.at(x, y)
+                    && Some(index) != self.list.selected()
                 {
-                    self.select(self.offset + row);
+                    self.list.select(index);
                     cx.redraw();
                 }
+            }
+            // The wheel moves the choice, a row a turn.
+            Event::Pointer(PointerEvent::Scroll { dy, .. }) => {
+                self.list.scroll(dy);
+                cx.redraw();
             }
             Event::Pointer(PointerEvent::Press {
                 x,
                 y,
                 button: Button::Left,
             }) => {
-                if let Some(row) = self.rows.iter().position(|row| row.contains(x, y)) {
-                    self.select(self.offset + row);
+                if let Some(index) = self.list.at(x, y) {
+                    self.list.select(index);
                     self.launch_selected(false, false, cx);
                 } else if !self.card.contains(x, y) {
                     self.presence.close(cx);
@@ -941,228 +879,102 @@ impl UiApp for Launcher {
         let colors = self.ctx.theme.colors.clone();
         let accent = self.ctx.accent();
         let base_size = self.ctx.config.appearance.font_size;
-        let title = base_size * type_scale::TITLE;
         let bounds = canvas.bounds();
 
         // Nothing behind the card: the desktop stays as it is, and only the
         // card asks for attention. (The canvas starts each frame clear.)
 
-        let list_height = self.list_height.get(now);
+        let look = search::Look {
+            colors: colors.clone(),
+            accent,
+            size: base_size,
+        };
+        let list_height = self.list.height(now);
         let width = (self.config.width as f32).min(bounds.w - 2.0 * space::LG);
         let height = SEARCH_HEIGHT + list_height;
         let rest = self.perch.rest(bounds, width, height);
         let card = self.perch.card(canvas, rest, presence, &colors);
         self.card = card;
 
-        // Search field.
-        let search = Rect::new(card.x, card.y, card.w, SEARCH_HEIGHT).inset_xy(space::LG, 0.0);
-        // The magnifier stands as tall as the words typed after it.
-        let magnifier = (title * 1.25).round();
-        let icon_width = if canvas.glyphs() {
-            magnifier + space::SM
-        } else {
-            space::LG
-        };
-        canvas.icon(icon::SEARCH, magnifier, colors.subtle, search, Align::Start);
-        let field = Rect::new(
-            search.x + icon_width + space::XS,
-            search.y,
-            search.w - icon_width - space::XS,
-            search.h,
-        );
-        // The field: a caret to move, a selection, what an input method is
-        // composing — as in every enso text box.
-        let style = field::Style {
-            size: title,
-            color: colors.text,
-            placeholder: self.placeholder(),
-            placeholder_color: colors.muted,
-            caret: accent,
-            selection: accent.alpha(opacity::TINT * 2.0),
-        };
-        self.field.draw(canvas, field, &style, true);
+        let placeholder = self.placeholder();
+        search::head(canvas, card, &mut self.field, placeholder, list_height, &look);
 
-        // The rule under the field belongs to the list: it fades in with it.
-        let list_open = (list_height / ROW_HEIGHT).min(1.0);
-        if list_open > 0.0 {
-            canvas.fill(
-                Rect::new(
-                    card.x + space::LG,
-                    card.y + SEARCH_HEIGHT - 0.5,
-                    card.w - 2.0 * space::LG,
-                    stroke::HAIRLINE,
-                ),
-                0.0,
-                colors.highlight_med.alpha(list_open),
-            );
+        let rows = self.list.draw(canvas, card, now, &look);
+        if self.results.is_empty() && self.has_no_matches() {
+            search::note(canvas, card, "No matches", &look);
         }
-
-        // Results.
-        let list = Rect::new(
-            card.x + space::SM,
-            card.y + SEARCH_HEIGHT + space::XS,
-            card.w - 2.0 * space::SM,
-            0.0,
-        );
-        self.rows.clear();
-        if self.results.is_empty() {
-            let row = list.row(0, ROW_HEIGHT, 0.0).inset_xy(space::SM, 0.0);
-            // Like the rows, the line waits until the card has grown past it.
-            if self.has_no_matches() && row.bottom() <= card.bottom() {
-                canvas.text_in(
-                    &Text::new("No matches", base_size, colors.muted),
-                    row,
-                    Align::Start,
-                );
-            }
-        } else {
-            let highlight = list
-                .row(0, ROW_HEIGHT, 0.0)
-                .translate(0.0, self.highlight.get(now) * ROW_HEIGHT);
-            canvas.fill(highlight, radius::CONTROL, colors.overlay);
-
-            let visible = self.visible_rows();
-            let glyphs = canvas.glyphs();
-            let pattern = fuzzy::Pattern::new(self.query());
-            for (row_index, entry) in self
-                .results
-                .iter()
-                .skip(self.offset)
-                .take(visible)
-                .enumerate()
-            {
-                let row = list.row(row_index, ROW_HEIGHT, 0.0);
-                // While the card is still growing, rows below its edge wait their turn.
-                if row.bottom() > card.bottom() {
-                    break;
-                }
-                self.rows.push(row);
-                let content = row.inset_xy(space::SM, 0.0);
-                let chip = Rect::new(content.x, content.y + (content.h - CHIP) / 2.0, CHIP, CHIP);
-
-                let location;
-                let (name, description, hint): (&str, Option<&str>, Option<&str>) = match entry {
-                    Entry::Answer(answer) => {
-                        canvas.fill(chip, radius::CONTROL, accent.alpha(opacity::TINT + 0.06));
-                        canvas.text_in(
-                            &Text::new("=", base_size, accent).bold(),
-                            chip,
-                            Align::Center,
-                        );
-                        (answer.as_str(), Some(self.query().trim()), Some("Copy"))
-                    }
-                    Entry::App(index) => {
-                        let app = &self.apps[*index];
-                        letter_chip(canvas, chip, &app.name, base_size, &colors);
-                        // Running: a dot on its chip, and Enter goes there.
-                        let running = self.running(app).is_some();
-                        if running {
-                            canvas.circle(
-                                chip.right() - 1.0,
-                                chip.bottom() - 1.0,
-                                4.0,
-                                colors.surface,
-                            );
-                            canvas.circle(chip.right() - 1.0, chip.bottom() - 1.0, 2.6, accent);
-                        }
-                        let hint = running.then_some("Go to window · Shift+Enter new");
-                        (app.name.as_str(), app.description.as_deref(), hint)
-                    }
-                    Entry::Window(index) => {
-                        let window = &self.windows[*index];
-                        let owner = self.apps.iter().find(|app| app.owns_window(&window.app_id));
-                        let app_name =
-                            owner.map_or(window.app_id.as_str(), |app| app.name.as_str());
-                        letter_chip(canvas, chip, app_name, base_size, &colors);
-                        (window.title.as_str(), Some(app_name), Some("Go to window"))
-                    }
-                    Entry::Action(app, action) => {
-                        let app = &self.apps[*app];
-                        letter_chip(canvas, chip, &app.name, base_size, &colors);
-                        (
-                            app.actions[*action].name.as_str(),
-                            Some(app.name.as_str()),
-                            None,
-                        )
-                    }
-                    Entry::Command(index) => {
-                        let command = &self.commands[*index];
-                        canvas.fill(chip, radius::CONTROL, colors.overlay);
-                        let size = if glyphs { base_size + 3.0 } else { base_size };
-                        canvas.icon(
-                            Icon::new(command.figure, ""),
-                            size,
-                            colors.subtle,
-                            chip,
-                            Align::Center,
-                        );
-                        (command.name.as_str(), None, Some("Run"))
-                    }
-                    Entry::File(hit) => {
-                        // Files are quieter than applications: one glyph,
-                        // folders in the accent's cooler neighbour.
-                        let (glyph, tint) = if hit.is_dir {
-                            (icon::FOLDER, colors.foam)
-                        } else {
-                            (icon::FILE, colors.subtle)
-                        };
-                        canvas.fill(chip, radius::CONTROL, tint.alpha(opacity::TINT));
-                        let size = if glyphs { base_size + 5.0 } else { base_size };
-                        canvas.icon(glyph, size, tint, chip, Align::Center);
-                        // Found inside: the line that has it says more
-                        // than where the file is.
-                        location = match &hit.line {
-                            Some(line) => line.clone(),
-                            None => hit.location(&self.home),
-                        };
-                        (hit.name(), Some(location.as_str()), None)
-                    }
-                };
-
-                // What Enter does, on the selected row only.
-                let selected = self.offset + row_index == self.selected;
-                let mut right = content.right();
-                if let Some(hint) = hint.filter(|_| selected) {
-                    let text = Text::new(hint, base_size * type_scale::SMALL, colors.subtle);
-                    let width = canvas.measure(&text).w;
-                    if width < content.w * 0.45 {
-                        canvas.text_in(&text, content, Align::End);
-                        right -= width + space::MD;
-                    }
-                }
-
-                let text_x = chip.right() + space::MD;
-                let available = right - text_x;
-                let name_text = Text::new(name, base_size, colors.text)
-                    .medium()
-                    .max_width(available);
-                let name_width = canvas
-                    .text_in(
-                        &name_text,
-                        Rect::new(text_x, content.y, available, content.h),
-                        Align::Start,
-                    )
-                    .w;
-                // What was typed, picked out where it matched the name.
-                if !matches!(entry, Entry::Answer(_)) {
-                    highlight_matches(
-                        canvas, &pattern, name, base_size, accent, text_x, content, name_width,
+        let pattern = fuzzy::Pattern::new(self.query());
+        for row in rows {
+            let entry = &self.results[row.index];
+            let chip = search::chip(row.content);
+            let location;
+            let (name, description, hint): (&str, Option<&str>, Option<&str>) = match entry {
+                Entry::Answer(answer) => {
+                    canvas.fill(chip, radius::CONTROL, accent.alpha(opacity::TINT + 0.06));
+                    canvas.text_in(
+                        &Text::new("=", base_size, accent).bold(),
+                        chip,
+                        Align::Center,
                     );
+                    (answer.as_str(), Some(self.query().trim()), Some("Copy"))
                 }
-                if let Some(description) = description {
-                    let x = text_x + name_width + space::MD;
-                    let room = right - x;
-                    if room > 60.0 {
-                        let text =
-                            Text::new(description, base_size * type_scale::SMALL, colors.muted)
-                                .max_width(room);
-                        canvas.text_in(
-                            &text,
-                            Rect::new(x, content.y, room, content.h),
-                            Align::Start,
-                        );
+                Entry::App(index) => {
+                    let app = &self.apps[*index];
+                    search::letter_chip(canvas, chip, &app.name, &look);
+                    // Running: a dot on its chip, and Enter goes there.
+                    let running = self.running(app).is_some();
+                    if running {
+                        let (x, y) = (chip.right() - 1.0, chip.bottom() - 1.0);
+                        canvas.circle(x, y, 4.0, colors.surface);
+                        canvas.circle(x, y, 2.6, accent);
                     }
+                    let hint = running.then_some("Go to window · Shift+Enter new");
+                    (app.name.as_str(), app.description.as_deref(), hint)
                 }
+                Entry::Window(index) => {
+                    let window = &self.windows[*index];
+                    let owner = self.apps.iter().find(|app| app.owns_window(&window.app_id));
+                    let app_name = owner.map_or(window.app_id.as_str(), |app| app.name.as_str());
+                    search::letter_chip(canvas, chip, app_name, &look);
+                    (window.title.as_str(), Some(app_name), Some("Go to window"))
+                }
+                Entry::Action(app, action) => {
+                    let app = &self.apps[*app];
+                    search::letter_chip(canvas, chip, &app.name, &look);
+                    let action = app.actions[*action].name.as_str();
+                    (action, Some(app.name.as_str()), None)
+                }
+                Entry::Command(index) => {
+                    let command = &self.commands[*index];
+                    let figure = Icon::new(command.figure, "");
+                    search::icon_chip(canvas, chip, figure, colors.subtle, &look);
+                    (command.name.as_str(), None, Some("Run"))
+                }
+                Entry::File(hit) => {
+                    // Files are quieter than applications: one glyph,
+                    // folders in the accent's cooler neighbour.
+                    let (glyph, tint) = if hit.is_dir {
+                        (icon::FOLDER, colors.foam)
+                    } else {
+                        (icon::FILE, colors.subtle)
+                    };
+                    search::icon_chip(canvas, chip, glyph, tint, &look);
+                    // Found inside: the line that has it says more than
+                    // where the file is.
+                    location = match &hit.line {
+                        Some(line) => line.clone(),
+                        None => hit.location(&self.home),
+                    };
+                    (hit.name(), Some(location.as_str()), None)
+                }
+            };
+            let from = chip.right() + space::MD;
+            let chosen = row.chosen;
+            let (x, shown) =
+                search::words(canvas, row.content, from, name, description, hint, chosen, &look);
+            // What was typed, picked out where it matched the name.
+            if !matches!(entry, Entry::Answer(_)) {
+                highlight_matches(canvas, &pattern, name, base_size, accent, x, row.content, shown);
             }
         }
 
@@ -1180,11 +992,7 @@ impl UiApp for Launcher {
         }
 
         canvas.set_opacity(1.0);
-        Paint::when(
-            self.presence.is_animating(now)
-                || self.highlight.is_animating(now)
-                || self.list_height.is_animating(now),
-        )
+        Paint::when(self.presence.is_animating(now) || self.list.is_animating(now))
     }
 }
 
@@ -1431,8 +1239,9 @@ mod tests {
 
     fn selected_name(launcher: &Launcher) -> Option<&str> {
         launcher
-            .results
-            .get(launcher.selected)
+            .list
+            .selected()
+            .and_then(|index| launcher.results.get(index))
             .map(|entry| name_of(launcher, entry))
     }
 
@@ -1532,7 +1341,7 @@ mod tests {
 
         // The card is just the search field: no rows, no "no matches".
         let frame = settled(&mut launcher);
-        assert!(launcher.rows.is_empty());
+        assert!(launcher.list.drawn().is_empty());
         assert_eq!(launcher.card.h, SEARCH_HEIGHT);
         snapshot(&frame, "launch-empty");
 
@@ -1632,14 +1441,14 @@ mod tests {
         for _ in 0..6 {
             launcher.move_selection(Nav::Down);
         }
-        assert_eq!((launcher.selected, launcher.offset), (6, 1));
+        assert_eq!((launcher.list.selected().unwrap(), launcher.list.offset()), (6, 1));
         launcher.move_selection(Nav::Up);
-        assert_eq!((launcher.selected, launcher.offset), (5, 1));
-        launcher.select(0);
+        assert_eq!((launcher.list.selected().unwrap(), launcher.list.offset()), (5, 1));
+        launcher.list.select(0);
         launcher.move_selection(Nav::Up);
-        assert_eq!((launcher.selected, launcher.offset), (8, 3));
+        assert_eq!((launcher.list.selected().unwrap(), launcher.list.offset()), (8, 3));
         launcher.move_selection(Nav::Down);
-        assert_eq!((launcher.selected, launcher.offset), (0, 0));
+        assert_eq!((launcher.list.selected().unwrap(), launcher.list.offset()), (0, 0));
     }
 
     #[test]
@@ -1649,10 +1458,11 @@ mod tests {
         launcher.move_selection(Nav::Down);
         let frame = settled(&mut launcher);
 
-        assert_eq!(launcher.rows.len(), 6);
+        assert_eq!(launcher.list.drawn().len(), 6);
         assert!(
             launcher
-                .rows
+                .list
+                .drawn()
                 .iter()
                 .all(|row| launcher.card.contains(row.x, row.bottom() - 1.0))
         );
@@ -1699,13 +1509,13 @@ mod tests {
         assert!(!launcher.set_files(launcher.generation, hits));
 
         // A selected file stays selected when the applications change.
-        launcher.select(3);
+        launcher.list.select(3);
         launcher.set_apps(vec![app("Files", "")]);
         assert_eq!(selected_name(&launcher), Some("fish"));
-        assert_eq!(launcher.selected, 2);
+        assert_eq!(launcher.list.selected(), Some(2));
 
         let frame = settled(&mut launcher);
-        assert_eq!(launcher.rows.len(), 4);
+        assert_eq!(launcher.list.drawn().len(), 4);
         snapshot(&frame, "launch-files");
 
         // Too short a query asks for no files and drops the old ones.
@@ -1750,7 +1560,7 @@ mod tests {
         let mut launcher = launcher();
         type_text(&mut launcher, "qqq");
         let frame = settled(&mut launcher);
-        assert!(launcher.rows.is_empty());
+        assert!(launcher.list.drawn().is_empty());
         assert_eq!(launcher.card.h, SEARCH_HEIGHT + ROW_HEIGHT + space::SM);
         snapshot(&frame, "launch-no-matches");
     }

@@ -1175,6 +1175,11 @@ All of it lives in `enso-core` as tokens, so tools never hard-code a look:
   bar and `RETURN` 300 ms back in, and `SCENE` 420 ms for a whole screen
   changing), and `Tween`, a value that glides to each new target and
   retargets smoothly mid-flight.
+- `search` (in `enso-ui`) — the search card the launcher and the clipboard
+  history are made of: the field with its magnifier, rows starting with a
+  chip, the chosen row's highlight gliding, what `Enter` does said at its
+  end, the wheel and the arrows moving the choice. A tool says what its
+  rows hold; the card looks and moves the same everywhere.
 - `input` (in `enso-ui`) — the shared navigation keys: arrows,
   `Ctrl+n`/`Ctrl+p`, and `j`/`k` where no text field has focus. Overlays
   focus on open and dismiss on `Esc` or a click outside.

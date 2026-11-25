@@ -12,6 +12,8 @@
 //!   buttons.
 //! - [`menu`] — context menus and dropdowns.
 //! - [`scroll`] — a scrolling offset and its scrollbar.
+//! - [`search`] — the search card's field and list: the launcher's, the
+//!   clipboard history's.
 //! - [`controls`] — buttons, toggles, the dialog card, tooltips, splitters,
 //!   and the [`Look`] they share.
 
@@ -20,6 +22,7 @@ pub mod field;
 pub mod form;
 pub mod menu;
 pub mod scroll;
+pub mod search;
 pub mod secret;
 
 pub use controls::{Button, Interaction, Kind, Look, Splitter, Toggle, Tooltip};
