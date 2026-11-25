@@ -621,7 +621,7 @@ impl Card {
             _ => position,
         };
         canvas.text_in(
-            &Text::new(&clock(shown), small, colors.muted),
+            &Text::new(&clock(shown), small, colors.muted).tabular(),
             layout.times,
             Align::Start,
         );

@@ -266,10 +266,11 @@ impl Calendar {
             } else {
                 colors.text
             };
+            // Figures all one width, so the days stand in true columns.
             let text = if date == self.today {
-                Text::new(&label, small, color).bold()
+                Text::new(&label, small, color).bold().tabular()
             } else {
-                Text::new(&label, small, color)
+                Text::new(&label, small, color).tabular()
             };
             canvas.text_in(&text, cell, Align::Center);
         }

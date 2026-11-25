@@ -320,12 +320,12 @@ impl Panel {
                 // The reading comes first: its glyph is drawn only if there
                 // is room beside it, and a long word steps down a size
                 // rather than lose its end.
-                let value = Text::new(&tile.value, look.base, colors.text).bold();
+                let value = Text::new(&tile.value, look.base, colors.text).bold().tabular();
                 let width = canvas.measure(&value).w;
                 let value = if width <= content.w {
                     value
                 } else {
-                    Text::new(&tile.value, look.small, colors.text).bold()
+                    Text::new(&tile.value, look.small, colors.text).bold().tabular()
                 };
                 let tile_icon = look.icon - 2.0;
                 let tint = match tile.on {
@@ -399,7 +399,7 @@ impl Panel {
         let mut right = content.right() - CHEVRON - space::XS;
         let reading = format!("{}%", percent.min(100));
         canvas.text_in(
-            &Text::new(&reading, look.small, colors.subtle),
+            &Text::new(&reading, look.small, colors.subtle).tabular(),
             Rect::new(right - READING, content.y, READING, content.h),
             Align::End,
         );

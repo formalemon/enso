@@ -775,6 +775,7 @@ impl Bar {
             .measure(
                 &Text::new(&says, size, colors.text)
                     .medium()
+                    .tabular()
                     .max_width(longest),
             )
             .w
@@ -791,6 +792,7 @@ impl Bar {
         // island as it grows: the words never squeeze or spill.
         let text = Text::new(&says, size, colors.text)
             .medium()
+            .tabular()
             .max_width((natural - 2.0 * space::LG).max(1.0));
         let island = bar.centered(width, bar.h);
         self.clock_island = Some(island);
@@ -938,7 +940,7 @@ impl Bar {
         });
         let label = figures
             .as_deref()
-            .map(|figures| Text::new(figures, battery.figures(), colors.text).bold());
+            .map(|figures| Text::new(figures, battery.figures(), colors.text).bold().tabular());
         let layout = self
             .around
             .layout

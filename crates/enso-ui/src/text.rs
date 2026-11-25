@@ -8,8 +8,8 @@ use std::{
 };
 
 use cosmic_text::{
-    Attrs, Buffer, Color, Ellipsize, EllipsizeHeightLimit, Family, FontSystem, Metrics, Shaping,
-    SwashCache, Weight as FontWeight, Wrap,
+    Attrs, Buffer, Color, Ellipsize, EllipsizeHeightLimit, Family, FeatureTag, FontFeatures,
+    FontSystem, Metrics, Shaping, SwashCache, Weight as FontWeight, Wrap,
 };
 use enso_core::{
     Rgba,
@@ -51,6 +51,9 @@ pub struct Text<'a> {
     pub max_width: Option<f32>,
     /// Lines to show before truncating. Only meaningful with `max_width`.
     pub max_lines: usize,
+    /// Figures all the same width (OpenType `tnum`), where the font has
+    /// them: a clock or a count keeps its width as its digits change.
+    pub tabular: bool,
 }
 
 impl<'a> Text<'a> {
@@ -63,7 +66,16 @@ impl<'a> Text<'a> {
             font: Font::Ui,
             max_width: None,
             max_lines: 1,
+            tabular: false,
         }
+    }
+
+    /// Figures all the same width, so the words keep their width as the
+    /// digits in them change: clocks, percentages, counts.
+    #[must_use]
+    pub fn tabular(mut self) -> Self {
+        self.tabular = true;
+        self
     }
 
     #[must_use]
@@ -296,10 +308,25 @@ fn shape_fitted(
     let Some(width) = text.max_width else {
         return shape(fonts, families, text, scale, None, false);
     };
-    let width = (width * scale).max(1.0);
     if text.max_lines == 1 {
+        // Whether one line fits is decided where text is measured — a pixel
+        // to a logical pixel — and with half a pixel to spare. Text laid out
+        // in the width it was measured at is then never cut short: not by a
+        // rounding in whoever worked the width out (padding added and taken
+        // off again), nor by the same words coming out a little wider at
+        // another scale, where letters are hinted to other pixels.
+        let natural = shape(fonts, families, text, 1.0, None, false);
+        if extent(&natural).w <= width + 0.5 {
+            return if scale == 1.0 {
+                natural
+            } else {
+                shape(fonts, families, text, scale, None, false)
+            };
+        }
+        let width = (width * scale).max(1.0);
         return shape(fonts, families, text, scale, Some(width), true);
     }
+    let width = (width * scale).max(1.0);
     // cosmic-text's multi-line ellipsis path keeps the space a wrapped
     // last line starts with, so only use it when truncation is needed.
     let wrapped = shape(fonts, families, text, scale, Some(width), false);
@@ -334,7 +361,12 @@ fn shape(
         Weight::Medium => FontWeight::MEDIUM,
         Weight::Bold => FontWeight::BOLD,
     };
-    let attrs = Attrs::new().family(families.of(text.font)).weight(weight);
+    let mut attrs = Attrs::new().family(families.of(text.font)).weight(weight);
+    if text.tabular {
+        let mut features = FontFeatures::new();
+        features.enable(FeatureTag::new(b"tnum"));
+        attrs = attrs.font_features(features);
+    }
     buffer.set_text(text.text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(fonts, false);
     buffer
@@ -351,6 +383,7 @@ struct Form {
     max_lines: usize,
     weight: Weight,
     font: Font,
+    tabular: bool,
 }
 
 impl Form {
@@ -362,6 +395,7 @@ impl Form {
             max_lines: text.max_lines,
             weight: text.weight,
             font: text.font,
+            tabular: text.tabular,
         }
     }
 
@@ -569,6 +603,80 @@ mod tests {
         assert!(layouts.len() <= 2 * GENERATION, "{}", layouts.len());
         let form = Form::of(&keep, 1.0);
         assert!(layouts.has(form.key(keep.text), keep.text, form));
+    }
+
+    /// Text laid out within the width it was measured at is never cut
+    /// short: the bar's clock measures itself and is drawn at that width,
+    /// at every minute of the day, at any scale.
+    #[test]
+    fn text_fits_the_width_it_was_measured_at() {
+        let mut cut = Vec::new();
+        for font in ["", "Google Sans Flex"] {
+            let appearance = Appearance {
+                font: if font.is_empty() {
+                    Appearance::default().font
+                } else {
+                    font.into()
+                },
+                ..Appearance::default()
+            };
+            let mut engine = TextEngine::new(&appearance);
+            for minute in 0..24 * 60 {
+                let says = format!("Wed 25 Nov  {:02}:{:02}", minute / 60, minute % 60);
+                // The clock's size, at the body sizes enso offers.
+                for size in [12.04f32, 13.76] {
+                    let text = Text::new(&says, size, Rgba::rgb(0, 0, 0)).medium();
+                    let measured = engine.measure(&text).w;
+                    for scale in [1.0f32, 1.25, 1.5] {
+                        let Loaded {
+                            fonts,
+                            layouts,
+                            families,
+                            ..
+                        } = engine.loaded_mut();
+                        let whole = extent(layout(fonts, layouts, families, &text, scale)).w;
+                        // The bar's own sum: padding added round the words
+                        // for the island, and taken off again for them.
+                        let padded = (measured + 2.0 * 16.0) - 2.0 * 16.0;
+                        let fitted = text.max_width(padded);
+                        let drawn = extent(layout(fonts, layouts, families, &fitted, scale)).w;
+                        if drawn < whole - 0.5 {
+                            cut.push(format!(
+                                "{font:?} {says} {size}px at {scale}: {drawn} < {whole}"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            cut.is_empty(),
+            "{} cut short, e.g. {:?}",
+            cut.len(),
+            &cut[..cut.len().min(4)]
+        );
+    }
+
+    #[test]
+    fn tabular_figures_keep_a_clock_one_width() {
+        for font in ["", "Google Sans Flex"] {
+            let appearance = Appearance {
+                font: if font.is_empty() {
+                    Appearance::default().font
+                } else {
+                    font.into()
+                },
+                ..Appearance::default()
+            };
+            let mut engine = TextEngine::new(&appearance);
+            let width = |engine: &mut TextEngine, says: &str| {
+                let text = Text::new(says, 12.0, Rgba::rgb(0, 0, 0)).medium();
+                engine.measure(&text.tabular()).w
+            };
+            let ones = width(&mut engine, "11:11");
+            let eights = width(&mut engine, "08:58");
+            assert!((ones - eights).abs() < 0.01, "{font:?}: {ones} {eights}");
+        }
     }
 
     #[test]

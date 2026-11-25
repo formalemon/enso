@@ -133,7 +133,7 @@ impl Osd {
     pub fn width(&self, canvas: &mut Canvas<'_>, scale: Scale, size: f32) -> f32 {
         // As wide for 5 % as for 100 %, so the island doesn't twitch.
         let widest = canvas
-            .measure(&Text::new("100%", size, Rgba::TRANSPARENT).bold())
+            .measure(&Text::new("100%", size, Rgba::TRANSPARENT).bold().tabular())
             .w
             .ceil();
         let icon = scale
@@ -189,7 +189,7 @@ impl Osd {
         }
 
         let label = self.label();
-        let text = Text::new(&label, size, on).bold();
+        let text = Text::new(&label, size, on).bold().tabular();
         let figures = Rect::new(
             bar.right() + scale.gap(),
             island.y,
