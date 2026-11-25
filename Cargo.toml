@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.89"
 repository = "https://github.com/formalemon/enso"
@@ -12,15 +12,15 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates.
-enso-core = { path = "crates/enso-core", version = "0.4.0" }
-enso-sys = { path = "crates/enso-sys", version = "0.4.0" }
-enso-fs = { path = "crates/enso-fs", version = "0.4.0" }
+enso-core = { path = "crates/enso-core", version = "0.5.0" }
+enso-sys = { path = "crates/enso-sys", version = "0.5.0" }
+enso-fs = { path = "crates/enso-fs", version = "0.5.0" }
 # Every tool gets enso-ui with all its features, tests or not: a feature on
 # in one build and off in another (`cargo test -p` turning on `png`, the
 # whole workspace `picture`) gives enso-ui, and everything built on it, a
 # second copy in target/. Release builds of the workspace had both anyway.
-enso-ui = { path = "crates/enso-ui", version = "0.4.0", features = ["png", "picture"] }
-enso-scene = { path = "crates/enso-scene", version = "0.4.0", default-features = false }
+enso-ui = { path = "crates/enso-ui", version = "0.5.0", features = ["png", "picture"] }
+enso-scene = { path = "crates/enso-scene", version = "0.5.0", default-features = false }
 
 # Data & config.
 serde = { version = "1", features = ["derive"] }
