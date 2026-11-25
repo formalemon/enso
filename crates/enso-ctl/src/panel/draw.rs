@@ -285,7 +285,8 @@ impl Panel {
                 || self
                     .prompt
                     .as_ref()
-                    .is_some_and(|prompt| prompt.field.is_animating(now)),
+                    .is_some_and(|prompt| prompt.field.is_animating(now))
+                || self.steaming,
         )
     }
 
@@ -301,6 +302,7 @@ impl Panel {
         let colors = &look.colors;
         let inner = card.inset_xy(EDGE, 0.0).translate(shift, 0.0);
         let mut y = card.y + EDGE;
+        self.steaming = false;
 
         for tiles in tiles(&self.hardware, self.switches()) {
             let gap = space::SM;
@@ -320,12 +322,12 @@ impl Panel {
                 // The reading comes first: its glyph is drawn only if there
                 // is room beside it, and a long word steps down a size
                 // rather than lose its end.
-                let value = Text::new(&tile.value, look.base, colors.text).bold().tabular();
+                let value = Text::new(&tile.value, look.base, colors.text).medium().tabular();
                 let width = canvas.measure(&value).w;
                 let value = if width <= content.w {
                     value
                 } else {
-                    Text::new(&tile.value, look.small, colors.text).bold().tabular()
+                    Text::new(&tile.value, look.small, colors.text).medium().tabular()
                 };
                 let tile_icon = look.icon - 2.0;
                 let tint = match tile.on {
@@ -333,7 +335,16 @@ impl Panel {
                     _ => look.accent,
                 };
                 if canvas.glyphs() && width + space::SM + tile_icon <= content.w {
-                    canvas.icon(tile.icon, tile_icon, tint, top, Align::End);
+                    // Kept awake: the steam over the cup drifts.
+                    let steam = tile.icon.figure == enso_core::Figure::Cup
+                        && tile.on == Some(true)
+                        && self.ctx.motion.is_enabled();
+                    let live = enso_ui::figure::Live {
+                        time: steam.then(|| seconds(now)),
+                        amount: None,
+                    };
+                    self.steaming |= steam;
+                    canvas.icon_live(tile.icon, tile_icon, tint, top, Align::End, live);
                 }
                 canvas.text_in(&value, top, Align::Start);
                 canvas.text_in(
@@ -393,7 +404,12 @@ impl Panel {
         };
         let size = look.icon;
         let button = Rect::new(content.x, content.y, look.icon_width, content.h);
-        canvas.icon(glyph, size, colors.subtle, button, Align::Start);
+        // The sun's rays reach as far as the screen is bright.
+        let live = enso_ui::figure::Live {
+            time: None,
+            amount: (dial == Dial::Brightness).then(|| f32::from(percent.min(100)) / 100.0),
+        };
+        canvas.icon_live(glyph, size, colors.subtle, button, Align::Start, live);
 
         // Every slider keeps the chevron's room, so the tracks line up.
         let mut right = content.right() - CHEVRON - space::XS;
@@ -425,13 +441,18 @@ impl Panel {
         let travel = Rect::new(track.x + KNOB, track.y, track.w - 2.0 * KNOB, track.h);
         let knob = travel.x + travel.w * f32::from(percent.min(100)) / 100.0;
         canvas.pill(track, colors.highlight_med);
-        // A muted volume keeps its place, but loses its colour.
-        let fill = if muted { colors.muted } else { look.accent };
+        // A level is a quantity, not a state: the fill is quiet, and the
+        // accent is left for what is on. A muted volume keeps its place but
+        // goes quieter still.
+        let fill = if muted { colors.muted } else { colors.subtle };
         canvas.pill(
             Rect::new(track.x, track.y, knob + KNOB - track.x, track.h),
             fill,
         );
         let (_, cy) = track.center();
+        // The knob sits on the track, lifted a little off it.
+        let disc = Rect::new(knob - KNOB, cy - KNOB, 2.0 * KNOB, 2.0 * KNOB);
+        canvas.shadow(disc, KNOB, enso_core::style::Shadow::RAISED);
         canvas.circle(knob, cy, KNOB, colors.text);
 
         // Specific targets first: the mute button, then the track — a
@@ -621,7 +642,7 @@ impl Panel {
         );
         let x = content.x + look.icon_width.min(22.0) + space::XS;
         canvas.text_in(
-            &Text::new(title, look.base, colors.text).bold(),
+            &Text::new(title, look.base, colors.text).medium(),
             Rect::new(x, content.y, content.w, content.h),
             Align::Start,
         );
@@ -971,7 +992,7 @@ impl Panel {
     }
 
     /// The dots at the foot of the pages that sit side by side: the one
-    /// showing drawn long, in the accent.
+    /// showing drawn long, and brighter.
     fn paint_dots(&mut self, canvas: &mut Canvas<'_>, card: Rect, look: &Look) {
         const DOT: f32 = 6.0;
         const LONG: f32 = 16.0;
@@ -985,7 +1006,7 @@ impl Panel {
             let w = if current { LONG } else { DOT };
             let dot = Rect::new(x, middle - DOT / 2.0, w, DOT);
             let tint = if current {
-                look.accent
+                look.colors.subtle
             } else {
                 look.colors.highlight_high
             };
@@ -1366,4 +1387,11 @@ fn paint_switch(canvas: &mut Canvas<'_>, rect: Rect, on: f32, look: &Look) {
         knob / 2.0,
         colors.subtle.mix(colors.base, on),
     );
+}
+
+/// Seconds since the panel first drew: the clock small motions keep.
+fn seconds(now: Instant) -> f32 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    now.saturating_duration_since(*START.get_or_init(|| now))
+        .as_secs_f32()
 }

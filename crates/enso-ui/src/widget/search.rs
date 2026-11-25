@@ -322,7 +322,7 @@ pub fn letter_chip(canvas: &mut Canvas<'_>, chip: Rect, name: &str, look: &Look)
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_default();
     canvas.text_in(
-        &Text::new(&initial, look.size, tint).bold(),
+        &Text::new(&initial, look.size, tint).medium(),
         chip,
         Align::Center,
     );

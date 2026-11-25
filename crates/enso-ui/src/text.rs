@@ -54,6 +54,10 @@ pub struct Text<'a> {
     /// Figures all the same width (OpenType `tnum`), where the font has
     /// them: a clock or a count keeps its width as its digits change.
     pub tabular: bool,
+    /// Extra space between letters, in ems: a little less for large
+    /// titles, which look loose at the spacing made for reading, a little
+    /// more for small labels.
+    pub tracking: f32,
 }
 
 impl<'a> Text<'a> {
@@ -67,7 +71,15 @@ impl<'a> Text<'a> {
             max_width: None,
             max_lines: 1,
             tabular: false,
+            tracking: 0.0,
         }
+    }
+
+    /// Letters set `ems` closer (less than naught) or further apart.
+    #[must_use]
+    pub fn tracking(mut self, ems: f32) -> Self {
+        self.tracking = ems;
+        self
     }
 
     /// Figures all the same width, so the words keep their width as the
@@ -367,6 +379,9 @@ fn shape(
         features.enable(FeatureTag::new(b"tnum"));
         attrs = attrs.font_features(features);
     }
+    if text.tracking != 0.0 {
+        attrs = attrs.letter_spacing(text.tracking);
+    }
     buffer.set_text(text.text, &attrs, Shaping::Advanced, None);
     buffer.shape_until_scroll(fonts, false);
     buffer
@@ -384,6 +399,7 @@ struct Form {
     weight: Weight,
     font: Font,
     tabular: bool,
+    tracking: u32,
 }
 
 impl Form {
@@ -396,6 +412,7 @@ impl Form {
             weight: text.weight,
             font: text.font,
             tabular: text.tabular,
+            tracking: text.tracking.to_bits(),
         }
     }
 

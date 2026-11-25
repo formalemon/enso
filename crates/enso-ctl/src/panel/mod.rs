@@ -461,6 +461,9 @@ pub struct Panel {
     mic_switch: Tween<f32>,
     before_sleep_switch: Tween<f32>,
     quiet_switch: Tween<f32>,
+    /// Keeping awake is on and its tile shows: the steam over its cup
+    /// drifts, a frame at a time.
+    steaming: bool,
     /// Do not disturb, as it stands now.
     quiet: bool,
     /// The screens, as niri last said, while the Displays page is open.
@@ -525,6 +528,7 @@ impl Panel {
             mic_switch: Tween::new(0.0),
             before_sleep_switch: Tween::new(0.0),
             quiet_switch: Tween::new(0.0),
+            steaming: false,
             quiet: false,
             displays: Vec::new(),
             night: None,

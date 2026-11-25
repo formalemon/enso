@@ -4,11 +4,10 @@
 //!
 //! The key for each is a letter of its own name, marked in the name itself
 //! in the choice's colour: the L of Lock, the o of Log out. Landing on a
-//! choice sends a glint of light across its letter, and a small sparkle
-//! twinkles at its shoulder — once, then it rests.
+//! choice sends a glint of light across its letter, once, then it rests;
+//! landing on Lock lifts its shackle a little.
 
 use std::{
-    f32::consts::PI,
     os::unix::net::UnixListener,
     thread,
     time::{Duration, Instant},
@@ -403,7 +402,13 @@ impl App for Menu {
             } else {
                 base_size
             };
-            canvas.icon(action.icon(), glyph, tint, disc, Align::Center);
+            // The lock opens a little as the highlight comes to rest on it.
+            let near = 1.0 - (self.highlight.get(now) - index as f32).abs().min(1.0);
+            let live = enso_ui::figure::Live {
+                time: None,
+                amount: (*action == Action::Lock).then_some(near),
+            };
+            canvas.icon_live(action.icon(), glyph, tint, disc, Align::Center, live);
 
             let label = Text::new(
                 action.label(),
@@ -469,8 +474,7 @@ impl Menu {
 
 /// A choice's name, centred in `row`, with the letter that picks it — the
 /// byte range `mark` — in its own colour. While `glint` (`0..1`) is under
-/// way, a band of light crosses that letter, and a small four-pointed
-/// sparkle grows and fades at its shoulder.
+/// way, a band of light crosses that letter.
 fn paint_label(
     canvas: &mut Canvas<'_>,
     label: &Text<'_>,
@@ -533,21 +537,6 @@ fn paint_label(
             piece(canvas, key, cell.x, cell.w, shine);
         },
     );
-    // The sparkle: it swells and fades over the glint, turning a little.
-    let size = (PI * t).sin();
-    if size > 0.01 {
-        let (x, y) = (cell.right() + 1.5, row.y + row.h * 0.22);
-        let (long, short) = (3.6 * size, 1.0 * size);
-        let turn = t * 0.6;
-        let points: Vec<(f32, f32)> = (0..8)
-            .map(|i| {
-                let reach = if i % 2 == 0 { long } else { short };
-                let angle = turn + i as f32 * PI / 4.0;
-                (x + reach * angle.cos(), y + reach * angle.sin())
-            })
-            .collect();
-        canvas.polygon(&points, shine.alpha(size.min(1.0)));
-    }
 }
 
 #[cfg(test)]
@@ -779,7 +768,7 @@ mod tests {
     }
 
     /// The selected name's key letter is in its choice's colour; caught
-    /// halfway, the glint is on it and the sparkle beside it.
+    /// halfway, the glint is on it.
     #[test]
     fn the_key_letter_is_marked_and_glints() {
         let mut menu = menu(four());

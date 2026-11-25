@@ -659,11 +659,14 @@ impl Card {
         }
         let glow = self.glow[1].get(now);
         let play = layout.play.inset(-1.5 * glow);
+        // The one big button: the lightest thing on the card, its glyph cut
+        // in the ground's colour. The accent is the wave's — what has
+        // played — not the button's.
         canvas.circle(
             play.x + play.w / 2.0,
             play.y + play.h / 2.0,
             play.w / 2.0,
-            accent.mix(colors.text, 0.12 * glow),
+            colors.text.mix(colors.subtle, 0.1 * (1.0 - glow)),
         );
         // Play turns into pause as the wave rises, and back.
         let ink = colors.base;
@@ -681,7 +684,7 @@ impl Card {
         for (i, rect) in layout.dots.iter().enumerate() {
             let dot = rect.inset(3.0);
             let color = if i == current {
-                accent
+                colors.subtle
             } else {
                 colors.highlight_high
             };

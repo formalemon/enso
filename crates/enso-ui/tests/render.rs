@@ -71,9 +71,15 @@ fn canvas_draws_shapes_text_and_icons() {
 
     assert_eq!((frame.width, frame.height), (720, 400));
     let px = |c: Rgba| [c.r, c.g, c.b, c.a];
-    // Outside the card: opaque base. Inside: the surface colour.
+    // Outside the card: opaque base. Inside: the surface colour, give or
+    // take the card's grain.
     assert_eq!(frame.pixel(4, 4), px(colors.base));
-    assert_eq!(frame.pixel(360, 300), px(colors.surface));
+    let inside = frame.pixel(360, 300);
+    let near = inside
+        .iter()
+        .zip(px(colors.surface))
+        .all(|(a, b)| a.abs_diff(b) <= 4);
+    assert!(near, "{inside:?} is not the surface");
     // The rounded corner leaves the card's bounding-box corner unfilled.
     assert_ne!(frame.pixel(41, 41), px(colors.surface));
     // The first swatch is the `love` accent.

@@ -286,7 +286,7 @@ impl Daemon {
 
     fn summary<'a>(&self, note: &'a Notification, color: Rgba) -> Text<'a> {
         Text::new(&note.summary, self.size(), color)
-            .bold()
+            .medium()
             .max_width(self.text_width(note))
     }
 
@@ -1213,9 +1213,14 @@ mod tests {
             assert_eq!(daemon.draw(canvas, settled), Paint::Idle);
         });
 
+        // The surface's colour, give or take the card's grain.
         let surface = daemon.ctx.theme.colors.surface;
         let inside = frame.pixel((SHADOW as u32 + 6) * 2, (daemon.top as u32 + 50) * 2);
-        assert_eq!(inside, [surface.r, surface.g, surface.b, 255]);
+        let want = [surface.r, surface.g, surface.b, 255];
+        assert!(
+            inside.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 4),
+            "{inside:?} is not the surface {want:?}"
+        );
         frame.check(env!("CARGO_MANIFEST_DIR"), "notify");
     }
 }

@@ -912,7 +912,7 @@ impl UiApp for Launcher {
                 Entry::Answer(answer) => {
                     canvas.fill(chip, radius::CONTROL, accent.alpha(opacity::TINT + 0.06));
                     canvas.text_in(
-                        &Text::new("=", base_size, accent).bold(),
+                        &Text::new("=", base_size, accent).medium(),
                         chip,
                         Align::Center,
                     );

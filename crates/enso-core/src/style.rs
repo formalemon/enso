@@ -106,6 +106,21 @@ impl Shadow {
         offset_y: 6.0,
         opacity: 0.28,
     };
+    /// Where a floating card nearly touches what is behind it: tight and
+    /// dark. Drawn with [`Shadow::AMBIENT`], for depth as light gives it.
+    pub const CONTACT: Self = Self {
+        color: crate::Rgba::rgb(0, 0, 0),
+        blur: 3.0,
+        offset_y: 1.0,
+        opacity: 0.34,
+    };
+    /// The wide, faint shadow a floating card casts further off.
+    pub const AMBIENT: Self = Self {
+        color: crate::Rgba::rgb(0, 0, 0),
+        blur: 30.0,
+        offset_y: 12.0,
+        opacity: 0.16,
+    };
     /// Small raised controls.
     pub const RAISED: Self = Self {
         color: crate::Rgba::rgb(0, 0, 0),

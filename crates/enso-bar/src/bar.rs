@@ -28,7 +28,7 @@ use enso_core::{
 };
 use enso_sys::{
     net::{self, Link},
-    power::{Battery, Sysfs},
+    power::{Battery, BatteryStatus, Sysfs},
 };
 use enso_ui::{
     Align, Anchor, App, Button, Canvas, Cx, Event, Layer, Paint, PointerEvent, Proxy, Rect,
@@ -92,6 +92,15 @@ const POUR: Transition = Transition::new(900, Easing::InOutCubic);
 
 /// The widest a window's name gets in the clock island.
 const MAX_TITLE: f32 = 420.0;
+
+/// How often the steam over the cup moves on while the machine is kept
+/// awake: slow wisps need no more.
+const STEAM_TICK: Duration = Duration::from_millis(50);
+/// While the battery charges, a light runs along its charge for `SHINE`
+/// seconds, once every `SHINE_EVERY`, a frame each `SHINE_TICK`.
+const SHINE: f32 = 1.4;
+const SHINE_EVERY: f32 = 4.5;
+const SHINE_TICK: Duration = Duration::from_millis(33);
 
 /// How long the bell rings when something new arrives.
 const RING: Duration = Duration::from_millis(900);
@@ -250,6 +259,8 @@ pub struct Bar {
     notes: bool,
     /// The note last kept, and for which screen.
     noted: Option<(String, island::Island)>,
+    /// When the small motions — steam, the battery's light — next move on.
+    ambient_due: Option<Instant>,
 }
 
 impl Bar {
@@ -315,6 +326,7 @@ impl Bar {
             is_playing: false,
             notes: false,
             noted: None,
+            ambient_due: None,
         };
         bar.notices = Notices::read(&bar.ctx.paths);
         bar.read_settings();
@@ -412,6 +424,7 @@ impl Bar {
         let due = self.playing_due.map_or(due, |intent| intent.min(due));
         let due = self.water_due.map_or(due, |tick| tick.min(due));
         let due = self.osd.due().map_or(due, |hide| hide.min(due));
+        let due = self.ambient_due.map_or(due, |tick| tick.min(due));
         cx.wake_in(due.saturating_duration_since(Instant::now()));
     }
 
@@ -482,6 +495,46 @@ impl Bar {
 
     /// Whether the water is moving: filling, draining, or rippling while it
     /// plays (and still, when motion is turned down).
+    /// Whether the battery is filling.
+    fn charging(&self) -> bool {
+        self.battery
+            .as_ref()
+            .is_some_and(|battery| battery.status == BatteryStatus::Charging)
+    }
+
+    /// How far the light has run along the charging battery (`0..1`), while
+    /// it runs.
+    fn shine_at(&self, now: Instant) -> Option<f32> {
+        if !self.charging() || !self.ctx.motion.is_enabled() {
+            return None;
+        }
+        let t = now.saturating_duration_since(self.epoch).as_secs_f32();
+        let into = t % SHINE_EVERY;
+        (into < SHINE).then_some(into / SHINE)
+    }
+
+    /// When the small motions next move on: the steam over the cup while
+    /// the machine is kept awake, the light along the battery while it
+    /// charges. Nothing, when nothing moves.
+    fn ambient_next(&self, now: Instant) -> Option<Instant> {
+        if !self.ctx.motion.is_enabled() {
+            return None;
+        }
+        if self.status_items().contains(&Item::Awake) {
+            return Some(now + STEAM_TICK);
+        }
+        if self.charging() {
+            let t = now.saturating_duration_since(self.epoch).as_secs_f32();
+            let into = t % SHINE_EVERY;
+            return Some(if into < SHINE {
+                now + SHINE_TICK
+            } else {
+                now + Duration::from_secs_f32(SHINE_EVERY - into)
+            });
+        }
+        None
+    }
+
     fn water_moving(&self, now: Instant) -> bool {
         self.water.is_animating(now) || (self.water.target() > 0.0 && self.ctx.motion.is_enabled())
     }
@@ -771,15 +824,32 @@ impl Bar {
         let colors = self.ctx.theme.colors.clone();
         let says = self.clock_says().to_owned();
         let longest = (bar.w / 3.0).min(MAX_TITLE);
-        let natural = canvas
-            .measure(
-                &Text::new(&says, size, colors.text)
-                    .medium()
-                    .tabular()
-                    .max_width(longest),
-            )
-            .w
-            + 2.0 * space::LG;
+        // The date quieter than the time, where the clock says both — a
+        // double space between them, as the default has. A window's name
+        // is one thing, and said as one.
+        let parts = (says == self.clock)
+            .then(|| says.rsplit_once("  "))
+            .flatten()
+            .map(|(date, time)| (date.trim_end().to_owned(), time.trim_start().to_owned()));
+        let words = match &parts {
+            Some((date, time)) => {
+                let date = Text::new(date, size, colors.subtle).tabular();
+                let time = Text::new(time, size, colors.text).medium().tabular();
+                let (d, t) = (canvas.measure(&date).w, canvas.measure(&time).w);
+                d + space::SM + t
+            }
+            None => {
+                canvas
+                    .measure(
+                        &Text::new(&says, size, colors.text)
+                            .medium()
+                            .tabular()
+                            .max_width(longest),
+                    )
+                    .w
+            }
+        };
+        let natural = words + 2.0 * space::LG;
         let reflow = self.ctx.motion.apply(Transition::REFLOW);
         let tween = self.clock_width.get_or_insert_with(|| Tween::new(natural));
         if tween.target() != natural {
@@ -812,8 +882,19 @@ impl Bar {
             },
         );
         let inside = island.inset_xy(space::SM, 0.0);
-        canvas.with_clip(inside, |canvas| {
-            canvas.text_in(&text, island, Align::Center);
+        canvas.with_clip(inside, |canvas| match &parts {
+            Some((date, time)) => {
+                let date = Text::new(date, size, colors.subtle).tabular();
+                let time = Text::new(time, size, colors.text).medium().tabular();
+                let left = island.x + (island.w - words) / 2.0;
+                let d = canvas.measure(&date).w;
+                canvas.text_in(&date, Rect::new(left, island.y, d, island.h), Align::Start);
+                let at = left + d + space::SM;
+                canvas.text_in(&time, Rect::new(at, island.y, words - d, island.h), Align::Start);
+            }
+            None => {
+                canvas.text_in(&text, island, Align::Center);
+            }
         });
         moving
     }
@@ -940,12 +1021,12 @@ impl Bar {
         });
         let label = figures
             .as_deref()
-            .map(|figures| Text::new(figures, battery.figures(), colors.text).bold().tabular());
+            .map(|figures| Text::new(figures, battery.figures(), colors.text).medium().tabular());
         let layout = self
             .around
             .layout
             .as_deref()
-            .map(|name| Text::new(name, battery.figures(), self.tint(Item::Layout)).bold());
+            .map(|name| Text::new(name, battery.figures(), self.tint(Item::Layout)).medium());
         let widths: Vec<f32> = items
             .iter()
             .map(|item| match (item, self.figure(*item)) {
@@ -975,6 +1056,7 @@ impl Bar {
         canvas.pill(island, self.island_color(ground));
         let (swing, ringing) = self.swing(now);
         let accent = self.ctx.accent();
+        let t = now.saturating_duration_since(self.epoch).as_secs_f32();
 
         if shown > 0.0 {
             let osd = &self.osd;
@@ -983,7 +1065,6 @@ impl Bar {
                     scale,
                     size,
                     colors: &colors,
-                    accent,
                 };
                 osd.draw(canvas, island, look, now);
             });
@@ -1019,10 +1100,15 @@ impl Bar {
                         share = Some(slot.inset_xy(-scale.gap() / 2.0, 0.0));
                         icons::draw(canvas, figure, icon, ink);
                     }
+                    // Kept awake: the steam over the cup drifts.
+                    (Item::Awake, Some(figure)) if self.ctx.motion.is_enabled() => {
+                        icons::draw_at(canvas, figure, icon, ink, t)
+                    }
                     (_, Some(figure)) => icons::draw(canvas, figure, icon, ink),
                     (Item::Battery(charge), None) => {
                         if let Some(label) = &label {
-                            battery.draw(canvas, slot, charge, label, glow, &colors);
+                            let shine = self.shine_at(now);
+                            battery.draw(canvas, slot, charge, label, glow, shine, &colors);
                         }
                     }
                     (_, None) => {
@@ -1097,6 +1183,7 @@ impl App for Bar {
             eprintln!("enso-bar: live theme switching unavailable: {err}");
         }
         self.refresh_clock();
+        self.ambient_due = self.ambient_next(Instant::now());
         self.arm(cx);
     }
 
@@ -1184,6 +1271,10 @@ impl App for Bar {
                     cx.redraw();
                     self.water_due = self.water_moving(now).then(|| now + water::TICK);
                 }
+                if self.ambient_due.is_some_and(|due| now >= due) {
+                    cx.redraw();
+                }
+                self.ambient_due = self.ambient_next(now);
                 if self.playing_due.is_some_and(|due| now >= due) {
                     self.playing_due = None;
                     // What's playing while something plays; otherwise the
@@ -1992,13 +2083,19 @@ mod tests {
         let width = bar.status.unwrap().w;
         snapshot(&discharging, "bar-battery-82");
 
-        // On power: foam, and a bolt that widens the pill.
+        // On power: foam, and a bolt that widens the pill. Between the
+        // light's runs along it, foam all along.
         bar.battery.as_mut().unwrap().status = BatteryStatus::Charging;
-        let (charging, _) = frame(&mut bar, later());
+        let between = bar.epoch + Duration::from_secs_f32(SHINE + 1.0);
+        let (charging, _) = frame(&mut bar, between);
         assert_eq!(bar.charge().unwrap().fill, colors.foam);
         assert!(count(&row(&charging, &bar), colors.foam) > 20);
         assert!(bar.status.unwrap().w > width);
         snapshot(&charging, "bar-battery-charging");
+        // Now and then, a light runs along the charge.
+        let running = bar.epoch + Duration::from_secs_f32(SHINE * 0.5);
+        let (shining, _) = frame(&mut bar, running);
+        assert!(row(&shining, &bar) != row(&charging, &bar), "no light ran along it");
 
         // Nearly empty: a sliver of love, and the figures over the track.
         bar.battery.as_mut().unwrap().status = BatteryStatus::Discharging;

@@ -282,12 +282,13 @@ impl Toggle {
                 } else {
                     light.mix(look.subtle, 0.12)
                 };
-                canvas.circle(
-                    x + knob / 2.0,
-                    rect.y + rect.h / 2.0,
-                    knob / 2.0,
-                    knob_color,
-                );
+                // On its way across the knob stretches a little, widest half
+                // way, as something soft does when it's pushed.
+                let stretch = knob * 0.45 * 4.0 * t * (1.0 - t);
+                let left = (x - stretch / 2.0).max(rect.x + 3.0);
+                let right = (x + knob + stretch / 2.0).min(rect.right() - 3.0);
+                let y = rect.y + (rect.h - knob) / 2.0;
+                canvas.pill(Rect::new(left, y, right - left, knob), knob_color);
             },
         );
         self.knob.is_animating(now)

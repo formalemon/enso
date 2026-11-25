@@ -51,13 +51,40 @@ impl Look {
     }
 }
 
+/// What a figure that moves, or shows how much of something, is drawn at:
+/// the time, in seconds, for one that moves — the steam over a cup drifts —
+/// and an amount (`0..=1`) for one that shows it — the sun's rays at a
+/// brightness, a lock's shackle as it lifts. Figures that neither move nor
+/// measure take no notice.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Live {
+    pub time: Option<f32>,
+    pub amount: Option<f32>,
+}
+
+/// Seconds for a wisp of steam to rise off a cup and go.
+const STEAM: f32 = 2.8;
+
 /// Draw `figure` on its grid, filling the square box of side `size` with its
 /// top-left corner at `(x, y)`.
-pub fn draw(canvas: &mut Canvas<'_>, figure: Figure, (x, y): (f32, f32), size: f32, look: Look) {
+pub fn draw(canvas: &mut Canvas<'_>, figure: Figure, at: (f32, f32), size: f32, look: Look) {
+    draw_live(canvas, figure, at, size, look, Live::default());
+}
+
+/// [`draw`], at a moment or an amount (see [`Live`]).
+pub fn draw_live(
+    canvas: &mut Canvas<'_>,
+    figure: Figure,
+    (x, y): (f32, f32),
+    size: f32,
+    look: Look,
+    live: Live,
+) {
     let frame = Frame {
         x,
         y,
         k: size / GRID,
+        live,
         ..Frame::IDENTITY
     };
     sketch(&mut Pen::draw(canvas, frame, look), figure);
@@ -71,6 +98,18 @@ pub fn draw(canvas: &mut Canvas<'_>, figure: Figure, (x, y): (f32, f32), size: f
 /// full signal, a speaker as at full volume — so a change of state never
 /// changes its size or moves it.
 pub fn draw_fitted(canvas: &mut Canvas<'_>, figure: Figure, rect: Rect, look: Look, swing: f32) {
+    draw_fitted_live(canvas, figure, rect, look, swing, Live::default());
+}
+
+/// [`draw_fitted`], at a moment or an amount (see [`Live`]).
+pub fn draw_fitted_live(
+    canvas: &mut Canvas<'_>,
+    figure: Figure,
+    rect: Rect,
+    look: Look,
+    swing: f32,
+    live: Live,
+) {
     let Some(ink) = ink(fullest(figure), look.pen) else {
         return;
     };
@@ -80,6 +119,7 @@ pub fn draw_fitted(canvas: &mut Canvas<'_>, figure: Figure, rect: Rect, look: Lo
         y: rect.y - ink.y * k,
         k,
         swing,
+        live,
         ..Frame::IDENTITY
     };
     sketch(&mut Pen::draw(canvas, frame, look), figure);
@@ -123,6 +163,7 @@ struct Frame {
     k: f32,
     swing: f32,
     pivot: (f32, f32),
+    live: Live,
 }
 
 impl Frame {
@@ -132,6 +173,10 @@ impl Frame {
         k: 1.0,
         swing: 0.0,
         pivot: (12.0, 12.0),
+        live: Live {
+            time: None,
+            amount: None,
+        },
     };
 
     fn at(self, (u, v): (f32, f32)) -> (f32, f32) {
@@ -414,7 +459,7 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
         }
         Figure::Cup => {
             p.stroke(true, |s| {
-                // The cup, its handle, and two wisps of steam.
+                // The cup and its handle.
                 s.soft(
                     &[(4.0, 9.6), (4.0, 20.0), (16.0, 20.0), (16.0, 9.6)],
                     2.6,
@@ -425,11 +470,17 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
                     .line_to((17.4, 12.0))
                     .arc_to((17.4, 14.6), 2.6, -90.0, 180.0)
                     .line_to((16.0, 17.2));
-                s.move_to((8.0, 6.6))
-                    .cubic_to((6.8, 5.4), (9.2, 4.2), (8.0, 3.0));
-                s.move_to((12.0, 6.6))
-                    .cubic_to((10.8, 5.4), (13.2, 4.2), (12.0, 3.0));
             });
+            match p.frame.live.time {
+                // Two wisps of steam, still.
+                None => p.stroke(true, |s| {
+                    s.move_to((8.0, 6.6))
+                        .cubic_to((6.8, 5.4), (9.2, 4.2), (8.0, 3.0));
+                    s.move_to((12.0, 6.6))
+                        .cubic_to((10.8, 5.4), (13.2, 4.2), (12.0, 3.0));
+                }),
+                Some(t) => steam(p, t),
+            }
         }
         Figure::Display => {
             p.stroke(true, |s| {
@@ -569,6 +620,12 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
             });
         }
         Figure::Brightness => {
+            // The rays reach as far as the light is bright, given how bright.
+            let reach = p
+                .frame
+                .live
+                .amount
+                .map_or(9.2, |amount| 7.9 + 1.9 * amount.clamp(0.0, 1.0));
             p.stroke(true, |s| {
                 s.circle((12.0, 12.0), 4.2);
                 for i in 0..8 {
@@ -576,7 +633,7 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
                     let (cos, sin) = (a.cos(), a.sin());
                     s.line(
                         (12.0 + 7.4 * cos, 12.0 + 7.4 * sin),
-                        (12.0 + 9.2 * cos, 12.0 + 9.2 * sin),
+                        (12.0 + reach * cos, 12.0 + reach * sin),
                     );
                 }
             });
@@ -593,12 +650,14 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
             });
         }
         Figure::Lock => {
+            // The shackle lifts out of the body as far as it's opened.
+            let lift = p.frame.live.amount.unwrap_or(0.0).clamp(0.0, 1.0) * 2.4;
             p.stroke(true, |s| {
                 s.rounded(5.0, 10.0, 14.0, 10.6, 2.6);
                 s.move_to((8.4, 10.0))
-                    .line_to((8.4, 7.0))
-                    .arc_to((12.0, 7.0), 3.6, 180.0, 180.0)
-                    .line_to((15.6, 10.0));
+                    .line_to((8.4, 7.0 - lift))
+                    .arc_to((12.0, 7.0 - lift), 3.6, 180.0, 180.0)
+                    .line_to((15.6, 10.0 - lift));
             });
             p.fill(true, |s| {
                 s.circle((12.0, 15.3), 1.5);
@@ -964,9 +1023,125 @@ pub const ALL: [Figure; 51] = [
     Figure::Sliders,
 ];
 
+/// Two wisps of steam rising off a cup at `t` seconds: each leaves the
+/// coffee straight, sways more as it climbs, thins to a whisper near the
+/// top, and lets go, the second half a breath behind the first.
+fn steam(p: &mut Pen<'_, '_>, t: f32) {
+    for (x0, behind) in [(8.0f32, 0.0f32), (12.0, 0.5)] {
+        let age = (t / STEAM + behind).rem_euclid(1.0);
+        // The stretch of the wisp that shows, as heights 0 (the cup) to 1.
+        let top = (age * 1.4).min(1.0);
+        let bottom = (age * 1.4 - 0.85).max(0.0);
+        if top - bottom < 0.04 {
+            continue;
+        }
+        let at = |v: f32| {
+            let sway = (std::f32::consts::TAU * (v * 0.6 - age)).sin();
+            (x0 + 1.0 * v * sway, 6.8 - 4.6 * v)
+        };
+        // Low, it is the cup's own colour; higher, a whisper of it.
+        let fade = 0.65f32.clamp(bottom, top);
+        for (from, to, lit) in [(bottom, fade, true), (fade, top, false)] {
+            if to - from < 0.02 {
+                continue;
+            }
+            p.stroke(lit, |s| {
+                s.move_to(at(from));
+                for i in 1..=8 {
+                    s.line_to(at(from + (to - from) * i as f32 / 8.0));
+                }
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A figure drawn alone, 48 pixels square, at a moment or an amount.
+    fn alone(figure: Figure, live: Live) -> crate::Offscreen {
+        let mut text = crate::TextEngine::new(&enso_core::config::Appearance::default());
+        crate::Offscreen::render(&mut text, (48, 48), SHOWN, |canvas| {
+            draw_live(
+                canvas,
+                figure,
+                (0.0, 0.0),
+                48.0,
+                Look::new(Rgba::rgb(255, 255, 255)),
+                live,
+            );
+        })
+    }
+
+    /// Pixels a logical pixel, in the pictures made to look at.
+    const SHOWN: u32 = 2;
+
+    /// How much of the box is inked, and how high the ink reaches.
+    fn ink_of(frame: &crate::Offscreen) -> (usize, u32) {
+        let lit = frame.rgba.chunks(4).filter(|px| px[3] > 40).count();
+        let top = (0..frame.height)
+            .find(|&y| (0..frame.width).any(|x| frame.pixel(x, y)[3] > 40))
+            .unwrap_or(frame.height);
+        (lit, top)
+    }
+
+    #[test]
+    fn steam_drifts_a_sun_shines_and_a_lock_opens() {
+        let at = |t: f32| Live {
+            time: Some(t),
+            amount: None,
+        };
+        let by = |amount: f32| Live {
+            time: None,
+            amount: Some(amount),
+        };
+        // The steam moves; the cup under it does not.
+        let (one, two) = (alone(Figure::Cup, at(0.4)), alone(Figure::Cup, at(1.3)));
+        assert!(one.rgba != two.rgba, "the steam stood still");
+        let low = |frame: &crate::Offscreen| frame.rgba[frame.rgba.len() / 2..].to_vec();
+        assert!(low(&one) == low(&two), "the cup moved");
+        // Brighter, the rays reach further.
+        let dim = alone(Figure::Brightness, by(0.0));
+        let bright = alone(Figure::Brightness, by(1.0));
+        assert!(ink_of(&bright).0 > ink_of(&dim).0 + 40 * SHOWN as usize);
+        // Opened, the shackle stands higher.
+        let (shut, open) = (alone(Figure::Lock, by(0.0)), alone(Figure::Lock, by(1.0)));
+        assert!(ink_of(&open).1 + 3 * SHOWN < ink_of(&shut).1);
+        // Still, as they always were.
+        assert!(alone(Figure::Lock, Live::default()).rgba == shut.rgba);
+        #[cfg(feature = "png")]
+        {
+            let frames: Vec<crate::Offscreen> = (0..8)
+                .map(|i| alone(Figure::Cup, at(i as f32 * STEAM / 8.0)))
+                .chain([0.0, 0.5, 1.0].map(|a| alone(Figure::Brightness, by(a))))
+                .chain([0.0, 0.5, 1.0].map(|a| alone(Figure::Lock, by(a))))
+                .collect();
+            let side = (48 * SHOWN) as usize;
+            let width = (side * frames.len()) as u32;
+            // Over the dusk's base, to look at.
+            let mut strip = [0x23u8, 0x21, 0x36, 255].repeat(width as usize * side);
+            for (n, frame) in frames.iter().enumerate() {
+                for y in 0..side {
+                    for x in 0..side {
+                        let src = &frame.rgba[(y * side + x) * 4..(y * side + x) * 4 + 4];
+                        let to = (y * width as usize + n * side + x) * 4;
+                        let keep = 255 - u32::from(src[3]);
+                        for c in 0..3 {
+                            let dst = u32::from(strip[to + c]);
+                            strip[to + c] = (u32::from(src[c]) + dst * keep / 255) as u8;
+                        }
+                    }
+                }
+            }
+            crate::Offscreen {
+                width,
+                height: side as u32,
+                rgba: strip,
+            }
+            .snapshot(env!("CARGO_MANIFEST_DIR"), "figures-live");
+        }
+    }
 
     /// Every figure keeps to its grid with room to spare, and fills enough
     /// of it to be seen: the same optical size, the same breathing room.

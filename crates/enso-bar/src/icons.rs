@@ -109,6 +109,30 @@ pub fn draw(canvas: &mut Canvas<'_>, figure: Figure, rect: Rect, ink: Ink) {
     figure::draw_fitted(canvas, figure, rect, ink.look(), 0.0);
 }
 
+/// [`draw`], at `t` seconds: for a figure that moves, the cup's steam.
+pub fn draw_at(canvas: &mut Canvas<'_>, figure: Figure, rect: Rect, ink: Ink, t: f32) {
+    let live = figure::Live {
+        time: Some(t),
+        amount: None,
+    };
+    draw_live(canvas, figure, rect, ink, live);
+}
+
+/// [`draw`], at a moment or an amount (see [`figure::Live`]).
+pub fn draw_live(
+    canvas: &mut Canvas<'_>,
+    figure: Figure,
+    rect: Rect,
+    ink: Ink,
+    live: figure::Live,
+) {
+    let rect = Rect {
+        y: rect.y - lift(figure, rect.h),
+        ..rect
+    };
+    figure::draw_fitted_live(canvas, figure, rect, ink.look(), 0.0, live);
+}
+
 /// The bell, swung `swing` radians about its knob. With `dot`, a small dot
 /// in that colour sits just clear of its shoulder — no ring is cut around
 /// it, because the island behind may be see-through and a ring would show.
@@ -214,7 +238,9 @@ impl Battery {
     /// Figures and bolt are drawn twice, each time confined to one side of
     /// the fill's edge — in the ground's colour over the fill, in the text
     /// colour over the track — so a figure the edge runs through is split
-    /// cleanly.
+    /// cleanly. While it charges, `shine` (`0..1`) is a light running
+    /// along the charge.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         self,
         canvas: &mut Canvas<'_>,
@@ -222,6 +248,7 @@ impl Battery {
         charge: Charge,
         label: &Text<'_>,
         glow: f32,
+        shine: Option<f32>,
         colors: &Palette,
     ) {
         let (nub_w, nub_h, nub_gap) = self.nub();
@@ -250,6 +277,19 @@ impl Battery {
         let empty = Rect::new(pill.x + level, pill.y, pill.w - level, pill.h);
         let fill = charge.fill.mix(colors.text, glow * 0.25);
         canvas.with_clip(filled, |canvas| canvas.pill(pill, fill));
+        // While it charges, now and then a light runs along the charge:
+        // a soft band, brightest in its middle, crossing from left to right.
+        if let Some(shine) = shine {
+            let band = pill.h * 1.8;
+            let x = filled.x - band + shine * (filled.w + band);
+            canvas.with_clip(filled, |canvas| {
+                for step in 0..6 {
+                    let wide = band * (1.0 - step as f32 / 6.0);
+                    let rect = Rect::new(x + (band - wide) / 2.0, pill.y, wide, pill.h);
+                    canvas.fill(rect, 0.0, colors.text.alpha(0.07));
+                }
+            });
+        }
 
         let figures = canvas.measure(label).w;
         let (bolt_w, bolt_h, bolt_gap) = self.bolt();

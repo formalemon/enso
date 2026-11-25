@@ -6,9 +6,9 @@ use enso_core::{
     style::{Shadow, radius},
 };
 use tiny_skia::{
-    BlendMode, Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, Mask, Paint, Path,
-    PathBuilder, Pattern, PixmapMut, PixmapRef, Point, RadialGradient, SpreadMode, Stroke,
-    Transform,
+    BlendMode, Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient,
+    Mask, Paint, Path, PathBuilder, Pattern, Pixmap, PixmapMut, PixmapRef, Point, RadialGradient,
+    SpreadMode, Stroke, Transform,
 };
 
 use crate::{
@@ -278,13 +278,97 @@ impl<'a> Canvas<'a> {
         self.fill(Rect::new(cx - r, cy - r, r * 2.0, r * 2.0), r, color);
     }
 
-    /// A floating card: its shadow, its fill, and a hairline edge — the
-    /// launcher, the panels, toasts, menus, and dialogs.
+    /// A floating card — the launcher, the panels, toasts, menus, and
+    /// dialogs: lifted off what is behind it, filled, grained, and edged.
     pub fn card(&mut self, rect: Rect, fill: Rgba, edge: Rgba) {
-        use enso_core::style::{radius, stroke};
-        self.shadow(rect, radius::CARD, Shadow::FLOATING);
+        use enso_core::style::radius;
+        self.lift(rect, radius::CARD, 1.0);
         self.fill(rect, radius::CARD, fill);
-        self.stroke(rect, radius::CARD, stroke::HAIRLINE, edge);
+        self.grain(rect, radius::CARD);
+        self.rim(rect, radius::CARD, edge);
+    }
+
+    /// The shadow of something floating `amount` (`0..=1`) of the way off
+    /// the page: a tight, darker one where it nearly touches, and a faint,
+    /// wide one under it — as light falls, rather than one soft haze.
+    /// Draw it before the shape.
+    pub fn lift(&mut self, rect: Rect, radius: f32, amount: f32) {
+        if amount <= 0.0 {
+            return;
+        }
+        for shadow in [Shadow::AMBIENT, Shadow::CONTACT] {
+            let shadow = Shadow {
+                opacity: shadow.opacity * amount.min(1.0),
+                ..shadow
+            };
+            self.shadow(rect, radius, shadow);
+        }
+    }
+
+    /// A card's edge: a hairline of `edge` that catches the light along
+    /// the top and fades into the shadow at the bottom.
+    pub fn rim(&mut self, rect: Rect, radius: f32, edge: Rgba) {
+        use enso_core::style::stroke;
+        let width = stroke::HAIRLINE;
+        let Some(path) = rounded_rect(rect.inset(width / 2.0), (radius - width / 2.0).max(0.0))
+        else {
+            return;
+        };
+        let lit = edge.mix(Rgba::rgb(255, 255, 255), 0.14);
+        let stops = vec![
+            GradientStop::new(0.0, self.color(lit)),
+            GradientStop::new(0.35, self.color(edge)),
+            GradientStop::new(1.0, self.color(edge.alpha(0.45))),
+        ];
+        let Some(shader) = LinearGradient::new(
+            Point::from_xy(0.0, rect.y),
+            Point::from_xy(0.0, rect.bottom()),
+            stops,
+            SpreadMode::Pad,
+            Transform::identity(),
+        ) else {
+            return self.stroke(rect, radius, width, edge);
+        };
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        let stroke = Stroke {
+            width,
+            ..Stroke::default()
+        };
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.stroke_path(&path, &paint, &stroke, transform, mask);
+        }
+    }
+
+    /// A fine grain over a surface, a pixel of the screen to a speck: the
+    /// tooth of paper rather than the flat of a screen. It also breaks up
+    /// the steps a dark gradient falls into.
+    pub fn grain(&mut self, rect: Rect, radius: f32) {
+        let Some(path) = rounded_rect(rect, radius) else {
+            return;
+        };
+        let scale = self.scale;
+        let paint = Paint {
+            shader: Pattern::new(
+                noise().as_ref(),
+                SpreadMode::Repeat,
+                FilterQuality::Nearest,
+                self.opacity,
+                Transform::from_scale(1.0 / scale, 1.0 / scale),
+            ),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::Winding, transform, mask);
+        }
     }
 
     /// Soft drop shadow for a rounded rectangle. Draw it before the shape.
@@ -376,6 +460,39 @@ impl<'a> Canvas<'a> {
             (snap(x), snap(y)),
             size,
             crate::figure::Look::new(color),
+        );
+        Size { w: size, h: size }
+    }
+
+    /// [`Canvas::icon`], drawn at a moment or showing an amount (see
+    /// [`figure::Live`](crate::figure::Live)): steam that drifts, a sun as
+    /// bright as the screen.
+    pub fn icon_live(
+        &mut self,
+        icon: Icon,
+        size: f32,
+        color: Rgba,
+        rect: Rect,
+        align: Align,
+        live: crate::figure::Live,
+    ) -> Size {
+        if !self.glyphs() {
+            return self.icon(icon, size, color, rect, align);
+        }
+        let x = match align {
+            Align::Start => rect.x,
+            Align::Center => rect.x + (rect.w - size) / 2.0,
+            Align::End => rect.right() - size,
+        };
+        let y = rect.y + (rect.h - size) / 2.0;
+        let snap = |v: f32| (v * self.scale).round() / self.scale;
+        crate::figure::draw_live(
+            self,
+            icon.figure,
+            (snap(x), snap(y)),
+            size,
+            crate::figure::Look::new(color),
+            live,
         );
         Size { w: size, h: size }
     }
@@ -702,6 +819,18 @@ impl<'a> Canvas<'a> {
         Transform::from_scale(self.scale, self.scale)
     }
 
+    /// `color` as tiny-skia takes it: in the canvas's channel order, and
+    /// as see-through as the canvas is drawing.
+    fn color(&self, color: Rgba) -> Color {
+        let color = color.alpha(self.opacity);
+        let (r, b) = if self.bgra {
+            (color.b, color.r)
+        } else {
+            (color.r, color.b)
+        };
+        Color::from_rgba8(r, color.g, b, color.a)
+    }
+
     fn paint(&self, color: Rgba) -> Paint<'static> {
         let color = color.alpha(self.opacity);
         let (r, b) = if self.bgra {
@@ -873,19 +1002,132 @@ fn rounded_rect(rect: Rect, radius: f32) -> Option<Path> {
         path.push_rect(tiny_skia::Rect::from_xywh(x, y, w, h)?);
         return path.finish();
     }
-    // Control-point offset that makes a cubic Bézier approximate a quarter circle.
-    let k = r * 0.447_715_25;
-    path.move_to(x + r, y);
-    path.line_to(x + w - r, y);
-    path.cubic_to(x + w - k, y, x + w, y + k, x + w, y + r);
-    path.line_to(x + w, y + h - r);
-    path.cubic_to(x + w, y + h - k, x + w - k, y + h, x + w - r, y + h);
-    path.line_to(x + r, y + h);
-    path.cubic_to(x + k, y + h, x, y + h - k, x, y + h - r);
-    path.line_to(x, y + r);
-    path.cubic_to(x, y + k, x + k, y, x + r, y);
+    // Each corner eases into its sides rather than meeting them at the end
+    // of a circle's arc: the continuous corner of a phone's own windows. A
+    // corner with no room for the easing — a pill's ends — is a circle's.
+    let corner = Corner::new(r, CORNER_SMOOTHING, w.min(h) / 2.0);
+    let p = corner.p;
+    path.move_to(x + p, y);
+    // Top right, bottom right, bottom left, top left: each turns a quarter.
+    path.line_to(x + w - p, y);
+    corner.add(&mut path, (x + w - p, y), (1.0, 0.0), (0.0, 1.0));
+    path.line_to(x + w, y + h - p);
+    corner.add(&mut path, (x + w, y + h - p), (0.0, 1.0), (-1.0, 0.0));
+    path.line_to(x + p, y + h);
+    corner.add(&mut path, (x + p, y + h), (-1.0, 0.0), (0.0, -1.0));
+    path.line_to(x, y + p);
+    corner.add(&mut path, (x, y + p), (0.0, -1.0), (1.0, 0.0));
     path.close();
     path.finish()
+}
+
+/// How much a corner eases into its sides, `0` a circle's arc. Six tenths
+/// is the smoothing a phone's own corners have.
+const CORNER_SMOOTHING: f32 = 0.6;
+
+/// A smoothed corner of radius `r`: a curve easing off the side, a stretch
+/// of circle, and a curve easing onto the next side, spread over `p` of
+/// each side (Figma's construction of the continuous corner).
+#[derive(Clone, Copy, Debug)]
+struct Corner {
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+    p: f32,
+    r: f32,
+    /// The arc's angle, in radians.
+    arc: f32,
+    /// How far the arc's ends lie apart along each side.
+    arc_len: f32,
+    /// How far the arc's ends are turned from the sides, in radians.
+    beta: f32,
+}
+
+impl Corner {
+    fn new(r: f32, smoothing: f32, budget: f32) -> Self {
+        // Where the sides are too short for the whole easing, it eases less.
+        let smoothing = smoothing.min(budget / r - 1.0).max(0.0);
+        let p = ((1.0 + smoothing) * r).min(budget);
+        let arc_deg = 90.0 * (1.0 - smoothing);
+        let arc_len = (arc_deg / 2.0).to_radians().sin() * r * std::f32::consts::SQRT_2;
+        let alpha = (90.0 - arc_deg) / 2.0;
+        let p3_to_p4 = r * (alpha / 2.0).to_radians().tan();
+        let beta = (45.0 * smoothing).to_radians();
+        let c = p3_to_p4 * beta.cos();
+        let d = c * beta.tan();
+        let b = (p - arc_len - c - d) / 3.0;
+        Self {
+            a: 2.0 * b,
+            b,
+            c,
+            d,
+            p,
+            r,
+            arc: arc_deg.to_radians(),
+            arc_len,
+            beta,
+        }
+    }
+
+    /// Add the corner starting at `from`, heading along `along` and
+    /// turning to head along `turn` (unit vectors along the axes).
+    fn add(&self, path: &mut PathBuilder, from: (f32, f32), along: (f32, f32), turn: (f32, f32)) {
+        let at = |u: f32, v: f32| {
+            (
+                from.0 + along.0 * u + turn.0 * v,
+                from.1 + along.1 * u + turn.1 * v,
+            )
+        };
+        let Self { a, b, c, d, p, .. } = *self;
+        // Easing off the side.
+        let (x1, y1) = at(a, 0.0);
+        let (x2, y2) = at(a + b, 0.0);
+        let (x3, y3) = at(a + b + c, d);
+        path.cubic_to(x1, y1, x2, y2, x3, y3);
+        // The stretch of circle, as one cubic: its controls along the
+        // tangents, 4/3·tan(θ/4) of the radius out.
+        // The arc leaves the first curve turned `beta` from the side, and
+        // meets the second turned `beta` from the next.
+        let k = 4.0 / 3.0 * (self.arc / 4.0).tan() * self.r;
+        let (tu, tv) = (self.beta.cos(), self.beta.sin());
+        let (eu, ev) = (a + b + c + self.arc_len, d + self.arc_len);
+        let (su, sv) = (self.beta.sin(), self.beta.cos());
+        let (cx1, cy1) = at(a + b + c + tu * k, d + tv * k);
+        let (cx2, cy2) = at(eu - su * k, ev - sv * k);
+        let (ex, ey) = at(eu, ev);
+        path.cubic_to(cx1, cy1, cx2, cy2, ex, ey);
+        // Easing onto the next side, which it meets `p` along.
+        let (x1, y1) = at(eu + d, ev + c);
+        let (x2, y2) = at(eu + d, ev + b + c);
+        let (x3, y3) = at(p, p);
+        path.cubic_to(x1, y1, x2, y2, x3, y3);
+    }
+}
+
+/// A tile of fine noise, made once: specks of light and of dark, each a
+/// few hundredths opaque, at random.
+fn noise() -> &'static Pixmap {
+    static NOISE: std::sync::OnceLock<Pixmap> = std::sync::OnceLock::new();
+    NOISE.get_or_init(|| {
+        const SIDE: u32 = 96;
+        // At most this opaque, of 255: a whisper.
+        const MOST: u32 = 9;
+        let mut tile = Pixmap::new(SIDE, SIDE)
+            .unwrap_or_else(|| Pixmap::new(1, 1).unwrap_or_else(|| unreachable!("a 1 × 1 pixmap")));
+        let mut seed: u32 = 0x9e37_79b9;
+        for px in tile.data_mut().as_chunks_mut::<4>().0 {
+            // xorshift: the same grain every time.
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let alpha = (seed >> 8) % (MOST + 1);
+            let light = seed & 1 == 0;
+            let v = if light { alpha as u8 } else { 0 };
+            px.copy_from_slice(&[v, v, v, alpha as u8]);
+        }
+        tile
+    })
 }
 
 /// The result of drawing without a compositor: premultiplied RGBA pixels.
@@ -1101,5 +1343,92 @@ mod snapshot {
             assert_eq!(marked.pixel(0, 0), [255, 0, 255, 255]);
             assert_eq!(marked.pixel(10, 0), [33, 33, 33, 33]);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod corner_tests {
+    use super::*;
+
+    /// Points along a path's curves, to look at where it goes.
+    fn outline(path: &Path) -> Vec<(f32, f32)> {
+        let mut points = Vec::new();
+        let mut last = (0.0, 0.0);
+        for segment in path.segments() {
+            match segment {
+                tiny_skia::PathSegment::MoveTo(p) | tiny_skia::PathSegment::LineTo(p) => {
+                    last = (p.x, p.y);
+                    points.push(last);
+                }
+                tiny_skia::PathSegment::CubicTo(c1, c2, p) => {
+                    for i in 1..=16 {
+                        let t = i as f32 / 16.0;
+                        let u = 1.0 - t;
+                        let x = u * u * u * last.0
+                            + 3.0 * u * u * t * c1.x
+                            + 3.0 * u * t * t * c2.x
+                            + t * t * t * p.x;
+                        let y = u * u * u * last.1
+                            + 3.0 * u * u * t * c1.y
+                            + 3.0 * u * t * t * c2.y
+                            + t * t * t * p.y;
+                        points.push((x, y));
+                    }
+                    last = (p.x, p.y);
+                }
+                _ => {}
+            }
+        }
+        points
+    }
+
+    #[test]
+    fn a_pill_keeps_its_round_ends() {
+        let path = rounded_rect(Rect::new(0.0, 0.0, 100.0, 28.0), 14.0).unwrap();
+        for (x, y) in outline(&path) {
+            if x < 13.99 || x > 86.01 {
+                let cx = if x < 50.0 { 14.0 } else { 86.0 };
+                let d = ((x - cx).powi(2) + (y - 14.0).powi(2)).sqrt();
+                assert!(
+                    (d - 14.0).abs() < 0.1,
+                    "({x}, {y}) is {d} from its end's middle"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_smoothed_corner_is_softer_than_a_circle_and_stays_in_bounds() {
+        let rect = Rect::new(10.0, 20.0, 200.0, 120.0);
+        let points = outline(&rounded_rect(rect, 14.0).unwrap());
+        for &(x, y) in &points {
+            assert!(x >= rect.x - 0.01 && x <= rect.right() + 0.01, "{x}");
+            assert!(y >= rect.y - 0.01 && y <= rect.bottom() + 0.01, "{y}");
+        }
+        // Across its middle it is the circle's arc...
+        let near = |want: f32| {
+            points
+                .iter()
+                .filter(|(x, y)| *x > rect.right() - 30.0 && *y < rect.y + 30.0)
+                .min_by(|a, b| {
+                    (rect.right() - a.0 - want)
+                        .abs()
+                        .total_cmp(&(rect.right() - b.0 - want).abs())
+                })
+                .map(|(_, y)| y - rect.y)
+                .unwrap()
+        };
+        let circle = 14.0 * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+        assert!(
+            (near(circle) - circle).abs() < 0.2,
+            "{} vs {circle}",
+            near(circle)
+        );
+        // ...but it starts to turn further from the corner than a circle,
+        // which only leaves the side one radius from it: the curve comes on
+        // gradually instead of all at once.
+        assert!(near(14.0 * 1.3) > 0.01, "{}", near(14.0 * 1.3));
+        assert!(near(14.0 * 1.7) < 0.001, "{}", near(14.0 * 1.7));
     }
 }

@@ -649,8 +649,8 @@ it. Each has a key, a letter of its own name marked there in the choice's colour
 — the **L** of Lock, the **p** of Slee*p* (the S being Shut down's), the **o**
 of Log *o*ut, the **R** of Restart, the **S** of Shut down — so leaving is the
 binding that opens the menu and one letter. Landing
-on a choice sends a glint of light across its letter, with a small sparkle
-at its shoulder, once. The three that end the session ask for the letter (or `Enter`)
+on a choice sends a glint of light across its letter, once; landing on Lock
+lifts its shackle a little. The three that end the session ask for the letter (or `Enter`)
 a second time — the tile warms and a line says what a second press does —
 and `Esc` takes the question back before it closes the menu. Arrows, `Tab`,
 `j`/`k`, and `Ctrl+n`/`Ctrl+p` move; a click chooses; a click outside or a
@@ -1183,6 +1183,31 @@ All of it lives in `enso-core` as tokens, so tools never hard-code a look:
 - `input` (in `enso-ui`) — the shared navigation keys: arrows,
   `Ctrl+n`/`Ctrl+p`, and `j`/`k` where no text field has focus. Overlays
   focus on open and dismiss on `Esc` or a click outside.
+
+How things are drawn, everywhere:
+
+- **Corners** ease into their sides (continuous corners, as a phone's own
+  windows have) rather than meeting them at the end of a circle's arc; a
+  pill's ends stay round.
+- **Cards** float the way light gives depth: a tight, darker shadow where
+  they nearly touch and a faint wide one under it, a rim that catches the
+  light along the top and fades into the shadow at the bottom, and a fine
+  grain over the surface, the tooth of paper rather than the flat of a
+  screen.
+- **Two weights**, regular and medium; nothing bold. Large titles are set a
+  touch close, small labels in spaced capitals. Figures that change in
+  place — the clock, levels, times, the calendar's days — are tabular, all
+  one width, so nothing twitches as they count.
+- **The accent means on, now, or here**: a switch that is on, the wave of
+  what has played, today, the focused window. Levels (sliders, volume) and
+  page dots are quiet; the one big button is the lightest thing on its
+  card.
+- **Small motions, only while they mean something**: steam rises off the
+  cup while the machine is kept awake, a light runs along the battery now
+  and then while it charges, the sun's rays reach as far as the screen is
+  bright, a lock's shackle lifts as you land on it, a switch's knob
+  stretches as it slides. They wake the bar a few times a second while
+  they show, and not at all otherwise.
 
 How things arrive, everywhere:
 

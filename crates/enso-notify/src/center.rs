@@ -491,7 +491,7 @@ impl Center {
         // Heading, and the way to empty the list.
         let header = Rect::new(card.x, card.y, card.w, HEADER).inset_xy(space::LG, 0.0);
         canvas.text_in(
-            &Text::new("Notifications", look.size, colors.text).bold(),
+            &Text::new("Notifications", look.size, colors.text).medium(),
             header,
             Align::Start,
         );
@@ -624,7 +624,7 @@ fn draw_row(
 
     let caption = Text::new(&note.app_name, small, colors.subtle);
     let summary = Text::new(&note.summary, look.size, colors.text)
-        .bold()
+        .medium()
         .max_width(width);
     let body = Text::new(&item.body, small, colors.muted).max_width(width);
     let mut block = caption.line_height() + summary.line_height();

@@ -11,7 +11,7 @@
 use enso_core::{
     Easing, Motion, Palette, Rgba, Transition,
     island::{self, Island},
-    style::{Shadow, edge, radius, space, stroke},
+    style::{edge, radius, space},
 };
 use niri_ipc::{Request, Response, socket::Socket};
 
@@ -215,19 +215,14 @@ pub fn emerge(
         canvas.set_clip(Some(Rect::new(0.0, under, bounds.w, bounds.h)));
     }
     canvas.with_opacity(stage.solid, |canvas| {
-        // Its shadow comes as it leaves the bar.
-        let shadow = Shadow {
-            opacity: Shadow::FLOATING.opacity * stage.tint,
-            ..Shadow::FLOATING
-        };
-        canvas.shadow(now, corner, shadow);
+        // Its depth comes as it leaves the bar: the shadow, the grain, and
+        // the light along its rim, as every card has them.
+        canvas.lift(now, corner, stage.tint);
         canvas.fill(now, corner, fill);
-        canvas.stroke(
-            now,
-            corner,
-            stroke::HAIRLINE,
-            colors.highlight_med.alpha(stage.tint),
-        );
+        canvas.with_opacity(stage.tint, |canvas| {
+            canvas.grain(now, corner);
+            canvas.rim(now, corner, colors.highlight_med);
+        });
     });
     if hidden {
         canvas.set_clip(None);

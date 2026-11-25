@@ -35,7 +35,6 @@ pub struct Look<'a> {
     /// The figures' size.
     pub size: f32,
     pub colors: &'a Palette,
-    pub accent: Rgba,
 }
 
 #[derive(Debug)]
@@ -133,7 +132,7 @@ impl Osd {
     pub fn width(&self, canvas: &mut Canvas<'_>, scale: Scale, size: f32) -> f32 {
         // As wide for 5 % as for 100 %, so the island doesn't twitch.
         let widest = canvas
-            .measure(&Text::new("100%", size, Rgba::TRANSPARENT).bold().tabular())
+            .measure(&Text::new("100%", size, Rgba::TRANSPARENT).medium().tabular())
             .w
             .ceil();
         let icon = scale
@@ -148,7 +147,6 @@ impl Osd {
             scale,
             size,
             colors,
-            accent,
         } = look;
         let quiet = self.muted;
         let on = if quiet { colors.muted } else { colors.text };
@@ -157,15 +155,17 @@ impl Osd {
         let icon_w = scale.width(figure);
         let x = island.x + scale.pad();
         let y = island.y + ((island.h - icon_h) / 2.0).round();
-        icons::draw(
-            canvas,
-            figure,
-            Rect::new(x, y, icon_w, icon_h),
-            Ink {
-                on,
-                ground: colors.base,
-            },
-        );
+        let fill = self.fill.get(now).clamp(0.0, 1.0);
+        // The sun's rays reach as far as the screen is bright, as it changes.
+        let live = enso_ui::figure::Live {
+            time: None,
+            amount: (figure == Figure::Brightness).then_some(fill),
+        };
+        let ink = Ink {
+            on,
+            ground: colors.base,
+        };
+        icons::draw_live(canvas, figure, Rect::new(x, y, icon_w, icon_h), ink, live);
 
         let slot = scale
             .width(Figure::Speaker(3))
@@ -179,17 +179,18 @@ impl Osd {
             thickness,
         );
         canvas.pill(bar, colors.highlight_high);
-        let fill = self.fill.get(now).clamp(0.0, 1.0);
+        // A level is a quantity, not a state: quiet, as the control
+        // center's sliders are.
         if fill > 0.0 {
             let lit = Rect {
                 w: (bar.w * fill).max(bar.h),
                 ..bar
             };
-            canvas.pill(lit, if quiet { colors.muted } else { accent });
+            canvas.pill(lit, if quiet { colors.muted } else { colors.subtle });
         }
 
         let label = self.label();
-        let text = Text::new(&label, size, on).bold().tabular();
+        let text = Text::new(&label, size, on).medium().tabular();
         let figures = Rect::new(
             bar.right() + scale.gap(),
             island.y,

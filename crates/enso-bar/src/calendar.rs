@@ -213,8 +213,10 @@ impl Calendar {
         } else {
             colors.text
         };
+        // Set a touch close, as titles are: spacing made for reading looks
+        // loose at a heading's size.
         canvas.text_in(
-            &Text::new(&name, size, title_color).medium(),
+            &Text::new(&name, size, title_color).medium().tracking(-0.01),
             title,
             Align::Center,
         );
@@ -232,18 +234,23 @@ impl Calendar {
             self.hits.push((title, Hit::Month));
         }
 
-        // Mon … Sun.
+        // Mon … Sun: small capitals, spaced out, a step quieter than the
+        // days — labels, not things to read.
         let column = inner.w / 7.0;
         let names = Rect::new(inner.x, header.bottom(), inner.w, WEEKDAYS);
-        for (i, day) in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+        for (i, day) in ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
             .iter()
             .enumerate()
         {
             let cell = Rect::new(names.x + column * i as f32, names.y, column, WEEKDAYS);
-            canvas.text_in(&Text::new(day, small, colors.muted), cell, Align::Center);
+            let label = Text::new(day, small * 0.82, colors.muted)
+                .medium()
+                .tracking(0.08);
+            canvas.text_in(&label, cell, Align::Center);
         }
 
-        // The days, today in the accent; the neighbouring months' faint.
+        // The days, today in the accent with a dot under it; the
+        // neighbouring months' faint.
         let top = names.bottom();
         for (n, date) in self.days().into_iter().enumerate() {
             let (row, col) = (n / 7, n % 7);
@@ -256,9 +263,8 @@ impl Calendar {
             let (cx, cy) = cell.center();
             let label = date.day().to_string();
             let color = if date == self.today {
-                let r = (DAY / 2.0 - 3.0).min(column / 2.0 - 1.0);
-                canvas.circle(cx, cy, r, accent);
-                colors.base
+                canvas.circle(cx, cy + small * 0.95, 2.0, accent);
+                accent
             } else if date.month() != self.month.month() {
                 colors.muted.alpha(0.6)
             } else if col >= 5 {
@@ -268,7 +274,7 @@ impl Calendar {
             };
             // Figures all one width, so the days stand in true columns.
             let text = if date == self.today {
-                Text::new(&label, small, color).bold().tabular()
+                Text::new(&label, small, color).medium().tabular()
             } else {
                 Text::new(&label, small, color).tabular()
             };
