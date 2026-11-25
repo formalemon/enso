@@ -15,7 +15,11 @@ license = "MIT"
 enso-core = { path = "crates/enso-core", version = "0.4.0" }
 enso-sys = { path = "crates/enso-sys", version = "0.4.0" }
 enso-fs = { path = "crates/enso-fs", version = "0.4.0" }
-enso-ui = { path = "crates/enso-ui", version = "0.4.0" }
+# Every tool gets enso-ui with all its features, tests or not: a feature on
+# in one build and off in another (`cargo test -p` turning on `png`, the
+# whole workspace `picture`) gives enso-ui, and everything built on it, a
+# second copy in target/. Release builds of the workspace had both anyway.
+enso-ui = { path = "crates/enso-ui", version = "0.4.0", features = ["png", "picture"] }
 enso-scene = { path = "crates/enso-scene", version = "0.4.0", default-features = false }
 
 # Data & config.
@@ -89,12 +93,17 @@ panic = "abort"
 
 # Debug builds keep line numbers for the workspace's own code (backtraces,
 # panics) and no debug info for dependencies: a much smaller target/ and
-# faster links.
+# faster links. No incremental cache: it was over a third of target/debug
+# and grew with every build, for about two seconds saved on a rebuild of
+# the biggest crate. Dependencies are lightly optimised: their code is a
+# fraction of the size, built once, and debug builds run faster for it.
 [profile.dev]
 debug = "line-tables-only"
+incremental = false
 
 [profile.dev.package."*"]
 debug = false
+opt-level = 1
 
 # The boot menu's picture is rendered while enso-boot builds: millions of
 # rays, so it is optimised even in debug builds, where build scripts and
