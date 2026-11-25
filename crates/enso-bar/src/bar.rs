@@ -1337,12 +1337,13 @@ mod tests {
     }
 
     fn sample(theme: &str) -> Bar {
-        // Each call gets its own directory so parallel tests never collide.
+        // Each call gets its own directory so parallel tests never collide;
+        // the next run clears and reuses them, so they don't pile up.
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let paths = Paths::rooted(
-            std::env::temp_dir().join(format!("enso-bar-test-{}-{unique}", std::process::id())),
-        );
+        let root = std::env::temp_dir().join(format!("enso-bar-test-{unique}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths::rooted(root);
         enso_core::theme::set_active(&paths, theme).expect("write theme state");
         let mut bar = Bar::new(Context::load_from(paths), BarConfig::default());
         bar.clock = "Sun 15 Nov  22:46".into();

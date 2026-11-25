@@ -35,7 +35,8 @@ fn card_in(
     mode: Mode,
     players: Vec<Player>,
 ) -> (Card, std::sync::mpsc::Receiver<Request>) {
-    let root = std::env::temp_dir().join(format!("enso-play-{}-{name}", std::process::id()));
+    // Cleared and reused by the next run, so they don't pile up.
+    let root = std::env::temp_dir().join(format!("enso-play-test-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let paths = Paths::rooted(root);
     enso_core::theme::set_active(&paths, "rose-pine-moon").expect("write theme state");

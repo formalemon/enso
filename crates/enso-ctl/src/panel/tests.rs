@@ -158,7 +158,8 @@ fn bluetooth() -> Bluetooth {
 
 /// A panel with a full machine behind it, and the requests it sends.
 fn panel_in(name: &str, mode: PanelMode) -> (Panel, Receiver<Request>) {
-    let root = std::env::temp_dir().join(format!("enso-ctl-panel-{}-{name}", std::process::id()));
+    // Cleared and reused by the next run, so they don't pile up.
+    let root = std::env::temp_dir().join(format!("enso-ctl-panel-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     let mut panel = Panel::new(
         Context::load_from(Paths::rooted(root)),

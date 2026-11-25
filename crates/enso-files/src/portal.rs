@@ -386,7 +386,8 @@ mod tests {
     use super::*;
 
     fn sandbox(name: &str) -> Places {
-        let root = env::temp_dir().join(format!("enso-files-portal-{name}-{}", std::process::id()));
+        // Cleared and reused by the next run, so they don't pile up.
+        let root = env::temp_dir().join(format!("enso-files-portal-{name}"));
         let _ = fs::remove_dir_all(&root);
         let system = root.join("usr/share/xdg-desktop-portal");
         fs::create_dir_all(system.join("portals")).unwrap();
