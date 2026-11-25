@@ -23,7 +23,8 @@ The menu itself is built for the firmware, from a checkout:
 
   cargo build --release -p enso-boot --target x86_64-unknown-uefi
 
-It shows Arch and Windows over the terraces; nothing starts until Enter.
+It shows Arch and Windows under a pagoda in the sky, turning; nothing
+starts until Enter.
 Arch starts as systemd-boot's entry for it says (/loader/entries), so
 kernel options are changed there, for both. Esc in the menu, or anything
 going wrong, hands over to the firmware's next boot option: systemd-boot,
@@ -170,6 +171,7 @@ fn remove_steps() -> String {
 
 #[cfg(test)]
 mod tests {
+    use enso_scene::{life::Order, orbit::Orbit};
     use enso_ui::TextEngine;
 
     use super::*;
@@ -234,65 +236,77 @@ mod tests {
     }
 
     /// The menu as the firmware puts it together, at a quarter of the
-    /// pixels, and the frame Arch starts on — the login screen's first.
+    /// pixels, turning; and the frame Arch starts on — the login screen's
+    /// first.
     #[test]
     fn the_menu_put_together() {
         let ctx = art::context(None);
         let mut text = TextEngine::new(&ctx.config.appearance);
         let (width, height) = (art::SCREEN.0 / 2, art::SCREEN.1 / 2);
-        let (rendered, life) = art::scene(&ctx, (width, height));
-        let scene = picture(width, height, rendered.rgba().to_vec());
+        let sky = picture(width, height, art::sky(&ctx, (width, height)));
+        // Kept and opened as the program does.
+        let model = enso_scene::pagoda::Model::decode(
+            &menu::unpack(&menu::pack(&art::pagoda(&ctx).encode())).unwrap(),
+        )
+        .unwrap();
+        let backdrop = backdrop_of(&sky, width, height);
         for chosen in 0..art::LABELS.len() {
             let card = art::card(&ctx, &mut text, chosen);
             let card = picture(card.width, card.height, card.rgba);
-            // Kept and opened as the program does.
             let card = menu::open(&menu::keep(&card)).unwrap();
-            let mut screen = Screen::new(width as usize, height as usize, [0, 0, 0, 255]);
-            screen.cover(&scene);
-            let (x, y) = menu::card_at((screen.width, screen.height), (card.width, card.height));
-            screen.over(&card, x, y);
-            save(&format!("boot-menu-{chosen}"), &screen);
-
-            // Moving: redrawing only what changes, frame after frame, ends
-            // where drawing the whole screen at that moment does.
-            let ink = menu::open_ink(&menu::keep_ink(&art::ink(&ctx))).unwrap();
-            let life = enso_scene::Life::decode(&life.encode()).unwrap();
-            let living = menu::Living {
-                backdrop: &backdrop_of(&scene, width, height),
-                life: &life,
-                ink: &ink,
-                card: &card,
-            };
-            assert!(living.fits());
-            let whole = enso_scene::life::Rect {
-                x: 0,
-                y: 0,
-                w: width,
-                h: height,
-            };
-            let mut stepped = screen.clone();
-            living.paint(&mut stepped, whole, 0.0);
-            let mut before = 0.0;
-            for frame in 1..=45 {
-                let t = frame as f32 / 15.0;
-                for rect in life.regions(before, t) {
-                    living.paint(&mut stepped, rect, t);
+            let screen = (width as usize, height as usize);
+            let (x, y) = menu::card_at(screen, (card.width, card.height));
+            // Frame after frame, redrawing only what changed and putting the
+            // card back over it, as the firmware does…
+            let mut orbit = Orbit::new(&model, width, height);
+            let mut stepped = backdrop.clone();
+            let mut t = 0.0;
+            for _ in 0..30 {
+                for rect in orbit.paint(&backdrop.bgra, &mut stepped.bgra, Order::Bgra, t) {
+                    stepped.over_part(&card, x, y, rect);
                 }
-                before = t;
+                t += 0.9;
             }
-            let mut fresh = screen.clone();
-            living.paint(&mut fresh, whole, before);
+            // …ends where drawing the whole screen at that moment does.
+            let mut fresh = backdrop.clone();
+            let mut orbit = Orbit::new(&model, width, height);
+            orbit.paint(&backdrop.bgra, &mut fresh.bgra, Order::Bgra, t - 0.9);
+            fresh.over(&card, x, y);
             assert!(stepped == fresh, "a frame left something behind");
-            assert!(fresh != screen, "nothing moved");
-            save(&format!("boot-menu-moving-{chosen}"), &fresh);
+            save(&format!("boot-menu-{chosen}"), &fresh);
         }
 
-        let frame = art::frame(&ctx, &mut text, &rendered);
+        let scene = art::scene(&ctx, (width, height));
+        let frame = art::frame(&ctx, &mut text, &scene);
         let colors = ctx.theme.colors.clone();
-        let backdrop = enso_ui::mark::backdrop(rendered.clone(), colors.base);
+        let backdrop = enso_ui::mark::backdrop(scene.clone(), colors.base);
         let greeter = enso_ui::Offscreen::render(&mut text, (width, height), 1, |canvas| {
             enso_ui::mark::stage(canvas, colors.base, Some(&backdrop));
         });
         assert!(frame.rgba == greeter.rgba);
+    }
+
+    /// The menu at full size, at a few moments of the turn, to look at:
+    /// `cargo test -p enso-boot --release -- --ignored full_size`.
+    #[test]
+    #[ignore = "seconds of drawing; run to look at the menu"]
+    fn full_size() {
+        let ctx = art::context(None);
+        let mut text = TextEngine::new(&ctx.config.appearance);
+        let (width, height) = art::SCREEN;
+        let sky = picture(width, height, art::sky(&ctx, art::SCREEN));
+        let model = art::pagoda(&ctx);
+        let backdrop = backdrop_of(&sky, width, height);
+        let card = art::card(&ctx, &mut text, 0);
+        let card = picture(card.width, card.height, card.rgba);
+        let size = (width as usize, height as usize);
+        let (x, y) = menu::card_at(size, (card.width, card.height));
+        for (n, t) in [0.0f32, 20.0, 40.0, 60.0].into_iter().enumerate() {
+            let mut screen = backdrop.clone();
+            let mut orbit = Orbit::new(&model, width, height);
+            orbit.paint(&backdrop.bgra, &mut screen.bgra, Order::Bgra, t);
+            screen.over(&card, x, y);
+            save(&format!("boot-menu-full-{n}"), &screen);
+        }
     }
 }

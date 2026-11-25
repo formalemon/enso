@@ -2,24 +2,11 @@
 
 use std::{collections::HashMap, vec, vec::Vec};
 
-use crate::life::{Life, Run, Star};
-
-/// The colours the picture is made of: a theme's palette, as RGB.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Palette {
-    pub base: [u8; 3],
-    pub surface: [u8; 3],
-    pub overlay: [u8; 3],
-    pub muted: [u8; 3],
-    pub subtle: [u8; 3],
-    pub text: [u8; 3],
-    pub love: [u8; 3],
-    pub gold: [u8; 3],
-    pub rose: [u8; 3],
-    pub pine: [u8; 3],
-    pub foam: [u8; 3],
-    pub iris: [u8; 3],
-}
+use crate::{
+    Palette,
+    life::{Life, Run, Star},
+    noise::{fbm, hash, lerp, noise, smooth, unit},
+};
 
 /// The land's size, in voxels: across, and away from the camera.
 const WIDTH: i32 = 384;
@@ -53,56 +40,6 @@ enum Stuff {
     /// Evergreen.
     Needles,
     Trunk,
-}
-
-/// 32-bit integer hash: the same everywhere, unlike `sin`.
-fn hash(x: i32, y: i32, seed: u32) -> u32 {
-    let mut h = (x as u32)
-        .wrapping_mul(0x8da6_b343)
-        .wrapping_add((y as u32).wrapping_mul(0xd816_3841))
-        .wrapping_add(seed.wrapping_mul(0xcb1a_b31f));
-    h ^= h >> 13;
-    h = h.wrapping_mul(0x5bd1_e995);
-    h ^= h >> 15;
-    h
-}
-
-fn unit(x: i32, y: i32, seed: u32) -> f32 {
-    (hash(x, y, seed) >> 8) as f32 / (1u32 << 24) as f32
-}
-
-fn smooth(a: f32, b: f32, x: f32) -> f32 {
-    let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-/// Smooth value noise, `0..1`.
-fn noise(x: f32, y: f32, seed: u32) -> f32 {
-    let (xi, yi) = (x.floor(), y.floor());
-    let (fx, fy) = (x - xi, y - yi);
-    let (u, v) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
-    let (xi, yi) = (xi as i32, yi as i32);
-    let a = unit(xi, yi, seed);
-    let b = unit(xi + 1, yi, seed);
-    let c = unit(xi, yi + 1, seed);
-    let d = unit(xi + 1, yi + 1, seed);
-    lerp(lerp(a, b, u), lerp(c, d, u), v)
-}
-
-/// Noise at several scales, `0..1`.
-fn fbm(x: f32, y: f32, seed: u32, octaves: u32) -> f32 {
-    let (mut sum, mut amp, mut freq, mut norm) = (0.0, 0.5, 1.0, 0.0);
-    for octave in 0..octaves {
-        sum += amp * noise(x * freq, y * freq, seed + octave);
-        norm += amp;
-        amp *= 0.5;
-        freq *= 2.03;
-    }
-    sum / norm
 }
 
 /// Sharp-crested noise for mountain ridges, `0..1`.

@@ -1,6 +1,6 @@
 [package]
 name = "enso-scene"
-description = "The boot menu's picture: rice terraces, a river and mountains in voxels, computed"
+description = "The pictures, in voxels, computed: a pagoda in the sky, and terraces at dusk"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

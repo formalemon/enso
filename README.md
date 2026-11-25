@@ -18,7 +18,7 @@ light — sharing one palette, one set of drawn icons, and one way of moving.
 | `enso-power` | Power menu: lock, sleep, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: the ensō, a clock and a password field, on a machine made quiet while nobody is at it | working |
 | `enso-greet` | Login screen, as a greeter for greetd: the ensō, your name, and a password; Tab for someone else | working |
-| `enso-boot` | Boot menu, for the firmware: Arch or Windows over rice terraces at dusk, in voxels; then the ensō while Arch starts | new |
+| `enso-boot` | Boot menu, for the firmware: Arch or Windows beside a pagoda on an island in the sky at dusk, in voxels, the camera circling it; then the ensō while Arch starts | new |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
@@ -129,7 +129,7 @@ crates/
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
   enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
   enso-play/  enso-greet/  enso-boot/  enso-clip/  enso-dusk/   the binaries
-  enso-scene/    the boot menu's picture: terraces, river, mountains, computed
+  enso-scene/    the pictures, computed: the pagoda island (boot menu), the terraces (login)
 config.example.toml   every config key with its default
 contrib/              udev rules: the power profile, and udisks for wheel
 ```
@@ -729,7 +729,7 @@ between the screen and greetd's socket. It runs in a niri of its own,
 started by greetd as its `greeter` user; once you are in, it asks greetd for
 your session and quits that niri, and greetd starts the session in its place.
 
-On screen: the terraces from the boot menu, quietened, the ensō, your
+On screen: voxel terraces at dusk, quietened, the ensō, your
 name and the password field, looking just like the lock. `enable` also
 writes a Plymouth theme: while the machine starts, the ensō paints itself
 on the same terraces and a light runs along it until the login screen is
@@ -761,19 +761,26 @@ glow every nine seconds, with a light travelling the stroke every fourteen —
 redrawn a few times a second, never every frame. With motion turned off it
 is simply there.
 
-**`enso-boot`** — the boot menu, a program for the firmware. Over a
-picture of rice terraces stepping down to a river at dusk, the river
-winding off to the mountains under the moon, all in voxels and the theme's
-colours, it offers Arch and Windows. Nothing starts until Enter: it never
-picks for you. Choosing Arch puts up the ensō on the base colour, the very
+**`enso-boot`** — the boot menu, a program for the firmware. A
+five-storeyed pagoda stands on an island floating in the sky at dusk —
+cherry trees, a torii, stone lanterns lit, clouds drifting about it, a sea
+of cloud below and the moon and stars above, all in voxels and the theme's
+colours — and the camera goes slowly round it, once every eighty seconds.
+Under it the menu offers Arch and Windows. Nothing starts until Enter: it
+never picks for you. Choosing Arch puts up the ensō on the base colour, the very
 frame the login screen starts from, and with a quiet boot that is what
 stays on screen until the password is asked for (a moment of black as the
 graphics driver takes over is likely).
 
-The picture is computed (`enso-scene`: a height field of voxels, one ray a
-pixel and more at edges), drawn with the menu's words when enso-boot is
-built for the firmware, and packed into it; at boot it is only unpacked and
-shown. Arch starts as systemd-boot's entry for it says (`/loader/entries`),
+The island is computed (`enso-scene`): built on a grid of voxels and lit
+— the moon's light and shadows, shade in corners — when enso-boot is built
+for the firmware, and packed into it as the faces that can be seen, with
+the sky (the same from every side) and the menu's words. At boot the
+firmware draws the faces a frame at a time, four samples a pixel so edges
+stay smooth as they turn, redrawing only the island and the stars and moon
+moving past behind it: about 9 ms a frame on one core, up to 60 frames a
+second, timed by the processor's clock. Arch starts as systemd-boot's
+entry for it says (`/loader/entries`),
 so kernel options are changed in one place for both menus; Windows' own
 boot manager is started from the same partition.
 

@@ -1,7 +1,9 @@
 //! The boot menu's pictures, drawn ahead of time on the build machine:
-//! the scene behind the menu, the menu's card once for each choice, and
-//! the frame Arch starts on. The firmware has no fonts and no time to
-//! spare, so at boot these are only unpacked and put on the screen.
+//! the sky behind the menu and the pagoda island turning in it (its faces,
+//! lit; the firmware draws them a frame at a time), the menu's card once
+//! for each choice, and the frame Arch starts on. The firmware has no fonts
+//! and no time to spare, so at boot these are only unpacked and put on the
+//! screen.
 //!
 //! Used by the build script, and by the tests to look at.
 
@@ -31,14 +33,41 @@ pub fn context(font: Option<String>) -> Context {
     ctx
 }
 
-/// The scene, as opaque RGBA, and what in it moves.
-pub fn scene(ctx: &Context, size: (u32, u32)) -> (Picture, enso_scene::Life) {
-    mark::scene_with_life(&ctx.theme.colors, size)
+/// The theme's colours, as the pictures take them.
+pub fn palette(ctx: &Context) -> enso_scene::Palette {
+    let c = &ctx.theme.colors;
+    let rgb = |c: enso_core::Rgba| [c.r, c.g, c.b];
+    enso_scene::Palette {
+        base: rgb(c.base),
+        surface: rgb(c.surface),
+        overlay: rgb(c.overlay),
+        muted: rgb(c.muted),
+        subtle: rgb(c.subtle),
+        text: rgb(c.text),
+        love: rgb(c.love),
+        gold: rgb(c.gold),
+        rose: rgb(c.rose),
+        pine: rgb(c.pine),
+        foam: rgb(c.foam),
+        iris: rgb(c.iris),
+    }
 }
 
-/// The colours of the scene's motion, in full.
-pub fn ink(ctx: &Context) -> enso_scene::life::Ink {
-    mark::life_ink(&ctx.theme.colors, false)
+/// The sky behind the menu, as opaque RGBA: the same from every side the
+/// camera turns to, so drawn once.
+pub fn sky(ctx: &Context, size: (u32, u32)) -> Vec<u8> {
+    enso_scene::orbit::sky(size.0, size.1, &palette(ctx))
+}
+
+/// The pagoda island, lit, as the firmware draws it.
+pub fn pagoda(ctx: &Context) -> enso_scene::pagoda::Model {
+    enso_scene::pagoda::Model::build(&palette(ctx))
+}
+
+/// The terraces, as opaque RGBA: the login screen's picture, which the
+/// frame Arch starts on is made from.
+pub fn scene(ctx: &Context, size: (u32, u32)) -> Picture {
+    mark::scene(&ctx.theme.colors, size)
 }
 
 /// The frame Arch starts on: the scene, quietened, exactly as the login

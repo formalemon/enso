@@ -34,21 +34,29 @@ use uefi::{
     system,
 };
 
-use enso_scene::life::{Life, Rect};
+use enso_scene::{
+    life::{Order, Rect},
+    orbit::Orbit,
+    pagoda::Model,
+};
 
-use crate::menu::{self, Act, Choice, Key, Living, Menu, Picture, Screen};
+use crate::menu::{self, Act, Choice, Key, Menu, Picture, Screen};
 
-static SCENE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/scene.bin"));
+static SKY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/sky.bin"));
+static PAGODA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pagoda.bin"));
 static FRAME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frame.bin"));
-static LIFE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/life.bin"));
-static INK: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ink.bin"));
 static CARDS: [&[u8]; 2] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/card-0.bin")),
     include_bytes!(concat!(env!("OUT_DIR"), "/card-1.bin")),
 ];
 
-/// Frames a second of the scene's motion.
-const FPS: u32 = 15;
+/// The most frames a second the island turns at: no more than the eye
+/// needs, and the processor idles between.
+const FPS: u64 = 60;
+/// The clock goes back to naught this often, in seconds, so it never
+/// grows too long to count in a float; once an hour, the stars' twinkle
+/// skips a beat.
+const WRAP: u64 = 3600;
 
 /// Where Windows' own boot manager is, on the same boot partition.
 const WINDOWS: &str = "\\EFI\\Microsoft\\Boot\\bootmgfw.efi";
@@ -69,36 +77,25 @@ fn run() -> Result<(), Status> {
 
     let gop = open_screen().map_err(fail)?;
     let (width, height) = gop.current_mode_info().resolution();
-    let scene = menu::open(SCENE).ok_or(Status::LOAD_ERROR)?;
+    let sky = menu::open(SKY).ok_or(Status::LOAD_ERROR)?;
     let cards: Vec<Picture> = CARDS
         .iter()
         .map(|blob| menu::open(blob).ok_or(Status::LOAD_ERROR))
         .collect::<Result<_, _>>()?;
 
     let mut backdrop = Screen::new(width, height, [0, 0, 0, 255]);
-    backdrop.cover(&scene);
-    drop(scene);
-    let life = Life::decode(LIFE);
-    let ink = menu::open_ink(INK);
+    backdrop.cover(&sky);
+    drop(sky);
+    let model = menu::unpack(PAGODA).and_then(|bytes| Model::decode(&bytes));
     let mut menu = Menu::default();
     let mut display = Display::new(gop, &backdrop);
 
-    let choice = match (&life, &ink) {
-        (Some(life), Some(ink)) => {
-            let living = |chosen: usize| Living {
-                backdrop: &backdrop,
-                life,
-                ink,
-                card: &cards[chosen.min(cards.len() - 1)],
-            };
-            if living(0).fits() {
-                animate(&mut display, &mut menu, &living)?
-            } else {
-                still(&mut display, &mut menu, &backdrop, &cards)?
-            }
-        }
-        _ => still(&mut display, &mut menu, &backdrop, &cards)?,
+    let choice = match &model {
+        Some(model) => turn(&mut display, &mut menu, &backdrop, model, &cards)?,
+        // Without the island, the sky alone.
+        None => still(&mut display, &mut menu, &backdrop, &cards)?,
     };
+    drop(model);
     let mut gop = display.gop;
     drop(backdrop);
     match choice {
@@ -181,38 +178,91 @@ impl Display {
     }
 }
 
-/// The menu over the moving scene, until a choice is made: the places
-/// that change redrawn each frame, and the keys looked at between.
-fn animate<'a>(
+/// The menu over the island as the camera goes round it, until a choice
+/// is made: each frame, the places that changed redrawn, the card put back
+/// over them, and the keys looked at.
+fn turn(
     display: &mut Display,
     menu: &mut Menu,
-    living: &impl Fn(usize) -> Living<'a>,
+    backdrop: &Screen,
+    model: &Model,
+    cards: &[Picture],
 ) -> Result<Choice, Status> {
-    let whole = display.whole();
-    living(menu.chosen).paint(&mut display.screen, whole, 0.0);
-    display.put(whole)?;
-    let mut frame: u32 = 0;
+    let (width, height) = (display.screen.width, display.screen.height);
+    let mut orbit = Orbit::new(model, width as u32, height as u32);
+    // The clock is set going once the first frame is up, so nothing waits
+    // for it.
+    let mut clock: Option<Clock> = None;
     loop {
-        let before = frame as f32 / FPS as f32;
-        frame = frame.wrapping_add(1);
-        let t = frame as f32 / FPS as f32;
+        let began = ticks();
+        let card = &cards[menu.chosen.min(cards.len() - 1)];
+        let (x, y) = menu::card_at((width, height), (card.width, card.height));
+        let changed = orbit.paint(
+            &backdrop.bgra,
+            &mut display.screen.bgra,
+            Order::Bgra,
+            clock.as_ref().map_or(0.0, Clock::seconds),
+        );
+        for rect in changed {
+            display.screen.over_part(card, x, y, rect);
+            display.put(rect)?;
+        }
         if let Some(key) = poll_key()? {
             match menu.key(key) {
                 Act::Nothing => {}
-                Act::Moved => {
-                    living(menu.chosen).paint(&mut display.screen, whole, t);
-                    display.put(whole)?;
-                }
+                // The other card goes up with the next frame.
+                Act::Moved => orbit.owe(Rect {
+                    x: x as u32,
+                    y: y as u32,
+                    w: card.width as u32,
+                    h: card.height as u32,
+                }),
                 Act::Start(choice) => return Ok(choice),
                 Act::Leave => return Err(Status::ABORTED),
             }
         }
-        let scene = living(menu.chosen);
-        for rect in scene.life.regions(before, t) {
-            scene.paint(&mut display.screen, rect, t);
-            display.put(rect)?;
+        // Rest out what is left of the frame.
+        let clock = clock.get_or_insert_with(Clock::start);
+        let frame = clock.per_second / FPS;
+        let spent = ticks().saturating_sub(began);
+        if spent < frame {
+            let rest = (frame - spent) * 1_000_000 / clock.per_second.max(1);
+            boot::stall(core::time::Duration::from_micros(rest));
         }
-        boot::stall(core::time::Duration::from_millis(u64::from(1000 / FPS)));
+    }
+}
+
+/// The processor's time-stamp counter: ticks at a steady rate.
+fn ticks() -> u64 {
+    // SAFETY: `rdtsc` only reads the time-stamp counter, which every
+    // x86-64 processor has, and touches no memory.
+    #[allow(unused_unsafe)]
+    unsafe {
+        core::arch::x86_64::_rdtsc()
+    }
+}
+
+/// Seconds since the menu came up, from the time-stamp counter, its rate
+/// measured against the firmware's own wait.
+struct Clock {
+    start: u64,
+    per_second: u64,
+}
+
+impl Clock {
+    fn start() -> Self {
+        let before = ticks();
+        boot::stall(core::time::Duration::from_millis(10));
+        let start = ticks();
+        Self {
+            start,
+            per_second: start.saturating_sub(before).saturating_mul(100).max(1),
+        }
+    }
+
+    fn seconds(&self) -> f32 {
+        let ticks = ticks().saturating_sub(self.start) % (WRAP * self.per_second);
+        (ticks as f64 / self.per_second as f64) as f32
     }
 }
 

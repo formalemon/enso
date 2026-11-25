@@ -5,7 +5,7 @@
 
 use alloc::{string::String, vec::Vec};
 
-use enso_scene::life::{Ink, Life, Order, Rect};
+use enso_scene::life::Rect;
 
 /// What can be started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,73 +215,29 @@ impl Screen {
     }
 }
 
-/// The colours of the scene's motion as kept: four RGB triples.
-#[cfg_attr(target_os = "uefi", allow(dead_code))] // the build script keeps them
-pub fn keep_ink(ink: &Ink) -> [u8; 12] {
-    let mut out = [0; 12];
-    for (slot, rgb) in out
-        .chunks_mut(3)
-        .zip([ink.glint, ink.mist, ink.petals[0], ink.petals[1]])
-    {
-        slot.copy_from_slice(&rgb);
-    }
-    out
+/// Bytes kept deflated in the program: the pagoda.
+#[cfg_attr(target_os = "uefi", allow(dead_code))] // the build script packs them
+pub fn pack(bytes: &[u8]) -> Vec<u8> {
+    let mut blob = Vec::from(&b"ENSZ"[..]);
+    blob.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    blob.extend(miniz_oxide::deflate::compress_to_vec(bytes, 9));
+    blob
 }
 
-/// The other half of [`keep_ink`].
-pub fn open_ink(bytes: &[u8]) -> Option<Ink> {
-    let rgb = |at: usize| -> Option<[u8; 3]> { bytes.get(at..at + 3)?.try_into().ok() };
-    (bytes.len() == 12).then_some(())?;
-    Some(Ink {
-        glint: rgb(0)?,
-        mist: rgb(3)?,
-        petals: [rgb(6)?, rgb(9)?],
-    })
+/// The other half of [`pack`].
+pub fn unpack(blob: &[u8]) -> Option<Vec<u8>> {
+    let (head, body) = blob.split_at_checked(8)?;
+    (&head[..4] == b"ENSZ").then_some(())?;
+    let size = usize::try_from(u32::from_le_bytes(head[4..8].try_into().ok()?)).ok()?;
+    let bytes = miniz_oxide::inflate::decompress_to_vec_with_limit(body, size).ok()?;
+    (bytes.len() == size).then_some(bytes)
 }
 
-/// The menu's moving scene: the still picture on the screen, what moves
-/// in it, and the card on top.
-#[derive(Debug)]
-pub struct Living<'a> {
-    pub backdrop: &'a Screen,
-    pub life: &'a Life,
-    pub ink: &'a Ink,
-    pub card: &'a Picture,
-}
-
-impl Living<'_> {
-    /// Whether the motion fits this screen: the scene was drawn for its
-    /// size, and is shown pixel for pixel.
-    pub fn fits(&self) -> bool {
-        usize::from(self.life.width) == self.backdrop.width
-            && usize::from(self.life.height) == self.backdrop.height
-    }
-
-    /// Paint `rect` of `screen` as it looks at `t` seconds: the scene with
-    /// its motion, and the card over it.
-    pub fn paint(&self, screen: &mut Screen, rect: Rect, t: f32) {
-        self.life.paint(
-            &self.backdrop.bgra,
-            &mut screen.bgra,
-            Order::Bgra,
-            rect,
-            t,
-            1.0,
-            self.ink,
-        );
-        let (x, y) = card_at(
-            (screen.width, screen.height),
-            (self.card.width, self.card.height),
-        );
-        screen.over_part(self.card, x, y, rect);
-    }
-}
-
-/// Where the menu's card goes on a screen: centred across, its middle two
-/// thirds of the way down, over the terraces.
+/// Where the menu's card goes on a screen: centred across, its middle five
+/// sixths of the way down, below the island, over the sea of cloud.
 pub fn card_at(screen: (usize, usize), card: (usize, usize)) -> (usize, usize) {
     let x = screen.0.saturating_sub(card.0) / 2;
-    let y = (screen.1 * 2 / 3).saturating_sub(card.1 / 2);
+    let y = (screen.1 * 5 / 6).saturating_sub(card.1 / 2);
     (x, y.min(screen.1.saturating_sub(card.1)))
 }
 
@@ -383,6 +339,18 @@ mod tests {
     }
 
     #[test]
+    fn bytes_packed_and_unpacked() {
+        let bytes: Vec<u8> = (0..5000u32).map(|n| (n % 7) as u8).collect();
+        let blob = pack(&bytes);
+        assert!(blob.len() < bytes.len() / 4);
+        assert_eq!(unpack(&blob), Some(bytes));
+        assert_eq!(unpack(&blob[..6]), None);
+        let mut lying = blob;
+        lying[4] = 9;
+        assert_eq!(unpack(&lying), None);
+    }
+
+    #[test]
     fn pictures_kept_and_opened() {
         let picture = Picture {
             width: 3,
@@ -423,7 +391,7 @@ mod tests {
         assert_eq!(&screen.bgra[28..32], &[128 + 1, 128 + 1, 128 + 1, 255]);
         assert_eq!(&screen.bgra[24..28], &[2, 2, 2, 255]);
 
-        assert_eq!(card_at((1920, 1080), (440, 190)), (740, 625));
+        assert_eq!(card_at((1920, 1080), (440, 190)), (740, 805));
 
         // A frame smaller than the screen sits in its middle.
         let mut screen = Screen::new(4, 4, [9, 9, 9, 255]);

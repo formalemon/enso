@@ -43,10 +43,10 @@ fn main() {
         };
         fs::write(out.join(name), menu::keep(&picture)).expect("writing a picture");
     };
-    let (scene, life) = art::scene(&ctx, art::SCREEN);
-    save("scene.bin", width, height, scene.rgba().to_vec());
-    fs::write(out.join("life.bin"), life.encode()).expect("writing the scene's life");
-    fs::write(out.join("ink.bin"), menu::keep_ink(&art::ink(&ctx))).expect("writing its colours");
+    save("sky.bin", width, height, art::sky(&ctx, art::SCREEN));
+    fs::write(out.join("pagoda.bin"), menu::pack(&art::pagoda(&ctx).encode()))
+        .expect("writing the pagoda");
+    let scene = art::scene(&ctx, art::SCREEN);
     let frame = art::frame(&ctx, &mut text, &scene);
     save("frame.bin", frame.width, frame.height, frame.rgba);
     for chosen in 0..art::LABELS.len() {

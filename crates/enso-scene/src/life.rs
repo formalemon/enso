@@ -145,7 +145,7 @@ impl Rect {
     }
 
     /// This rectangle within `width × height`, if any of it is.
-    fn within(self, width: u32, height: u32) -> Option<Self> {
+    pub(crate) fn within(self, width: u32, height: u32) -> Option<Self> {
         let x1 = (self.x + self.w).min(width);
         let y1 = (self.y + self.h).min(height);
         (self.x < x1 && self.y < y1).then(|| Self {

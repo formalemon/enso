@@ -1,6 +1,6 @@
 [package]
 name = "enso-boot"
-description = "Boot menu: Arch or Windows, over the terraces at dusk; then the ensō while Arch starts"
+description = "Boot menu: Arch or Windows under a pagoda in the sky, then the ensō as Arch starts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
