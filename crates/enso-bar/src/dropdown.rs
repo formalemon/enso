@@ -10,14 +10,14 @@
 //!
 //! There is only ever one control center (enso-ctl keeps to one copy), and
 //! it and the notification history take turns: each closes the other as it
-//! opens. So a click on the bell, which opens the history, also sends the
-//! control center away; resting on the status island brings it back.
+//! opens (the history sends it away itself). So resting on the bell, which
+//! opens the history, closes the control center; resting on the status
+//! island brings it back.
 
 use std::{
     io::{self, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
-    thread,
 };
 
 use crate::config::Position;
@@ -128,13 +128,6 @@ impl Dropdown {
         }
     }
 
-    /// Ask an open panel to close now: something else wants its place.
-    pub fn close(&mut self) {
-        if let Some((_, stdin)) = &mut self.running {
-            let _ = stdin.write_all(b"close\n").and_then(|()| stdin.flush());
-        }
-    }
-
     /// Tell an open panel whether the pointer is on the island.
     pub fn tell(&mut self, hovering: bool) {
         if let Some((_, stdin)) = &mut self.running {
@@ -148,59 +141,45 @@ impl Dropdown {
 
 /// The notification history, which `enso-notify` shows when asked. Like
 /// the control center it belongs to another tool; without `enso-notify`
-/// the bell is simply a bell.
+/// the bell is simply a bell. It is told over the daemon's socket (see
+/// [`enso_core::ipc`]) — the daemon is always running, and a word costs
+/// nothing — that the pointer rests on the bell (`hover`: show the history,
+/// and keep it) and that it has left (`leave`: it goes, unless the pointer
+/// is on the card).
 #[derive(Debug)]
 pub struct History {
-    program: PathBuf,
-    /// The program could not be started; do not keep trying.
-    missing: bool,
+    /// The name the daemon listens under.
+    tool: &'static str,
+    /// The bell asked for it and hasn't said it has left yet.
+    held: bool,
 }
 
 impl History {
     pub fn new() -> Self {
-        Self::with_program(enso_core::exe::companion("enso-notify"))
+        Self::listening_as("enso-notify")
     }
 
-    pub fn with_program(program: impl Into<PathBuf>) -> Self {
-        Self {
-            program: program.into(),
-            missing: false,
+    pub fn listening_as(tool: &'static str) -> Self {
+        Self { tool, held: false }
+    }
+
+    /// The pointer rests on the bell: show the history, and keep it while it
+    /// stays.
+    pub fn hover(&mut self) {
+        self.held = enso_core::ipc::tell(self.tool, "hover");
+    }
+
+    /// The pointer has left the bell, if it was holding the history open.
+    pub fn leave(&mut self) {
+        if std::mem::take(&mut self.held) {
+            enso_core::ipc::tell(self.tool, "leave");
         }
     }
 
-    /// Open the history, or close it if it is open.
-    pub fn toggle(&mut self) {
-        if self.missing {
-            return;
-        }
-        let spawned = Command::new(&self.program)
-            .args(["history", "toggle"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            // It says so itself when no daemon is running.
-            .spawn();
-        match spawned {
-            // It passes the word on and exits; wait for it off to the side
-            // so it is not left behind as a zombie.
-            Ok(mut child) => {
-                let waiting = thread::Builder::new()
-                    .name("enso-history".to_owned())
-                    .spawn(move || {
-                        let _ = child.wait();
-                    });
-                if let Err(err) = waiting {
-                    eprintln!("enso-bar: cannot wait for enso-notify: {err}");
-                }
-            }
-            Err(err) => {
-                self.missing = true;
-                if err.kind() == io::ErrorKind::NotFound {
-                    eprintln!("enso-bar: enso-notify is not installed, so the bell opens nothing");
-                } else {
-                    eprintln!("enso-bar: cannot open the notification history: {err}");
-                }
-            }
-        }
+    /// Whether the bell is holding the history open.
+    #[cfg(test)]
+    pub fn is_held(&self) -> bool {
+        self.held
     }
 }
 
@@ -219,21 +198,18 @@ mod tests {
         assert!(dropdown.missing && !dropdown.is_open());
         // Telling nobody is harmless.
         dropdown.tell(false);
-        dropdown.close();
         dropdown.open(Position::Top);
         assert!(!dropdown.is_open());
     }
 
     #[test]
-    fn a_missing_notification_daemon_is_asked_once() {
-        let mut history = History::with_program("/nonexistent/enso-notify");
-        history.toggle();
-        assert!(history.missing);
-        history.toggle();
-        // One that exists is simply run.
-        let mut history = History::with_program("true");
-        history.toggle();
-        assert!(!history.missing);
+    fn a_daemon_that_isnt_there_holds_nothing() {
+        let mut history = History::listening_as("enso-test-nobody");
+        history.hover();
+        assert!(!history.is_held());
+        // Nothing to let go of: harmless.
+        history.leave();
+        assert!(!history.is_held());
     }
 
     #[test]

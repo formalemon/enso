@@ -188,9 +188,10 @@ impl Battery {
         Self { scale }
     }
 
-    /// As tall as every other icon: the pill reads as one of them.
+    /// A touch taller than the other icons: it holds figures, and figures
+    /// want room to be read.
     fn height(self) -> f32 {
-        self.scale.icon()
+        (self.scale.icon() * 1.15).round()
     }
 
     /// Everything inside the pill is a share of its height, so it keeps its
@@ -215,9 +216,10 @@ impl Battery {
         (self.part(0.38), self.part(0.62), self.part(0.13))
     }
 
-    /// The figures' size: two thirds of the pill.
+    /// The figures' size: as much of the pill as leaves them clear of its
+    /// edges.
     pub fn figures(self) -> f32 {
-        self.part(0.66)
+        self.part(0.8)
     }
 
     /// The whole width, cap included, for figures this wide.
@@ -236,9 +238,9 @@ impl Battery {
     /// a quiet track, filled from the left to its charge and cut off
     /// straight, with the bolt (on power) and the figures centred in it.
     /// Figures and bolt are drawn twice, each time confined to one side of
-    /// the fill's edge — in the ground's colour over the fill, in the text
-    /// colour over the track — so a figure the edge runs through is split
-    /// cleanly. While it charges, `shine` (`0..1`) is a light running
+    /// the fill's edge — cut out of the fill, and over the track in what
+    /// reads on it — so a figure the edge runs through is split cleanly.
+    /// While it charges, `shine` (`0..1`) is a light running
     /// along the charge.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -300,7 +302,11 @@ impl Battery {
         };
         let start = pill.x + (pill.w - figures - bolt) / 2.0;
         let (_, middle) = pill.center();
-        for (side, ink) in [(filled, colors.base), (empty, colors.text)] {
+        // Each side in whichever of the ground's colour and the text's reads
+        // better on it, so no fill or track (or palette) hides the figures.
+        let cut = fill.legible(colors.base, colors.text);
+        let over = track.legible(colors.text, colors.base);
+        for (side, ink) in [(filled, cut), (empty, over)] {
             canvas.with_clip(side, |canvas| {
                 if charge.plugged {
                     let (x, y) = (start, middle - bolt_h / 2.0);

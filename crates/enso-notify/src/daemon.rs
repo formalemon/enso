@@ -148,6 +148,10 @@ pub enum Ask {
     Toggle,
     Open,
     Close,
+    /// The pointer rests on the bar's bell: open, and stay while it does.
+    Hover,
+    /// The pointer has left the bell: go, unless it is on the card.
+    Leave,
 }
 
 impl Ask {
@@ -157,6 +161,8 @@ impl Ask {
             "toggle" => Some(Self::Toggle),
             "open" => Some(Self::Open),
             "close" => Some(Self::Close),
+            "hover" => Some(Self::Hover),
+            "leave" => Some(Self::Leave),
             _ => None,
         }
     }
@@ -166,6 +172,8 @@ impl Ask {
             Self::Toggle => "toggle",
             Self::Open => "open",
             Self::Close => "close",
+            Self::Hover => "hover",
+            Self::Leave => "leave",
         }
     }
 }
@@ -787,6 +795,15 @@ impl App for Daemon {
                     Ask::Toggle => !self.center.is_open(),
                     Ask::Open => true,
                     Ask::Close => false,
+                    Ask::Hover => {
+                        self.set_history(true, cx);
+                        self.center.hold();
+                        return self.sync(cx);
+                    }
+                    Ask::Leave => {
+                        self.center.release(now);
+                        return self.sync(cx);
+                    }
                 };
                 self.set_history(open, cx);
             }

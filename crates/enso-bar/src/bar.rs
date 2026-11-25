@@ -4,9 +4,10 @@
 //! network and volume glyphs, the battery where there is one, whatever is
 //! out of the ordinary — warms a shade under the pointer, because resting
 //! there (or clicking) opens the control center. The bell sits on an island
-//! of its own at the very end, and a click there opens the notification
-//! history: reading what came in is never by way of the controls. Each card
-//! grows out of its own island (see [`enso_ui::emerge`]).
+//! of its own at the very end: resting there opens the notification
+//! history, and a click hushes it (Do not disturb) or wakes it again.
+//! Reading what came in is never by way of the controls. Each card grows
+//! out of its own island (see [`enso_ui::emerge`]).
 //!
 //! Their icons are drawn, not taken from a font (see [`icons`]): Wi-Fi or a
 //! cable, the battery — a pill holding its percentage, filled
@@ -213,6 +214,11 @@ pub struct Bar {
     bell_glow: Tween<f32>,
     /// The pointer is on the bell.
     bell_hovered: bool,
+    /// When the pointer will have rested on the bell long enough to mean it.
+    bell_due: Option<Instant>,
+    /// How hushed the bell is (`0..=1`): its strike drawing across as Do
+    /// not disturb comes on, and back as it goes.
+    hush: Tween<f32>,
     /// When the pointer will have rested there long enough to mean it.
     intent_due: Option<Instant>,
     /// The control center, opened from the status island.
@@ -314,6 +320,8 @@ impl Bar {
             bell: None,
             bell_glow: Tween::new(0.0),
             bell_hovered: false,
+            bell_due: None,
+            hush: Tween::new(0.0),
             intent_due: None,
             dropdown: Dropdown::control_center(),
             history: History::new(),
@@ -347,6 +355,8 @@ impl Bar {
         };
         bar.notices = Notices::read(&bar.ctx.paths);
         bar.read_settings();
+        // As it is, not on its way there.
+        bar.hush = Tween::new(if bar.quiet { 1.0 } else { 0.0 });
         bar.refresh_clock();
         bar.poll();
         bar
@@ -359,8 +369,22 @@ impl Bar {
         let quiet = enso_core::chosen::Quiet::read(&self.ctx.paths).is_on(awake::unix_now());
         let changed = awake != self.awake || quiet != self.quiet;
         self.awake = awake;
-        self.quiet = quiet;
+        self.hush_to(quiet, Instant::now());
         changed
+    }
+
+    /// Do not disturb comes on or goes: the strike draws across the bell,
+    /// or leaves it, and a bell woken again rings once.
+    fn hush_to(&mut self, quiet: bool, now: Instant) {
+        if quiet == self.quiet {
+            return;
+        }
+        self.quiet = quiet;
+        let hush = self.ctx.motion.apply(Transition::SELECT);
+        self.hush.set(if quiet { 1.0 } else { 0.0 }, hush, now);
+        if !quiet && self.ctx.motion.is_enabled() {
+            self.ringing = Some(now);
+        }
     }
 
     /// The sound server's news: the output's level for scrolling, and —
@@ -439,6 +463,7 @@ impl Bar {
         let due = self.clock_due.min(self.poll_due);
         let due = self.intent_due.map_or(due, |intent| intent.min(due));
         let due = self.playing_due.map_or(due, |intent| intent.min(due));
+        let due = self.bell_due.map_or(due, |intent| intent.min(due));
         let due = self.water_due.map_or(due, |tick| tick.min(due));
         let due = self.osd.due().map_or(due, |hide| hide.min(due));
         let due = self.ambient_due.map_or(due, |tick| tick.min(due));
@@ -490,6 +515,17 @@ impl Bar {
             cx.redraw();
         }
         if self.bell_hover(pointer) {
+            if self.bell_hovered {
+                // Back on the bell while the history is up: it stays at once.
+                if self.notices.open {
+                    self.history.hover();
+                } else {
+                    self.bell_due = Some(Instant::now() + HOVER_INTENT);
+                }
+            } else {
+                self.bell_due = None;
+                self.history.leave();
+            }
             cx.redraw();
         }
         if !self.status_hovered {
@@ -597,11 +633,14 @@ impl Bar {
         }
     }
 
-    /// A click on the bell opens the notification history, or closes it.
+    /// A click on the bell hushes it — Do not disturb — or wakes it again.
     fn click_bell(&mut self) {
-        self.intent_due = None;
-        self.dropdown.close();
-        self.history.toggle();
+        let quiet = !self.quiet;
+        match enso_core::chosen::Quiet::set(&self.ctx.paths, quiet, 0) {
+            // Shown at once; the setting's own news, when it comes, agrees.
+            Ok(()) => self.hush_to(quiet, Instant::now()),
+            Err(err) => eprintln!("enso-bar: cannot change Do not disturb: {err}"),
+        }
     }
 
     fn set_workspaces(&mut self, workspaces: Vec<Workspace>) {
@@ -946,16 +985,29 @@ impl Bar {
             fill,
             t,
             water::Look {
-                // Dusk: iris deep water, rising to a rose wave.
-                deep: self.island_color(colors.base.mix(colors.iris, 0.35)),
-                shallow: self.island_color(colors.rose.mix(colors.base, 0.1)),
+                // Dusk: iris deep water, rising to a rose wave — each kept
+                // dark enough that the time reads in front of it.
+                deep: self.island_color(behind_text(
+                    colors.base.mix(colors.iris, 0.35),
+                    colors.base,
+                    colors.text,
+                )),
+                shallow: self.island_color(behind_text(
+                    colors.rose.mix(colors.base, 0.1),
+                    colors.base,
+                    colors.text,
+                )),
                 foam: colors.rose.mix(colors.text, 0.45),
             },
         );
+        // On the sea the date can't be the quieter colour — there's no
+        // telling it from the water — so it comes up to the time's as the
+        // tide does, and the time keeps its weight.
+        let date_color = colors.subtle.mix(colors.text, fill.clamp(0.0, 1.0));
         let inside = island.inset_xy(space::SM, 0.0);
         canvas.with_clip(inside, |canvas| match &parts {
             Some((date, time)) => {
-                let date = Text::new(date, size, colors.subtle).tabular();
+                let date = Text::new(date, size, date_color).tabular();
                 let time = Text::new(time, size, colors.text).medium().tabular();
                 let left = island.x + (island.w - words) / 2.0;
                 let d = canvas.measure(&date).w;
@@ -980,7 +1032,8 @@ impl Bar {
             (true, _) => colors.foam,
             (false, ..=15) => colors.love,
             (false, ..=30) => colors.gold,
-            (false, _) => colors.subtle,
+            // Bright, as the figures cut out of it must read at a glance.
+            (false, _) => colors.text,
         };
         Some(Charge {
             percent: battery.percent.min(100),
@@ -1079,7 +1132,12 @@ impl Bar {
     fn draw_bell(&mut self, canvas: &mut Canvas<'_>, bar: Rect, now: Instant) -> (f32, bool) {
         let scale = icons::Scale::new(bar.h);
         let colors = &self.ctx.theme.colors;
-        let figure = self.figure(Item::Bell).unwrap_or(Figure::Bell);
+        let hush = self.hush.get(now);
+        let figure = if hush > 0.0 {
+            Figure::BellOff
+        } else {
+            Figure::Bell
+        };
         let figure_w = scale.width(figure);
         let width = (figure_w + 2.0 * scale.pad()).min(bar.h).max(figure_w + scale.gap());
         let island = Rect::new(bar.right() - width, bar.y, width, bar.h);
@@ -1104,9 +1162,14 @@ impl Bar {
             let dot = (self.notices.unseen > 0).then_some(self.ctx.accent());
             icons::bell(canvas, icon, swing, dot, ink);
         } else {
-            icons::draw(canvas, figure, icon, ink);
+            let live = enso_ui::figure::Live {
+                time: None,
+                amount: Some(hush),
+            };
+            icons::draw_live(canvas, figure, icon, ink, live);
         }
-        (island.x - APART, ringing || self.bell_glow.is_animating(now))
+        let moving = ringing || self.bell_glow.is_animating(now) || self.hush.is_animating(now);
+        (island.x - APART, moving)
     }
 
     /// The status island: what's out of the ordinary, Wi-Fi (or a cable),
@@ -1395,6 +1458,12 @@ impl App for Bar {
                         }
                     }
                 }
+                if self.bell_due.is_some_and(|due| now >= due) {
+                    self.bell_due = None;
+                    if self.bell_hovered {
+                        self.history.hover();
+                    }
+                }
                 if self.intent_due.is_some_and(|due| now >= due) {
                     self.intent_due = None;
                     if self.status_hovered && self.may_open_on_hover() {
@@ -1482,6 +1551,15 @@ impl App for Bar {
         self.note_islands(canvas.bounds().w);
         Paint::when(animating || reflowing || glowing)
     }
+}
+
+/// `color`, mixed towards `ground` as far as it takes for `text` to read in
+/// front of it (4.5 : 1, as body text wants), and no further.
+fn behind_text(color: Rgba, ground: Rgba, text: Rgba) -> Rgba {
+    (0..=10)
+        .map(|step| color.mix(ground, step as f32 / 10.0))
+        .find(|candidate| text.contrast(*candidate) >= 4.5)
+        .unwrap_or(ground)
 }
 
 #[cfg(test)]
@@ -1854,7 +1932,7 @@ mod tests {
     fn the_status_island_opens_the_controls_and_the_bell_the_history() {
         let mut bar = sample("rose-pine-moon");
         bar.dropdown = Dropdown::with_program("enso-ctl", "the island", "/nonexistent/enso-ctl");
-        bar.history = History::with_program("/nonexistent/enso-notify");
+        bar.history = History::listening_as("enso-test-nobody");
         assert!(bar.may_open_on_hover());
         // Even over the history: the pointer has moved on to the controls.
         bar.notices.open = true;
@@ -1864,9 +1942,15 @@ mod tests {
         bar.intent_due = Some(Instant::now());
         bar.click_status();
         assert_eq!(bar.intent_due, None);
-        bar.intent_due = Some(Instant::now());
-        bar.click_bell();
-        assert_eq!(bar.intent_due, None);
+
+        // Resting on the bell opens the history after the same wait; with
+        // no daemon about, nothing is held, and leaving says nothing.
+        frame(&mut bar, later());
+        let bell = bar.bell.expect("a bell");
+        bar.bell_hover(Some((bell.x + 2.0, 18.0)));
+        assert!(bar.bell_hovered);
+        bar.history.hover();
+        assert!(!bar.history.is_held());
 
         // Switched off in the config, resting opens nothing; a click still
         // does.
@@ -2111,7 +2195,7 @@ mod tests {
                 .map(|item| bar.tint(item))
                 .collect()
         };
-        assert_eq!(tints(&bar), [colors.subtle, colors.subtle]);
+        assert_eq!(tints(&bar), [colors.subtle, colors.text]);
 
         bar.link = Some(Link::Offline);
         bar.battery.as_mut().unwrap().percent = 12;
@@ -2217,8 +2301,8 @@ mod tests {
         let count = |pixels: &[[u8; 4]], color: Rgba| {
             pixels.iter().filter(|pixel| **pixel == rgba(color)).count()
         };
-        assert_eq!(bar.charge().unwrap().fill, colors.subtle);
-        assert!(count(&pixels, colors.subtle) > 20, "no fill");
+        assert_eq!(bar.charge().unwrap().fill, colors.text);
+        assert!(count(&pixels, colors.text) > 20, "no fill");
         assert!(count(&pixels, colors.highlight_med) > 4, "no track");
         let width = bar.status.unwrap().w;
         snapshot(&discharging, "bar-battery-82");

@@ -40,8 +40,9 @@ const DROP: f32 = 10.0;
 const FADE: f32 = 18.0;
 /// Scroll distance per unit the pointer reports: about a row per wheel notch.
 const SCROLL_SPEED: f32 = 3.0;
-/// How long after the pointer leaves the card it closes.
-const LINGER: Duration = Duration::from_millis(600);
+/// How long after the pointer leaves the card (and the bell) it closes: as
+/// long as the control center waits.
+const LINGER: Duration = Duration::from_millis(300);
 
 /// How the card is to look, from the daemon's theme and configuration.
 #[derive(Clone, Debug)]
@@ -117,6 +118,8 @@ pub struct Center {
     visited: bool,
     /// When to close because the pointer left.
     leave_at: Option<Instant>,
+    /// The pointer rests on the bar's bell, which opened the card.
+    held: bool,
     /// Geometry from the last frame, for the pointer.
     card: Rect,
     hot_rows: Vec<(Rect, u32)>,
@@ -158,6 +161,7 @@ impl Center {
             pointer: None,
             visited: false,
             leave_at: None,
+            held: false,
             card: Rect::default(),
             hot_rows: Vec::new(),
             hot_clear: None,
@@ -332,6 +336,7 @@ impl Center {
         self.unseen = 0;
         self.visited = false;
         self.leave_at = None;
+        self.held = false;
         self.pointer = None;
         let (reveal, before) = if self.emerging {
             // Out of the bell: the rows wait until the card is out.
@@ -458,10 +463,26 @@ impl Center {
         self.leave_at = None;
     }
 
-    /// The pointer left the card. Having been looked at, it closes shortly.
+    /// The pointer left the card. Having been looked at, it closes shortly
+    /// — unless it went back to the bell.
     pub fn on_leave(&mut self, now: Instant) {
         self.pointer = None;
-        if self.open && self.visited {
+        if self.open && self.visited && !self.held {
+            self.leave_at = Some(now + LINGER);
+        }
+    }
+
+    /// The pointer rests on the bar's bell: the card stays.
+    pub fn hold(&mut self) {
+        self.held = self.open;
+        self.leave_at = None;
+    }
+
+    /// The pointer has left the bell: unless it went on to the card, the
+    /// card closes shortly, as it does when the pointer leaves it.
+    pub fn release(&mut self, now: Instant) {
+        let held = std::mem::take(&mut self.held);
+        if held && self.open && self.pointer.is_none() {
             self.leave_at = Some(now + LINGER);
         }
     }
@@ -966,6 +987,37 @@ mod tests {
         center.on_leave(now);
         assert!(!center.tick(now + LINGER));
         assert!(!center.is_open() && center.is_showing());
+    }
+
+    /// Opened by resting on the bar's bell, the card stays while the
+    /// pointer is on the bell or the card, and goes shortly after it is on
+    /// neither.
+    #[test]
+    fn the_bell_holds_the_card_while_the_pointer_rests_there() {
+        let now = Instant::now();
+        let mut center = center(3);
+        center.open(now);
+        center.hold();
+        // Off the bell, never onto the card: it goes.
+        center.release(now);
+        assert_eq!(center.next_deadline(now), Some(LINGER));
+
+        // Back on the bell: it stays. Down onto the card, and off the bell
+        // on the way: it stays while the pointer is on the card.
+        center.hold();
+        assert_eq!(center.next_deadline(now), None);
+        center.on_pointer(40.0, 40.0);
+        center.release(now);
+        assert_eq!(center.next_deadline(now), None);
+        // Off the card, back up to the bell: still there.
+        center.on_leave(now);
+        center.hold();
+        assert_eq!(center.next_deadline(now), None);
+        // Leaving a card that isn't open holds nothing.
+        center.close(now);
+        center.hold();
+        center.release(now);
+        assert!(!center.is_open());
     }
 
     #[test]

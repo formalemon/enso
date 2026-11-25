@@ -451,11 +451,24 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
         }),
         Figure::Bell => bell(p, true),
         Figure::BellOff => {
-            // The bell, faint, struck through: there, but not ringing.
-            bell(p, false);
-            p.stroke(true, |s| {
-                s.line((4.0, 3.5), (20.0, 20.5));
-            });
+            // The bell, faint, struck through: there, but not ringing. As
+            // far as it's hushed (`amount`), the strike draws across it and
+            // it fades.
+            let hushed = p.frame.live.amount.unwrap_or(1.0).clamp(0.0, 1.0);
+            let on = p.look.on;
+            p.look.on = on.mix(p.look.off, hushed);
+            bell(p, true);
+            p.look.on = on;
+            if hushed > 0.0 {
+                let (from, to) = ((4.0, 3.5), (20.0, 20.5));
+                let reach = (
+                    from.0 + (to.0 - from.0) * hushed,
+                    from.1 + (to.1 - from.1) * hushed,
+                );
+                p.stroke(true, |s| {
+                    s.line(from, reach);
+                });
+            }
         }
         Figure::Cup => {
             p.stroke(true, |s| {
@@ -1087,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn steam_drifts_a_sun_shines_and_a_lock_opens() {
+    fn steam_drifts_a_sun_shines_a_lock_opens_and_a_bell_hushes() {
         let at = |t: f32| Live {
             time: Some(t),
             amount: None,
@@ -1110,12 +1123,18 @@ mod tests {
         assert!(ink_of(&open).1 + 3 * SHOWN < ink_of(&shut).1);
         // Still, as they always were.
         assert!(alone(Figure::Lock, Live::default()).rgba == shut.rgba);
+        // Not yet hushed, the bell is the bell; all the way, the struck-
+        // through bell it always was: nothing jumps at either end.
+        assert!(alone(Figure::BellOff, by(0.0)).rgba == alone(Figure::Bell, Live::default()).rgba);
+        let hushed = alone(Figure::BellOff, by(1.0));
+        assert!(alone(Figure::BellOff, Live::default()).rgba == hushed.rgba);
         #[cfg(feature = "png")]
         {
             let frames: Vec<crate::Offscreen> = (0..8)
                 .map(|i| alone(Figure::Cup, at(i as f32 * STEAM / 8.0)))
                 .chain([0.0, 0.5, 1.0].map(|a| alone(Figure::Brightness, by(a))))
                 .chain([0.0, 0.5, 1.0].map(|a| alone(Figure::Lock, by(a))))
+                .chain([0.0, 0.5, 1.0].map(|a| alone(Figure::BellOff, by(a))))
                 .collect();
             let side = (48 * SHOWN) as usize;
             let width = (side * frames.len()) as u32;

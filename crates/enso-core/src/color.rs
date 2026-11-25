@@ -62,6 +62,19 @@ impl Rgba {
         0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
     }
 
+    /// How far apart two colours are to the eye, as WCAG has it: `1` the
+    /// same, `21` black on white. Text wants 4.5 at least; small figures,
+    /// more.
+    pub fn contrast(self, other: Self) -> f32 {
+        let (a, b) = (self.luminance(), other.luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// Whichever of `a` and `b` reads better on this colour.
+    pub fn legible(self, a: Self, b: Self) -> Self {
+        if self.contrast(b) > self.contrast(a) { b } else { a }
+    }
+
     /// `#rrggbb`, or `#rrggbbaa` when not fully opaque.
     pub fn hex(self) -> String {
         self.to_string()
@@ -124,6 +137,19 @@ impl Lerp for Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contrast_is_the_eyes_and_picks_what_reads() {
+        let (black, white) = (Rgba::rgb(0, 0, 0), Rgba::rgb(255, 255, 255));
+        assert!((black.contrast(white) - 21.0).abs() < 0.01);
+        assert!((white.contrast(black) - 21.0).abs() < 0.01);
+        assert!((white.contrast(white) - 1.0).abs() < 0.001);
+        // On a mid grey, dark reads better than a lighter grey.
+        let grey = Rgba::rgb(144, 140, 170);
+        let dark = Rgba::rgb(35, 33, 54);
+        assert_eq!(grey.legible(Rgba::rgb(224, 222, 244), dark), dark);
+        assert_eq!(dark.legible(dark, white), white);
+    }
 
     #[test]
     fn parses_and_prints_hex() {

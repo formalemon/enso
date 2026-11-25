@@ -106,8 +106,9 @@ lines root has to run (see [`enso-greet`](#the-tools-up-close)).
 
 With `enso-bar` and `enso-ctl` installed, resting the pointer on the bar's
 status island (or clicking it) opens the control center out of it; with
-`enso-notify` running, clicking the bell — on its own island at the very
-end — opens the notification history out of that.
+`enso-notify` running, resting on the bell — on its own island at the very
+end — opens the notification history out of that, and clicking it turns
+Do not disturb on or off.
 
 Icons are enso's own drawings (`enso_ui::figure`), the same in every tool:
 one pen, round ends and soft corners, each kept to the middle of a 24-unit
@@ -246,9 +247,11 @@ corners, one hand for all of them:
   (the rest stay, faintly); offline, all faint and struck through. A cable
   when wired.
 - **The battery**, a pill holding its percentage, filled from the left as far
-  as it is charged — in foam on power, gold below 30 %, love below 15 % — with
-  a small lightning bolt before the figures while it charges. Where the fill
-  runs under the figures they are cut out of it.
+  as it is charged — in the text's own colour, foam on power, gold below
+  30 %, love below 15 % — with a small lightning bolt before the figures while
+  it charges. Where the fill runs under the figures they are cut out of it;
+  each side in whichever colour reads better there, so no fill and no
+  palette hides them.
 And at the very end, on a round island of its own:
 
 - **The bell**, which rings — a little swing that dies away — when something
@@ -273,9 +276,12 @@ Both islands warm a shade under the pointer:
   `PATH`. `control_center = false` under `[bar]` keeps resting from
   opening it; a click still does.
 - **Scroll** on the status island to turn the volume, 5 % a notch.
-- **Click** the bell and the notification history comes out of it
-  (`enso-notify history`); click again to close it. Reading what came in
-  is never by way of the controls.
+- **Rest** on the bell and the notification history comes out of it,
+  going back once the pointer is on neither. Reading what came in is never
+  by way of the controls.
+- **Click** the bell to hush it — Do not disturb — or wake it again: the
+  strike draws across the bell as it goes quiet, and a bell woken again
+  rings once.
 
 The control center and the history take turns: whichever opens sends the
 other away, however each was opened — resting on the status island while
@@ -317,13 +323,16 @@ the rest, and goes when it's over:
 - **Kept awake**: a cup (see `enso-ctl`).
 - **The keyboard layout** (`US`, `RU`), when there's more than one.
 
-With **Do not disturb** on, the bell is drawn quiet and struck through.
+With **Do not disturb** on, the bell is drawn quiet and struck through (a
+click on the bell turns it on and off).
 
 The clock in the middle knows **what's playing**. While anything plays its
 pill turns to sea at dusk — the theme's iris in the deep water, rising
 through three waves rolling across it at their own speeds to a rose one in
 front — like a tide as playing starts, ebbing when it stops, with the time
-in front of it all along. Every twenty seconds or so a set rolls in: a
+in front of it all along. The water is only ever as light as lets the
+words read on it, and while it's in, the date comes up to the time's
+colour: a quieter colour can't be told from the sea. Every twenty seconds or so a set rolls in: a
 swell sweeps across from the left, lifting the far waves first and the
 nearest highest, a line of foam along its crest. The sea moves thirty times a second, not every frame: about one percent of a core
 while it plays, nothing at rest. Rest the pointer on the clock and `enso-play` hangs a card
@@ -603,7 +612,7 @@ showing.
   Files*.
 - **For now only.** A notification marked `transient` shows as a toast
   and is never kept in the history or counted by the bell.
-- **History.** `enso-notify history` — a click on the bar's bell, or
+- **History.** `enso-notify history` — resting on the bar's bell, or
   `Mod+N` — opens a card where the toasts appear (out of the bell, with a
   bar along the top), listing the last 50 notifications, newest
   first. Five show at once and the rest are a scroll away: the list glides
