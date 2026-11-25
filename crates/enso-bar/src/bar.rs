@@ -1176,6 +1176,7 @@ impl App for Bar {
                     // rather than left until the next hover.
                     self.dropdown.is_open();
                     self.playing.is_open();
+                    self.calendar.is_open();
                 }
                 if self.water_due.is_some_and(|due| now >= due) {
                     cx.redraw();
