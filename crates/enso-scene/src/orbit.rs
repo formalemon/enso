@@ -20,7 +20,7 @@ use crate::{
     Palette,
     life::{Order, Rect},
     noise::{noise, smooth, unit},
-    pagoda::{self, CENTRE, Face, GROUND, Look, Model, NORMALS},
+    pagoda::{self, CENTRE, FINE, FINE_ORIGIN, Face, GROUND, Look, Model, NORMALS},
 };
 
 /// Seconds for the camera to go once round.
@@ -252,7 +252,12 @@ pub struct Orbit {
 impl Orbit {
     /// The island of `model` on a screen of `width × height`.
     pub fn new(model: &Model, width: u32, height: u32) -> Self {
-        let quads: Vec<Quad> = model.faces.iter().map(quad).collect();
+        let quads: Vec<Quad> = model
+            .faces
+            .iter()
+            .map(quad)
+            .chain(model.fine.iter().map(fine_quad))
+            .collect();
         let reach = quads
             .iter()
             .flat_map(|quad| quad.corners)
@@ -624,6 +629,17 @@ fn quad(face: &Face) -> Quad {
     }
 }
 
+/// A face of the pagoda's finer grid, put in its place on the island's.
+fn fine_quad(face: &Face) -> Quad {
+    let place = |p: Vec3| [0, 1, 2].map(|axis| FINE_ORIGIN[axis] as f32 + p[axis] * FINE);
+    let quad = quad(face);
+    Quad {
+        corners: quad.corners.map(place),
+        centre: place(quad.centre),
+        ..quad
+    }
+}
+
 /// Fill one face's samples where it is nearer than what is there: four
 /// edges, each a line it stays on the inside of, stepped across the box
 /// it falls in. Samples sit half a sample in, two to a pixel each way.
@@ -862,7 +878,11 @@ mod tests {
     #[ignore = "seconds of drawing; run to look at the frames"]
     fn orbit_frames() {
         let model = Model::build(&MOON);
-        println!("{} faces", model.faces.len());
+        println!(
+            "{} faces, {} of them the pagoda's",
+            model.faces.len() + model.fine.len(),
+            model.fine.len()
+        );
         let (width, height) = (1920, 1080);
         let sky = sky(width, height, &MOON);
         let mut orbit = Orbit::new(&model, width, height);

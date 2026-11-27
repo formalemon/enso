@@ -27,6 +27,19 @@ pub const CENTRE: [i32; 2] = [64, 64];
 /// The height of its grass.
 pub const GROUND: i32 = 56;
 
+/// The pagoda's own grid: voxels half the island's each way, for the
+/// detail a building has and a hillside doesn't (brackets, rafters,
+/// railings, tiles, the spire's rings).
+pub const FINE: f32 = 0.5;
+/// Its size, in its own voxels.
+pub const FINE_SIZE: [i32; 3] = [74, 124, 74];
+/// Where its corner is on the island's grid: round the pagoda, standing
+/// on the platform.
+pub const FINE_ORIGIN: [i32; 3] = [CENTRE[0] - 18, GROUND + 3, CENTRE[1] - 18];
+/// The fine grid's middle, across: the pagoda stands between its two
+/// middle columns each way, on a voxel's edge as on the island's grid.
+const MID: i32 = FINE_SIZE[0] / 2;
+
 /// What a voxel is made of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -48,7 +61,9 @@ enum Stuff {
     /// The brackets under each roof.
     Bracket,
     Roof,
-    /// A roof's edge.
+    /// A run of tiles down a roof, a shade darker than the one beside it.
+    Tile,
+    /// A roof's edge, and the ridges down its corners.
     Eave,
     /// The spire's rings, and the bells at the eaves' corners.
     Gilt,
@@ -64,7 +79,7 @@ enum Stuff {
     Cloud,
 }
 
-const ALL: [Stuff; 22] = [
+const ALL: [Stuff; 23] = [
     Stuff::Air,
     Stuff::Grass,
     Stuff::Earth,
@@ -77,6 +92,7 @@ const ALL: [Stuff; 22] = [
     Stuff::Plaster,
     Stuff::Bracket,
     Stuff::Roof,
+    Stuff::Tile,
     Stuff::Eave,
     Stuff::Gilt,
     Stuff::Window,
@@ -181,15 +197,17 @@ pub struct Look {
     pub haze: [u8; 3],
 }
 
-/// The island as it is drawn: its faces, lit.
+/// The island as it is drawn: its faces, lit; and the pagoda's, on its
+/// own finer grid ([`FINE`], from [`FINE_ORIGIN`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Model {
     pub faces: Vec<Face>,
+    pub fine: Vec<Face>,
     pub look: Look,
 }
 
 /// The start of a kept model.
-const MAGIC: &[u8; 4] = b"PGD1";
+const MAGIC: &[u8; 4] = b"PGD2";
 
 impl Model {
     /// Work the island out in `palette`'s colours.
@@ -197,7 +215,6 @@ impl Model {
         let mut grid = Grid::new();
         grid.island();
         grid.platform_and_path();
-        grid.pagoda();
         grid.torii();
         for side in [-1, 1] {
             grid.lantern(CENTRE[0] + 3 * side, CENTRE[1] + 18);
@@ -215,9 +232,12 @@ impl Model {
             grid.pine(CENTRE[0] + x, CENTRE[1] + z, size);
         }
         grid.clouds();
+        let mut fine = Fine::new();
+        fine.pagoda();
         let look = Shade::new(palette);
         Self {
-            faces: grid.faces(&look),
+            faces: faces(&Island(&grid, &fine), &look),
+            fine: faces(&Pagoda(&fine, &grid), &look),
             look: Look {
                 moon: palette.text,
                 star: palette.text,
@@ -228,13 +248,14 @@ impl Model {
 
     /// The model as bytes, to keep in a program.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(16 + self.faces.len() * 7);
+        let mut out = Vec::with_capacity(21 + (self.faces.len() + self.fine.len()) * 7);
         out.extend_from_slice(MAGIC);
         for rgb in [self.look.moon, self.look.star, self.look.haze] {
             out.extend_from_slice(&rgb);
         }
         out.extend_from_slice(&(self.faces.len() as u32).to_le_bytes());
-        for face in &self.faces {
+        out.extend_from_slice(&(self.fine.len() as u32).to_le_bytes());
+        for face in self.faces.iter().chain(&self.fine) {
             out.extend_from_slice(&face.at);
             out.push(face.facing);
             out.extend_from_slice(&face.rgb);
@@ -244,12 +265,13 @@ impl Model {
 
     /// The other half of [`Model::encode`].
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let (head, rest) = bytes.split_at_checked(4 + 9 + 4)?;
+        let (head, rest) = bytes.split_at_checked(4 + 9 + 8)?;
         (&head[..4] == MAGIC).then_some(())?;
         let rgb = |at: usize| -> [u8; 3] { [head[at], head[at + 1], head[at + 2]] };
         let count = u32::from_le_bytes(head[13..17].try_into().ok()?) as usize;
-        (rest.len() == count.checked_mul(7)?).then_some(())?;
-        let faces = rest
+        let fine = u32::from_le_bytes(head[17..21].try_into().ok()?) as usize;
+        (rest.len() == count.checked_add(fine)?.checked_mul(7)?).then_some(())?;
+        let mut faces: Vec<Face> = rest
             .as_chunks::<7>()
             .0
             .iter()
@@ -259,8 +281,10 @@ impl Model {
                 rgb: [b[4], b[5], b[6]],
             })
             .collect();
+        let fine = faces.split_off(count);
         Some(Self {
             faces,
+            fine,
             look: Look {
                 moon: rgb(4),
                 star: rgb(7),
@@ -429,86 +453,6 @@ impl Grid {
                 }
             }
         }
-    }
-
-    /// Five storeys, each a little narrower, with roofs reaching out and
-    /// turning up at the corners, and the gilt spire on top.
-    fn pagoda(&mut self) {
-        let [cx, cz] = CENTRE;
-        let mut y = GROUND + 3;
-        let storeys: [(i32, i32); 5] = [(8, 5), (7, 4), (6, 4), (5, 4), (4, 3)];
-        let mut last_reach = 0;
-        for (storey, &(half, tall)) in storeys.iter().enumerate() {
-            // The walls: posts at the corners and between, plaster, a sill,
-            // and light behind the middle of each side.
-            for dy in 0..tall {
-                for dz in -half..=half {
-                    for dx in -half..=half {
-                        let edge = dx.abs() == half || dz.abs() == half;
-                        let stuff = if !edge {
-                            Stuff::Wood
-                        } else {
-                            let along = if dx.abs() == half { dz } else { dx };
-                            let corner = dx.abs() == half && dz.abs() == half;
-                            let lit = (1..tall - 1).contains(&dy) && along.abs() <= 1;
-                            if corner || along.abs() == half - 2 {
-                                Stuff::Lacquer
-                            } else if dy == 0 {
-                                Stuff::Wood
-                            } else if lit {
-                                Stuff::Window
-                            } else if dy == tall - 1 {
-                                Stuff::Lacquer
-                            } else {
-                                Stuff::Plaster
-                            }
-                        };
-                        self.set(cx + dx, y + dy, cz + dz, stuff);
-                    }
-                }
-            }
-            y += tall;
-            // The brackets, a band a little wider.
-            self.square(cx, cz, y, half + 1, Stuff::Bracket, None);
-            y += 1;
-            // The roof: an edge reaching out, two courses stepping in.
-            let reach = half + 5;
-            self.square(cx, cz, y, reach, Stuff::Roof, Some(Stuff::Eave));
-            self.square(cx, cz, y + 1, reach - 2, Stuff::Roof, None);
-            // The corners turn up, and a bell hangs under each.
-            for (sx, sz) in [(-1, -1), (-1, 1), (1, -1), (1, 1)] {
-                let (x, z) = (cx + sx * reach, cz + sz * reach);
-                self.set(x, y + 1, z, Stuff::Eave);
-                self.set(x - sx, y + 1, z, Stuff::Eave);
-                self.set(x, y + 1, z - sz, Stuff::Eave);
-                self.set(x + sx, y + 2, z + sz, Stuff::Eave);
-                self.set(x, y + 2, z, Stuff::Eave);
-                self.set(x, y - 1, z, Stuff::Gilt);
-            }
-            if storey + 1 < storeys.len() {
-                self.square(cx, cz, y + 2, reach - 4, Stuff::Roof, None);
-                y += 2;
-            } else {
-                // The last roof rises to a point.
-                let mut step = reach - 4;
-                y += 2;
-                while step >= 1 {
-                    self.square(cx, cz, y, step, Stuff::Roof, None);
-                    y += 1;
-                    step -= 2;
-                }
-            }
-            last_reach = reach;
-        }
-        let _ = last_reach;
-        // The spire: a gilt mast with its rings, and the jewel on top.
-        for k in 0..13 {
-            self.set(cx, y + k, cz, Stuff::Gilt);
-        }
-        for ring in 0..5 {
-            self.square(cx, cz, y + 2 + ring * 2, 1, Stuff::Gilt, None);
-        }
-        self.set(cx, y + 13, cz, Stuff::Light);
     }
 
     /// A square slab, `reach` from the middle each way, its rim of `edge`.
@@ -689,74 +633,421 @@ impl Grid {
             }
         }
     }
+}
 
-    /// Every face with air in front of it, lit by `shade`.
-    fn faces(&self, shade: &Shade) -> Vec<Face> {
-        let mut faces = Vec::new();
-        for y in 0..SIZE[1] {
-            for z in 0..SIZE[2] {
-                for x in 0..SIZE[0] {
-                    let stuff = self.get(x, y, z);
-                    if stuff == Stuff::Air {
-                        continue;
-                    }
-                    for (facing, n) in NORMALS.iter().enumerate() {
-                        if self.solid(x + n[0], y + n[1], z + n[2]) {
-                            continue;
-                        }
-                        faces.push(Face {
-                            at: [x as u8, y as u8, z as u8],
-                            facing: facing as u8,
-                            rgb: shade.face(self, stuff, [x, y, z], facing),
-                        });
-                    }
+/// The pagoda's voxels: [`FINE`] the island's each way.
+struct Fine {
+    cells: Vec<u8>,
+}
+
+/// One storey of the pagoda, in fine voxels: how far its walls stand from
+/// the middle, how tall they are, and how far its eaves reach.
+#[derive(Clone, Copy)]
+struct Storey {
+    half: i32,
+    tall: i32,
+    reach: i32,
+}
+
+/// Five storeys, each a little narrower, the eaves reaching far out.
+const STOREYS: [Storey; 5] = [
+    Storey {
+        half: 16,
+        tall: 9,
+        reach: 26,
+    },
+    Storey {
+        half: 14,
+        tall: 7,
+        reach: 24,
+    },
+    Storey {
+        half: 12,
+        tall: 6,
+        reach: 22,
+    },
+    Storey {
+        half: 10,
+        tall: 6,
+        reach: 20,
+    },
+    Storey {
+        half: 8,
+        tall: 6,
+        reach: 18,
+    },
+];
+
+impl Fine {
+    fn new() -> Self {
+        Self {
+            cells: alloc::vec![0; (FINE_SIZE[0] * FINE_SIZE[1] * FINE_SIZE[2]) as usize],
+        }
+    }
+
+    fn index(x: i32, y: i32, z: i32) -> Option<usize> {
+        let [w, h, d] = FINE_SIZE;
+        ((0..w).contains(&x) && (0..h).contains(&y) && (0..d).contains(&z))
+            .then(|| ((y * d + z) * w + x) as usize)
+    }
+
+    fn get(&self, x: i32, y: i32, z: i32) -> Stuff {
+        Self::index(x, y, z).map_or(Stuff::Air, |i| ALL[usize::from(self.cells[i])])
+    }
+
+    fn solid(&self, x: i32, y: i32, z: i32) -> bool {
+        self.get(x, y, z) != Stuff::Air
+    }
+
+    /// Whether the island's voxel `(x, y, z)` is filled by the pagoda's.
+    fn covers(&self, x: i32, y: i32, z: i32) -> bool {
+        let [fx, fy, fz] = [
+            (x - FINE_ORIGIN[0]) * 2,
+            (y - FINE_ORIGIN[1]) * 2,
+            (z - FINE_ORIGIN[2]) * 2,
+        ];
+        (0..8).all(|k| self.solid(fx + (k & 1), fy + (k >> 1 & 1), fz + (k >> 2)))
+    }
+
+    /// Whether the pagoda stands between `from` (on the island's grid) and
+    /// the sky along `dir`.
+    fn shadows(&self, from: [f32; 3], dir: [f32; 3]) -> bool {
+        let from = [0, 1, 2].map(|axis| (from[axis] - FINE_ORIGIN[axis] as f32) / FINE);
+        march(from, dir, FINE_SIZE, |x, y, z| self.solid(x, y, z))
+    }
+
+    fn set(&mut self, x: i32, y: i32, z: i32, stuff: Stuff) {
+        if let Some(i) = Self::index(x, y, z) {
+            self.cells[i] = stuff as u8;
+        }
+    }
+
+    /// The voxel `a` and `b` out from the middle across and `y` up, on
+    /// all four sides alike.
+    fn set_round(&mut self, a: i32, y: i32, b: i32, stuff: Stuff) {
+        for x in [MID + a, MID - 1 - a] {
+            for z in [MID + b, MID - 1 - b] {
+                self.set(x, y, z, stuff);
+                self.set(z, y, x, stuff);
+            }
+        }
+    }
+
+    /// A layer `y` up, out to `reach` from the middle: each voxel what
+    /// `pick` makes of how far out it is (`m`, the larger of its two
+    /// distances) and how far along its side (`n`, the smaller), or air.
+    fn layer(&mut self, y: i32, reach: i32, pick: impl Fn(i32, i32) -> Option<Stuff>) {
+        for a in 0..=reach {
+            for b in 0..=a {
+                if let Some(stuff) = pick(a, b) {
+                    self.set_round(a, y, b, stuff);
                 }
             }
         }
-        faces
     }
 
-    /// Whether anything stands between `from` and the sky along `dir`.
-    fn shadowed(&self, from: [f32; 3], dir: [f32; 3]) -> bool {
-        // Stepping a voxel boundary at a time (a 3-D DDA).
-        let mut cell = from.map(|c| floorf(c) as i32);
-        let step = dir.map(|d| if d > 0.0 { 1 } else { -1 });
-        let delta = dir.map(|d| {
-            if d == 0.0 {
-                f32::INFINITY
-            } else {
-                (1.0 / d).abs()
+    /// Five storeys under deep eaves: posts and plaster, lit doors behind
+    /// their lattice, brackets stepping out under rafters, tiled roofs
+    /// turning up at the corners with a bell under each, a railed balcony
+    /// round each storey above the first; and the spire on top.
+    fn pagoda(&mut self) {
+        let mut y = 0;
+        for (k, storey) in STOREYS.iter().enumerate() {
+            let Storey { half, tall, reach } = *storey;
+            // A balcony on the roof below, round the walls.
+            if k > 0 {
+                self.layer(y, half + 2, |_, _| Some(Stuff::Wood));
+                y += 1;
             }
-        });
-        let mut next = [0.0f32; 3];
-        for axis in 0..3 {
-            next[axis] = if dir[axis] == 0.0 {
-                f32::INFINITY
-            } else if step[axis] > 0 {
-                (cell[axis] as f32 + 1.0 - from[axis]) * delta[axis]
-            } else {
-                (from[axis] - cell[axis] as f32) * delta[axis]
-            };
+            for dy in 0..tall {
+                self.layer(y + dy, half + 2, |m, n| {
+                    if m < half {
+                        Some(Stuff::Wood)
+                    } else if m == half {
+                        Some(wall(half, tall, dy, n))
+                    } else if k > 0 && m == half + 2 {
+                        // The balcony's railing: posts, and a rail along them.
+                        (dy == 1 || (dy == 0 && (n % 3 == 0 || n == m))).then_some(Stuff::Lacquer)
+                    } else {
+                        None
+                    }
+                });
+            }
+            y += tall;
+            // The brackets, stepping out in two courses, the outer in blocks.
+            self.layer(y, half + 1, |m, _| {
+                Some(if m > half {
+                    Stuff::Bracket
+                } else {
+                    Stuff::Wood
+                })
+            });
+            self.layer(y + 1, half + 2, |m, n| {
+                (m <= half + 1 || n % 2 == 0 || n == m).then_some(Stuff::Bracket)
+            });
+            // The rafters' ends in a row under the eave.
+            self.layer(y + 2, reach - 1, |m, n| {
+                if m <= half + 2 {
+                    Some(Stuff::Bracket)
+                } else {
+                    (n % 2 == 0 || n > half + 2).then_some(Stuff::Wood)
+                }
+            });
+            y += 3;
+            // The eave, two courses deep, sweeping up towards each corner
+            // to a point, a bell hanging under it.
+            self.layer(y, reach, |m, n| Some(roof(m, n, reach)));
+            self.layer(y + 1, reach - 1, |m, n| Some(roof(m, n, reach - 1)));
+            for n in reach - 6..=reach {
+                let rise = if n >= reach - 2 { 2 } else { 1 };
+                for m in [reach - 1, reach] {
+                    for dy in 1..=rise {
+                        self.set_round(m, y + dy, n.min(m), Stuff::Eave);
+                    }
+                }
+            }
+            for (dy, out) in [(2, 1), (3, 1), (3, 2)] {
+                self.set_round(reach + out, y + dy, reach + out, Stuff::Eave);
+            }
+            self.set_round(reach, y - 1, reach, Stuff::Gilt);
+            self.set_round(reach, y - 2, reach, Stuff::Gilt);
+            y += 2;
+            // The roof, stepping in to the balcony above (or, on the last,
+            // to a point): steep enough for its tiles to show.
+            let upto = STOREYS.get(k + 1).map_or(0, |next| next.half + 3);
+            let mut edge = reach - 3;
+            while edge > upto {
+                self.layer(y, edge, |m, n| Some(roof(m, n, edge)));
+                y += 1;
+                edge -= 2;
+            }
         }
-        for _ in 0..400 {
-            let axis = if next[0] < next[1] && next[0] < next[2] {
-                0
-            } else if next[1] < next[2] {
-                1
-            } else {
-                2
-            };
-            cell[axis] += step[axis];
-            next[axis] += delta[axis];
-            if Self::index(cell[0], cell[1], cell[2]).is_none() {
+        self.spire(y);
+    }
+
+    /// The spire: a dark base and the bowl on it, the mast with its nine
+    /// gilt rings, the flame, and the jewel lit on top.
+    fn spire(&mut self, mut y: i32) {
+        for _ in 0..2 {
+            self.layer(y, 2, |_, _| Some(Stuff::Bracket));
+            y += 1;
+        }
+        self.layer(y, 2, |m, n| (n < 2 || m < 2).then_some(Stuff::Gilt));
+        y += 1;
+        for _ in 0..9 {
+            self.layer(y, 2, |m, n| (n < 2 || m < 2).then_some(Stuff::Gilt));
+            self.layer(y + 1, 0, |_, _| Some(Stuff::Gilt));
+            y += 2;
+        }
+        // The flame: a cross of gilt, and narrower above.
+        self.layer(y, 2, |_, n| (n == 0).then_some(Stuff::Gilt));
+        self.layer(y + 1, 1, |_, n| (n == 0).then_some(Stuff::Gilt));
+        for dy in 2..4 {
+            self.layer(y + dy, 0, |_, _| Some(Stuff::Light));
+        }
+    }
+}
+
+/// A storey's wall, `dy` up and `n` along from the middle of its side:
+/// red posts at the corners and either side of the middle bay, a sill
+/// below and a beam above, plaster in the bays either side, and in the
+/// middle doors lit from within behind their lattice.
+fn wall(half: i32, tall: i32, dy: i32, n: i32) -> Stuff {
+    let door = half / 2;
+    if n == half || n == door || dy == tall - 1 {
+        Stuff::Lacquer
+    } else if dy == 0 {
+        Stuff::Wood
+    } else if n < door {
+        if dy == 1 || n % 2 == 1 {
+            Stuff::Wood
+        } else {
+            Stuff::Window
+        }
+    } else {
+        Stuff::Plaster
+    }
+}
+
+/// A roof's voxel `m` out and `n` along on a course reaching `edge`: its
+/// rim and the ridges down its corners light, and runs of tiles down it.
+fn roof(m: i32, n: i32, edge: i32) -> Stuff {
+    if m == edge || m == n {
+        Stuff::Eave
+    } else if n % 2 == 0 {
+        Stuff::Tile
+    } else {
+        Stuff::Roof
+    }
+}
+
+/// What a face is lit against: which voxels about it are solid, and
+/// whether anything stands between it and the moon. The island and the
+/// pagoda each see the other, each in its own voxels.
+trait Solid {
+    /// The grid's size, in its own voxels.
+    const SIZE: [i32; 3];
+    /// What the grid's own voxel is.
+    fn stuff(&self, x: i32, y: i32, z: i32) -> Stuff;
+    /// Whether anything fills the voxel: this grid's, or the other's.
+    fn solid(&self, x: i32, y: i32, z: i32) -> bool;
+    fn shadowed(&self, from: [f32; 3], dir: [f32; 3]) -> bool;
+    /// How high a voxel `y` up stands, in the island's voxels.
+    fn height(&self, y: i32) -> f32;
+}
+
+/// The island's grid, the pagoda's voxels counted where they fill one.
+struct Island<'a>(&'a Grid, &'a Fine);
+
+/// The pagoda's grid, the island round it.
+struct Pagoda<'a>(&'a Fine, &'a Grid);
+
+impl Solid for Island<'_> {
+    const SIZE: [i32; 3] = SIZE;
+
+    fn stuff(&self, x: i32, y: i32, z: i32) -> Stuff {
+        self.0.get(x, y, z)
+    }
+
+    fn solid(&self, x: i32, y: i32, z: i32) -> bool {
+        self.0.solid(x, y, z) || self.1.covers(x, y, z)
+    }
+
+    fn shadowed(&self, from: [f32; 3], dir: [f32; 3]) -> bool {
+        march(from, dir, SIZE, |x, y, z| self.0.solid(x, y, z)) || self.1.shadows(from, dir)
+    }
+
+    fn height(&self, y: i32) -> f32 {
+        y as f32
+    }
+}
+
+impl Solid for Pagoda<'_> {
+    const SIZE: [i32; 3] = FINE_SIZE;
+
+    fn stuff(&self, x: i32, y: i32, z: i32) -> Stuff {
+        self.0.get(x, y, z)
+    }
+
+    fn solid(&self, x: i32, y: i32, z: i32) -> bool {
+        self.0.solid(x, y, z)
+            || self.1.solid(
+                FINE_ORIGIN[0] + x.div_euclid(2),
+                FINE_ORIGIN[1] + y.div_euclid(2),
+                FINE_ORIGIN[2] + z.div_euclid(2),
+            )
+    }
+
+    fn shadowed(&self, from: [f32; 3], dir: [f32; 3]) -> bool {
+        let island = [0, 1, 2].map(|axis| FINE_ORIGIN[axis] as f32 + from[axis] * FINE);
+        march(from, dir, FINE_SIZE, |x, y, z| self.0.solid(x, y, z))
+            || march(island, dir, SIZE, |x, y, z| self.1.solid(x, y, z))
+    }
+
+    fn height(&self, y: i32) -> f32 {
+        FINE_ORIGIN[1] as f32 + y as f32 * FINE
+    }
+}
+
+/// Every face of `grid`'s voxels with air in front of it, lit.
+fn faces<S: Solid>(grid: &S, shade: &Shade) -> Vec<Face> {
+    let mut faces = Vec::new();
+    for y in 0..S::SIZE[1] {
+        for z in 0..S::SIZE[2] {
+            for x in 0..S::SIZE[0] {
+                let stuff = grid.stuff(x, y, z);
+                if stuff == Stuff::Air {
+                    continue;
+                }
+                for (facing, n) in NORMALS.iter().enumerate() {
+                    if grid.solid(x + n[0], y + n[1], z + n[2]) {
+                        continue;
+                    }
+                    faces.push(Face {
+                        at: [x as u8, y as u8, z as u8],
+                        facing: facing as u8,
+                        rgb: shade.face(grid, stuff, [x, y, z], facing),
+                    });
+                }
+            }
+        }
+    }
+    faces
+}
+
+/// Whether anything solid stands between `from` and the sky along `dir`,
+/// on a grid `size` voxels each way: stepping a voxel boundary at a time
+/// (a 3-D DDA), from where the ray comes into the grid.
+fn march(
+    from: [f32; 3],
+    dir: [f32; 3],
+    size: [i32; 3],
+    solid: impl Fn(i32, i32, i32) -> bool,
+) -> bool {
+    // Where it comes into the grid's box, if it does.
+    let (mut enter, mut leave) = (0.0f32, f32::INFINITY);
+    for axis in 0..3 {
+        let high = size[axis] as f32;
+        if dir[axis] == 0.0 {
+            if from[axis] < 0.0 || from[axis] >= high {
                 return false;
             }
-            if self.solid(cell[0], cell[1], cell[2]) {
-                return true;
-            }
+        } else {
+            let (a, b) = (-from[axis] / dir[axis], (high - from[axis]) / dir[axis]);
+            enter = enter.max(a.min(b));
+            leave = leave.min(a.max(b));
         }
-        false
     }
+    if enter > leave {
+        return false;
+    }
+    let from = if enter > 0.0 {
+        let at = [0, 1, 2].map(|axis| from[axis] + dir[axis] * (enter + 1e-4));
+        let cell = at.map(|c| floorf(c) as i32);
+        if solid(cell[0], cell[1], cell[2]) {
+            return true;
+        }
+        at
+    } else {
+        from
+    };
+    let mut cell = from.map(|c| floorf(c) as i32);
+    let step = dir.map(|d| if d > 0.0 { 1 } else { -1 });
+    let delta = dir.map(|d| {
+        if d == 0.0 {
+            f32::INFINITY
+        } else {
+            (1.0 / d).abs()
+        }
+    });
+    let mut next = [0.0f32; 3];
+    for axis in 0..3 {
+        next[axis] = if dir[axis] == 0.0 {
+            f32::INFINITY
+        } else if step[axis] > 0 {
+            (cell[axis] as f32 + 1.0 - from[axis]) * delta[axis]
+        } else {
+            (from[axis] - cell[axis] as f32) * delta[axis]
+        };
+    }
+    for _ in 0..size[0] + size[1] + size[2] + 3 {
+        let axis = if next[0] < next[1] && next[0] < next[2] {
+            0
+        } else if next[1] < next[2] {
+            1
+        } else {
+            2
+        };
+        cell[axis] += step[axis];
+        next[axis] += delta[axis];
+        if !(0..3).all(|axis| (0..size[axis]).contains(&cell[axis])) {
+            return false;
+        }
+        if solid(cell[0], cell[1], cell[2]) {
+            return true;
+        }
+    }
+    false
 }
 
 /// How the faces are coloured and lit.
@@ -818,6 +1109,7 @@ impl Shade {
             Stuff::Plaster => c(p.text, p.gold, 0.2),
             Stuff::Bracket => c(p.love, p.base, 0.62),
             Stuff::Roof => c(p.overlay, p.muted, 0.25),
+            Stuff::Tile => c(p.overlay, p.base, 0.3),
             Stuff::Eave => c(p.subtle, p.text, 0.2),
             Stuff::Gilt => rgb(p.gold),
             Stuff::Window => c(p.gold, p.text, 0.25),
@@ -831,7 +1123,7 @@ impl Shade {
     }
 
     /// The colour of the face of the voxel `at` looking `facing`.
-    fn face(&self, grid: &Grid, stuff: Stuff, at: [i32; 3], facing: usize) -> [u8; 3] {
+    fn face(&self, grid: &impl Solid, stuff: Stuff, at: [i32; 3], facing: usize) -> [u8; 3] {
         let n = NORMALS[facing];
         let [x, y, z] = at;
         let mut colour = self.colour(stuff);
@@ -891,7 +1183,7 @@ impl Shade {
         }
         // Below the grass the rock fades into the haze; clouds stay bright.
         if stuff != Stuff::Cloud {
-            let below = smooth(GROUND as f32 - 3.0, GROUND as f32 - 36.0, y as f32);
+            let below = smooth(GROUND as f32 - 3.0, GROUND as f32 - 36.0, grid.height(y));
             colour = mix(colour, rgb(self.haze), below * 0.5);
         }
         colour.map(|c| (c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
@@ -948,12 +1240,33 @@ mod tests {
         );
         assert!(!grid.solid(cx + 50, GROUND, cz), "and ends");
         grid.platform_and_path();
-        grid.pagoda();
-        // Up the middle: platform, storeys, spire, and the jewel on top.
-        let top = grid.top(cx, cz, SIZE[1]).unwrap();
-        assert_eq!(grid.get(cx, top, cz), Stuff::Light);
-        assert!(top < SIZE[1] - 4, "room above the jewel: {top}");
         // Nothing reached the floor of the grid.
         assert!((0..SIZE[2]).all(|z| (0..SIZE[0]).all(|x| !grid.solid(x, 0, z))));
+
+        // The pagoda, on its own grid: on the platform, filling the
+        // island's voxels where it stands.
+        let mut fine = Fine::new();
+        fine.pagoda();
+        assert!(grid.solid(cx, FINE_ORIGIN[1] - 1, cz), "the platform");
+        assert!(!grid.solid(cx, FINE_ORIGIN[1], cz));
+        assert!(Island(&grid, &fine).solid(cx, FINE_ORIGIN[1], cz));
+        // Up the middle: storeys, spire, and the jewel on top.
+        let top = (0..FINE_SIZE[1])
+            .rev()
+            .find(|&y| fine.solid(MID, y, MID))
+            .unwrap();
+        assert_eq!(fine.get(MID, top, MID), Stuff::Light);
+        assert!(top < FINE_SIZE[1] - 4, "room above the jewel: {top}");
+        // The same from every side, and clear of the grid's sides.
+        let [w, h, d] = FINE_SIZE;
+        for y in 0..h {
+            for z in 0..d {
+                for x in 0..w {
+                    assert_eq!(fine.get(x, y, z), fine.get(w - 1 - x, y, z));
+                    assert_eq!(fine.get(x, y, z), fine.get(z, y, x));
+                }
+                assert!(!fine.solid(0, y, z));
+            }
+        }
     }
 }

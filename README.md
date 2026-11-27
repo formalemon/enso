@@ -811,23 +811,27 @@ a light travelling the stroke every fourteen — redrawn a few times a second,
 never every frame. With motion turned off it is simply there.
 
 **`enso-boot`** — the boot menu, a program for the firmware. A
-five-storeyed pagoda stands on an island floating in the sky at dusk —
-cherry trees, a torii, stone lanterns lit, clouds drifting about it, a sea
-of cloud below and the moon and stars above, all in voxels and the theme's
-colours — and the camera goes slowly round it, once every eighty seconds.
+five-storeyed pagoda stands on an island floating in the sky at dusk — red
+posts and plaster, doors lit behind their lattice, brackets and rafters
+under deep tiled eaves that sweep up to a bell at each corner, a railed
+balcony round each storey and nine gilt rings on the spire; cherry trees,
+a torii, stone lanterns lit, clouds drifting about it, a sea of cloud below
+and the moon and stars above, all in voxels and the theme's colours — and
+the camera goes slowly round it, once every eighty seconds.
 Under it the menu offers Arch and Windows. Nothing starts until Enter: it
 never picks for you. Choosing Arch puts up the terraces, quietened: the
 very frame the boot splash keeps and the login screen starts from, so with
 a quiet boot that is what stays on screen until the password is asked for (a moment of black as the
 graphics driver takes over is likely).
 
-The island is computed (`enso-scene`): built on a grid of voxels and lit
+The island is computed (`enso-scene`): built on a grid of voxels (the
+pagoda on one of its own, half the size each way, for its detail) and lit
 — the moon's light and shadows, shade in corners — when enso-boot is built
 for the firmware, and packed into it as the faces that can be seen, with
 the sky (the same from every side) and the menu's words. At boot the
 firmware draws the faces a frame at a time, four samples a pixel so edges
 stay smooth as they turn, redrawing only the island and the stars and moon
-moving past behind it: about 9 ms a frame on one core, up to 60 frames a
+moving past behind it: about 10 ms a frame on one core, up to 60 frames a
 second, timed by the processor's clock. Arch starts as systemd-boot's
 entry for it says (`/loader/entries`),
 so kernel options are changed in one place for both menus; Windows' own
