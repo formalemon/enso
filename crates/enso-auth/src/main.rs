@@ -3,7 +3,9 @@
 //!
 //! Run once per session, it is polkit's authentication agent and BlueZ's
 //! pairing agent. Each question is asked by a short-lived prompt (this
-//! program again, as `enso-auth prompt`): a card over the dimmed screen.
+//! program again, as `enso-auth prompt`): a card that grows out of the
+//! bar's clock, like the keyring's, or sits over the dimmed screen where
+//! there's no bar.
 //! The agent itself never sees a password: the prompt gives it straight
 //! to polkit's helper, which checks it and tells polkit.
 
@@ -31,7 +33,7 @@ Usage: enso-auth              Run the agent (start it with the session)
 
 The agent answers polkit — mounting internal disks, changing system
 settings, pkexec — and BlueZ, when pairing devices that want a code. Each
-question is a card over the screen: Enter answers yes, Esc no. Typed
+question is a card under the bar's clock: Enter answers yes, Esc no. Typed
 passwords go only to polkit's own helper.
 
 Options:
@@ -98,7 +100,10 @@ fn show(request: Request, preview: bool) -> ExitCode {
     } else {
         Some(Box::new(io::stdout()))
     };
-    match enso_ui::run(prompt::Prompt::new(ctx, request, out, preview), &appearance) {
+    // The screen with the focus, and the bar's clock there to open out of.
+    let (screen, perch) = enso_ui::emerge::Perch::find();
+    let prompt = prompt::Prompt::new(ctx, request, out, preview).on(screen, perch);
+    match enso_ui::run(prompt, &appearance) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("enso-auth: {err}");

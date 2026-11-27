@@ -1,6 +1,7 @@
 //! Cards that grow out of the bar. When there is a bar along the top of
-//! the screen, the launcher, the clipboard history and the keyring's card
-//! open out of its clock island and settle under it in the middle; the control center opens out
+//! the screen, the launcher, the clipboard history, the keyring's card and
+//! the password prompt (enso-auth) open out of its clock island and settle
+//! under it in the middle; the control center opens out
 //! of the status island and the notification history out of the bell, and
 //! each hangs under the end of its island. Elsewhere the pickers settle a
 //! fifth of the way down. Nothing is dimmed behind them either way.

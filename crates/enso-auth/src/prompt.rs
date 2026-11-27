@@ -1,4 +1,7 @@
-//! The prompt: one card over a dimmed screen, asking one thing.
+//! The prompt: one card, asking one thing. Where a bar runs along the
+//! top of the screen it grows out of the bar's clock and hangs under it,
+//! as the keyring's and the launcher's do ([`enso_ui::emerge`]); elsewhere
+//! it sits in the middle of the dimmed screen.
 //!
 //! For polkit, a password: typed as dots, checked by polkit's helper when
 //! Enter is pressed, the field shaking if it was wrong. For Bluetooth, a
@@ -21,6 +24,7 @@ use enso_core::{
 };
 use enso_ui::{
     App, Canvas, Cx, Event, Key, KeyEvent, Paint, PointerEvent, Presence, Proxy, Rect, SurfaceSpec,
+    emerge::Perch,
     widget::{Form, Interaction, Kind, Look, Note, Part, SecretField, Shown, secret},
 };
 
@@ -77,6 +81,9 @@ pub struct Prompt {
     out: Option<Box<dyn Write>>,
     answered: Option<Answer>,
     presence: Presence,
+    /// The screen it opens on, and the bar's clock there to grow out of.
+    screen: Option<String>,
+    perch: Perch,
     phase: Phase,
     field: SecretField,
     /// Which of the users is answering.
@@ -109,6 +116,8 @@ impl Prompt {
         }
         Self {
             presence: enso_ui::Presence::new(&ctx.motion),
+            screen: None,
+            perch: Perch::default(),
             ctx,
             request,
             preview,
@@ -124,6 +133,15 @@ impl Prompt {
             hits: Vec::new(),
             hover: None,
         }
+    }
+
+    /// Open on `screen`, out of the bar's clock there if `perch` has it.
+    #[must_use]
+    pub fn on(mut self, screen: Option<String>, perch: Perch) -> Self {
+        self.screen = screen;
+        self.presence = perch.presence(&self.ctx.motion);
+        self.perch = perch;
+        self
     }
 
     fn font(&self, scale: f32) -> f32 {
@@ -508,7 +526,15 @@ impl Prompt {
                 },
             );
         }
-        let placed = form.draw(canvas, canvas.bounds(), &look, presence);
+        let placed = if self.perch.island.is_some() {
+            // Nothing dimmed: it hangs under the bar, as what's summoned does.
+            let (width, height) = form.size(canvas, &look);
+            let rest = self.perch.rest(canvas.bounds(), width, height);
+            let card = self.perch.card(canvas, rest, presence, &colors);
+            form.draw_in(canvas, card, &look)
+        } else {
+            form.draw(canvas, canvas.bounds(), &look, presence)
+        };
 
         if let (Some(at), Some((shown, _))) = (field_at, wanted) {
             let hint = if self.phase == Phase::Checking {
@@ -566,7 +592,7 @@ impl App for Prompt {
     type Message = Message;
 
     fn surface(&self) -> SurfaceSpec {
-        SurfaceSpec::overlay("enso-auth")
+        Perch::surface("enso-auth", self.screen.clone())
     }
 
     fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
@@ -729,6 +755,80 @@ mod tests {
         } else {
             frame.snapshot(env!("CARGO_MANIFEST_DIR"), name);
         }
+    }
+
+    /// Opened over a bar, it grows out of the clock and hangs under it, in
+    /// the middle, nothing dimmed beside it, as the keyring's card does:
+    /// `target/snapshots/enso-auth-emerge.png`, a frame at a time.
+    #[test]
+    fn opens_out_of_the_bars_clock() {
+        use enso_ui::{Align, Text};
+        let (width, height) = (900u32, 460u32);
+        let island = enso_core::island::Island {
+            pid: 1,
+            top: true,
+            bar: 36.0,
+            x: 350.0,
+            y: 4.0,
+            w: 200.0,
+            h: 28.0,
+            opacity: 0.9,
+            ..enso_core::island::Island::default()
+        };
+        let mut prompt = prompt(password()).on(
+            None,
+            Perch {
+                island: Some(island),
+                ..Perch::default()
+            },
+        );
+        let colors = prompt.ctx.theme.colors.clone();
+        let mut text = TextEngine::new(&prompt.ctx.config.appearance);
+        let desk = Offscreen::render(&mut text, (width, height), 1, |canvas| {
+            canvas.clear(colors.pine.mix(colors.overlay, 0.6));
+            let clock = Rect::new(island.x, island.y, island.w, island.h);
+            canvas.pill(clock, colors.base.alpha(island.opacity));
+            let words = Text::new("Fri 27 Nov  16:30", 13.0, colors.text).medium();
+            canvas.text_in(&words, clock, Align::Center);
+        });
+        let start = Instant::now();
+        let moments = [0u64, 60, 130, 250, 420, 700];
+        let mut sheet = Vec::new();
+        for (n, ms) in moments.into_iter().enumerate() {
+            let at = start + std::time::Duration::from_millis(ms);
+            let frame = Offscreen::render(&mut text, (width, height), 1, |canvas| {
+                prompt.render(canvas, at);
+            });
+            if n == 0 {
+                // Nothing at all before it has begun: no dimming either.
+                assert!(frame.rgba.iter().all(|&byte| byte == 0));
+            }
+            let mut over = desk.rgba.clone();
+            for (dst, src) in over.chunks_mut(4).zip(frame.rgba.chunks(4)) {
+                let keep = 255 - u32::from(src[3]);
+                for c in 0..4 {
+                    dst[c] = (u32::from(src[c]) + (u32::from(dst[c]) * keep + 127) / 255) as u8;
+                }
+            }
+            sheet.extend(over);
+        }
+        let sheet = Offscreen {
+            width,
+            height: height * moments.len() as u32,
+            rgba: sheet,
+        };
+        sheet.snapshot(env!("CARGO_MANIFEST_DIR"), "enso-auth-emerge");
+        // At rest, under the bar and in the middle: its buttons are there.
+        let buttons: Vec<Rect> = prompt.hits.iter().map(|(rect, _)| *rect).collect();
+        assert!(!buttons.is_empty());
+        assert!(
+            buttons
+                .iter()
+                .all(|rect| rect.y > 40.0 && rect.x > 150.0 && rect.right() < 750.0)
+        );
+        // Nothing dimmed beside it.
+        let last = (moments.len() as u32 - 1) * height;
+        assert_eq!(sheet.pixel(30, last + 300), desk.pixel(30, 300));
     }
 
     #[test]

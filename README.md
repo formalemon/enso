@@ -857,7 +857,9 @@ such a device can't be paired. `enso-auth` is both, started with the session:
 spawn-at-startup "enso-auth"
 ```
 
-Each question is one card over the dimmed screen, the same for all of them.
+Each question is one card, the same for all of them, growing out of the
+bar's clock like the keyring's and the launcher's (with no bar, it sits over
+the dimmed screen).
 For polkit: what is being asked and by which program (by its application's
 name where one owns it: *Files (enso-files)*), who answers (a choice,
 `←`/`→` or `Tab`, when polkit would take any administrator), and a field that
