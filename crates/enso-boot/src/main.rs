@@ -1,7 +1,7 @@
 //! `enso-boot` — the boot menu: Arch or Windows, under a pagoda on an
 //! island in the sky at dusk, the camera going slowly round it; then,
-//! choosing Arch, the ensō on the colour the login screen starts from, so
-//! the way from the menu to the password is one picture.
+//! choosing Arch, the terraces the login screen starts from, so the way
+//! from the menu to the password is one picture.
 //!
 //! Built for the firmware (`--target x86_64-unknown-uefi`) it is the menu
 //! itself. Built for Linux it is its installer, which says what to copy

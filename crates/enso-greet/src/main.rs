@@ -148,7 +148,7 @@ fn show(greetd: Box<dyn Greetd>, preview: bool) -> ExitCode {
     };
     let users = enso_sys::accounts::login_users();
     let appearance = ctx.config.appearance.clone();
-    // The scene behind the ensō: where root put it, or (previewing) where
+    // The terraces, quietened: where root put them, or (previewing) where
     // `enable` left it for root. Without it, the theme's colour alone.
     let staged = staging().join("backdrop.png");
     let places = if preview {
@@ -213,18 +213,6 @@ fn enable() -> ExitCode {
         .colors;
     let (scene, life) = mark::scene_with_life(&colors, (1920, 1080));
     let backdrop = mark::backdrop(scene, colors.base);
-    // The ensō for the boot splash, at the size the login screen draws it
-    // on a 1080p screen, in the frames the splash shows.
-    let (_, radius) = mark::place(enso_ui::Rect::new(0.0, 0.0, 1920.0, 1080.0));
-    let mut text = enso_ui::TextEngine::new(&ctx.config.appearance);
-    let splash = mark::splash(
-        colors.rose,
-        colors.text,
-        radius,
-        setup::SPLASH_FPS,
-        &ctx.motion,
-        &mut text,
-    );
     let setup = setup::Setup {
         dir: staging(),
         program,
@@ -233,7 +221,6 @@ fn enable() -> ExitCode {
         private_font,
         backdrop,
         life,
-        splash,
     };
     match setup::enable(&setup) {
         Ok(said) => {

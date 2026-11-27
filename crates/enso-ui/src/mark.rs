@@ -5,8 +5,8 @@
 //! along it (`half`), and twenty-six bristles across that width, each
 //! running dry in its own places (`noise`) so the end of the stroke breaks
 //! up the way a dry brush does. Everything is computed from those few
-//! functions; nothing is read from a file, so the boot menu's picture, the
-//! greeter and the lock screen all draw the same pixels.
+//! functions; nothing is read from a file, so the lock screen draws the
+//! same pixels at every size.
 //!
 //! It is painted once per size into a raster and kept. In motion it is
 //! painted in along the stroke, then breathes: a slow swell and a faint
@@ -22,7 +22,7 @@ use std::{
 use enso_core::{Motion, Palette, Rgba, Transition, Tween};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
-use crate::{Canvas, Offscreen, Picture, Rect, TextEngine};
+use crate::{Canvas, Picture, Rect};
 
 /// Points along the stroke.
 const STEPS: usize = 720;
@@ -500,77 +500,8 @@ fn light(
     }
 }
 
-/// The ensō in pictures, for a boot splash that can show pictures but not
-/// draw: the stroke a frame at a time as it is painted, the light a frame
-/// at a time as it travels the finished stroke, and the glow behind.
-/// Strokes and lights are `side` square, centred on the ring's middle;
-/// the glow is larger, centred the same.
-#[derive(Clone, Debug)]
-pub struct Splash {
-    pub side: u32,
-    pub strokes: Vec<Picture>,
-    pub lights: Vec<Picture>,
-    pub glow: Picture,
-}
-
-/// The ensō's pictures for a ring of `radius` output pixels, `fps` frames
-/// a second, the stroke over [`Transition::BRUSH`] and the light over
-/// [`Transition::SHEEN`], as the motion preference has them.
-pub fn splash(
-    ink: Rgba,
-    light_colour: Rgba,
-    radius: f32,
-    fps: u32,
-    motion: &Motion,
-    text: &mut TextEngine,
-) -> Splash {
-    let radius = radius.round().max(1.0);
-    let frames = |transition: Transition| {
-        let seconds = motion.apply(transition).duration.as_secs_f32();
-        ((seconds * fps as f32).round() as usize).max(1)
-    };
-    let to_picture = |pixmap: &Pixmap| {
-        Picture::from_rgba(pixmap.width(), pixmap.height(), pixmap.data().to_vec())
-            .unwrap_or_else(|| Picture::solid(1, 1, Rgba::new(0, 0, 0, 0)))
-    };
-    let mut raster = Raster::new(radius);
-    let side = raster.as_ref().map_or(1, |raster| raster.rgba.width());
-    let strokes = (1..=frames(Transition::BRUSH))
-        .filter_map(|k| {
-            let n = frames(Transition::BRUSH);
-            let eased = Transition::BRUSH.easing.apply(k as f32 / n as f32);
-            let raster = raster.as_mut()?;
-            raster.paint((f64::from(eased) * STEPS as f64).floor() as usize, ink);
-            Some(to_picture(&raster.rgba))
-        })
-        .collect();
-    let middle = side as f32 / 2.0;
-    let lights = (0..frames(Transition::SHEEN))
-        .map(|k| {
-            let p = k as f64 / frames(Transition::SHEEN) as f64;
-            let frame = Offscreen::render(text, (side, side), 1, |canvas| {
-                light(canvas, light_colour, (middle, middle), radius, p, 1.0);
-            });
-            Picture::from_rgba(side, side, frame.rgba)
-                .unwrap_or_else(|| Picture::solid(1, 1, Rgba::new(0, 0, 0, 0)))
-        })
-        .collect();
-    let glow_side = (reach(radius) * 2.0).ceil() as u32;
-    let glow = Offscreen::render(text, (glow_side, glow_side), 1, |canvas| {
-        let c = glow_side as f32 / 2.0;
-        canvas.glow((c, c), radius * 0.2, reach(radius), ink, GLOW);
-    });
-    Splash {
-        side,
-        strokes,
-        lights,
-        glow: Picture::from_rgba(glow_side, glow_side, glow.rgba)
-            .unwrap_or_else(|| Picture::solid(1, 1, Rgba::new(0, 0, 0, 0))),
-    }
-}
-
-/// How far the scene behind the ensō is quietened towards the base
-/// colour, and how much it is blurred: there, but not competing.
+/// How far the terraces are quietened towards the base colour behind the
+/// login, and how much they are blurred: there, but not competing.
 const BACKDROP_TINT: f32 = 0.5;
 const BACKDROP_BLUR: u32 = 2;
 
@@ -621,28 +552,19 @@ pub fn life_ink(colors: &Palette, quiet: bool) -> enso_scene::life::Ink {
     }
 }
 
-/// The scene quietened into a backdrop for the ensō: softened, and half
-/// way to `base`.
+/// The scene quietened into the login screen's backdrop: softened, and
+/// half way to `base`.
 pub fn backdrop(scene: Picture, base: Rgba) -> Picture {
     scene.blurred(BACKDROP_BLUR).tinted(base, BACKDROP_TINT)
 }
 
-/// The stage the ensō is painted on: `backdrop` over `base`. The boot's
-/// last frame, and the login screen's first, before the brush comes down.
+/// `backdrop` over `base`: the boot menu's last frame, the splash, and the
+/// login screen's first, the same picture from one to the next.
 pub fn stage(canvas: &mut Canvas<'_>, base: Rgba, backdrop: Option<&Picture>) {
     canvas.clear(base);
     if let Some(backdrop) = backdrop {
         canvas.picture(backdrop);
     }
-}
-
-/// The ensō whole on its stage: `backdrop` (or `base` alone),
-/// and the mark in `ink` where [`place`] puts it, whole, with its glow at
-/// rest.
-pub fn frame(canvas: &mut Canvas<'_>, base: Rgba, ink: Rgba, backdrop: Option<&Picture>) {
-    stage(canvas, base, backdrop);
-    let (centre, radius) = place(canvas.bounds());
-    Mark::new(ink, ink).draw(canvas, centre, radius, Instant::now());
 }
 
 #[cfg(test)]
@@ -739,6 +661,13 @@ mod tests {
         assert!(raster.rgba.data().iter().all(|&byte| byte == 0));
     }
 
+    /// The ensō whole on its stage, at rest.
+    fn frame(canvas: &mut Canvas<'_>, base: Rgba, ink: Rgba, backdrop: Option<&Picture>) {
+        stage(canvas, base, backdrop);
+        let (centre, radius) = place(canvas.bounds());
+        Mark::new(ink, ink).draw(canvas, centre, radius, Instant::now());
+    }
+
     #[test]
     fn renders_the_mark() {
         let ctx = context();
@@ -753,7 +682,7 @@ mod tests {
         );
         still.check(env!("CARGO_MANIFEST_DIR"), "mark");
 
-        // Over the scene, quietened: the login screen's and the boot's.
+        // Over the scene, quietened.
         let backdrop = backdrop(scene(&colors, (480, 270)), colors.base);
         let over = render((480, 270), 1, |canvas| {
             frame(canvas, colors.base, colors.rose, Some(&backdrop))

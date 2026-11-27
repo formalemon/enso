@@ -17,8 +17,8 @@ light — sharing one palette, one set of drawn icons, and one way of moving.
 | `enso-wall` | Wallpaper: one picture per theme with a default to fall back on, fading between them as the theme changes | working |
 | `enso-power` | Power menu: lock, sleep, log out, restart, shut down — a key each | working |
 | `enso-lock` | Lock screen: the ensō, a clock and a password field, on a machine made quiet while nobody is at it | working |
-| `enso-greet` | Login screen, as a greeter for greetd: the ensō, your name, and a password; Tab for someone else | working |
-| `enso-boot` | Boot menu, for the firmware: Arch or Windows beside a pagoda on an island in the sky at dusk, in voxels, the camera circling it; then the ensō while Arch starts | new |
+| `enso-greet` | Login screen, as a greeter for greetd: the terraces at dusk, your name, and a password; Tab for someone else | working |
+| `enso-boot` | Boot menu, for the firmware: Arch or Windows beside a pagoda on an island in the sky at dusk, in voxels, the camera circling it; then the terraces the login screen starts on, while Arch starts | new |
 | `enso-auth` | Asks for your password when the system needs it (polkit: mounting disks, system settings, pkexec), and for codes when pairing Bluetooth devices | working |
 | `enso-keyring` | The desktop's keyring (Secret Service) for gh, git, VS Code, Chromium, anything on libsecret: sealed on disk, opened with your login password, never storing it | working |
 | `enso-play` | What's playing, under the clock: the cover, a timeline that waves while it plays, and the buttons — any MPRIS player (a YouTube tab, Spotify, mpv); the media keys too | working |
@@ -716,7 +716,7 @@ logging out asks Niri to quit over its socket; locking runs `enso-lock`
 **`enso-lock`** — the ensō, a clock, the date, and a field that fills with
 dots, over the theme's wallpaper blurred into colour and light (or the base
 colour alone). The ensō paints itself in as the lock appears, then breathes
-(see `enso-greet`). `Enter` checks the password; `Esc` or `Ctrl+u` clears the field; a
+(see **The ensō**, below). `Enter` checks the password; `Esc` or `Ctrl+u` clears the field; a
 wrong one shakes it. After three misses each further one costs a wait,
 doubling to half a minute.
 
@@ -778,11 +778,11 @@ between the screen and greetd's socket. It runs in a niri of its own,
 started by greetd as its `greeter` user; once you are in, it asks greetd for
 your session and quits that niri, and greetd starts the session in its place.
 
-On screen: voxel terraces at dusk, quietened, the ensō, your
-name and the password field, looking just like the lock. `enable` also
-writes a Plymouth theme: while the machine starts, the ensō paints itself
-on the same terraces and a light runs along it until the login screen is
-ready, which opens with the ensō already whole. Tab or the arrow keys go through the others who can log in
+On screen: voxel terraces at dusk, quietened, and over them your name and
+the password field, the lock's own. `enable` also writes a Plymouth theme:
+the same terraces, still, while the machine starts, so the pagoda's menu
+hands over to the terraces and the login screen opens on the very picture
+the boot left, the name and field coming in over it. Tab or the arrow keys go through the others who can log in
 (ordinary accounts with a login shell). A wrong password shakes the field;
 whatever PAM says — an account locked after too many tries, say — is shown
 as it says it. The session is your login shell running `niri-session`, so
@@ -805,10 +805,10 @@ one only you have, and says how to copy it where the greeter can read it.
 **The ensō** (`enso_ui::mark`) is the suite's mark: the circle from the
 Neovim start screen as one brush stroke, twenty-six bristles running dry
 towards its end. It is computed, not drawn from a file, so it is the same
-pixels everywhere. Where it is shown it breathes — a slow swell and a faint
-glow every nine seconds, with a light travelling the stroke every fourteen —
-redrawn a few times a second, never every frame. With motion turned off it
-is simply there.
+pixels at any size. It is the lock screen's: painted in as the lock comes
+up, then breathing — a slow swell and a faint glow every nine seconds, with
+a light travelling the stroke every fourteen — redrawn a few times a second,
+never every frame. With motion turned off it is simply there.
 
 **`enso-boot`** — the boot menu, a program for the firmware. A
 five-storeyed pagoda stands on an island floating in the sky at dusk —
@@ -816,9 +816,9 @@ cherry trees, a torii, stone lanterns lit, clouds drifting about it, a sea
 of cloud below and the moon and stars above, all in voxels and the theme's
 colours — and the camera goes slowly round it, once every eighty seconds.
 Under it the menu offers Arch and Windows. Nothing starts until Enter: it
-never picks for you. Choosing Arch puts up the ensō on the base colour, the very
-frame the login screen starts from, and with a quiet boot that is what
-stays on screen until the password is asked for (a moment of black as the
+never picks for you. Choosing Arch puts up the terraces, quietened: the
+very frame the boot splash keeps and the login screen starts from, so with
+a quiet boot that is what stays on screen until the password is asked for (a moment of black as the
 graphics driver takes over is likely).
 
 The island is computed (`enso-scene`): built on a grid of voxels and lit

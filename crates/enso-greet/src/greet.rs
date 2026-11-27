@@ -1,6 +1,7 @@
-//! The login screen: the ensō, who is logging in, and what PAM asks them.
+//! The login screen: the terraces the boot leaves on the screen, who is
+//! logging in, and what PAM asks them.
 //!
-//! It looks like enso-lock on purpose, so that logging in and unlocking
+//! Its field is enso-lock's on purpose, so that logging in and unlocking
 //! are the same gesture. What differs is underneath: here nothing checks a
 //! password. Every question is greetd's (and so PAM's), every answer goes
 //! back to greetd, and the screen only waits, shows and forwards.
@@ -22,8 +23,7 @@ use enso_scene::{
 use enso_sys::accounts::User;
 use enso_ui::{
     Align, Canvas, Cx, Event, Key, KeyEvent, Paint, Picture, Proxy, Rect, Role, Screen, Screens,
-    Text,
-    mark::{self, Mark, Pace},
+    Text, mark,
     widget::{Look, Note, SecretField, secret},
 };
 use serde::Deserialize;
@@ -52,6 +52,8 @@ impl Default for GreetConfig {
 
 const FIELD_WIDTH: f32 = 280.0;
 const FIELD_HEIGHT: f32 = 48.0;
+/// The line under the field: what PAM said, or "Checking…".
+const NOTE_HEIGHT: f32 = 22.0;
 /// Characters accepted; PAM takes no more than this many bytes anyway.
 const MAX_ANSWER: usize = 256;
 /// How long a passing message stays up.
@@ -123,16 +125,12 @@ pub struct Greet {
     /// How present the name and field are: `0` hidden, `1` shown.
     presence: Tween<f32>,
     revealed: bool,
-    /// The ensō, as the boot left it: whole, then breathing.
-    mark: Mark,
-    /// The scene behind it, quietened, as the boot left it too; and fitted
-    /// to the screen if the screen is another size.
+    /// The terraces, quietened, as the boot left them; and fitted to the
+    /// screen if the screen is another size.
     backdrop: Option<Picture>,
     fitted: Option<Picture>,
     /// What moves in the backdrop, and the backdrop as it now looks.
     moving: Option<Moving>,
-    /// When the ensō is painted and the name and field are let in.
-    reveal_at: Option<Instant>,
 }
 
 impl std::fmt::Debug for Greet {
@@ -169,7 +167,6 @@ impl Greet {
                 since: None,
                 last: 0.0,
             });
-        let mark = Mark::new(ctx.theme.colors.rose, ctx.theme.colors.text);
         let chosen = users
             .iter()
             .position(|user| user.name == config.default_user)
@@ -191,11 +188,9 @@ impl Greet {
             notice: None,
             presence: Tween::new(0.0),
             revealed: false,
-            mark,
             backdrop,
             fitted: None,
             moving,
-            reveal_at: None,
         }
     }
 
@@ -422,15 +417,10 @@ impl Greet {
             _ => self.notice.as_ref().and_then(|(_, until)| *until),
         };
         let due = due.map(|due| due.saturating_duration_since(now) + Duration::from_millis(5));
-        // The mark's next breath, unless frames are coming anyway.
-        let breath = match self.mark.pace(now) {
-            Pace::After(after) => Some(after),
-            Pace::Frames | Pace::Rest => None,
-        };
         // The backdrop's motion, while there is anyone to see it.
         let moving =
             (self.moving.is_some() && self.phase != Phase::Leaving).then_some(MOVING_FRAME);
-        due.into_iter().chain(breath).chain(moving).min()
+        due.into_iter().chain(moving).min()
     }
 
     fn send(&mut self, command: Command) {
@@ -552,7 +542,7 @@ impl Screens for Greet {
                 if leave {
                     return cx.exit();
                 }
-                if redraw || self.mark.pace(now) != Pace::Rest || self.moving.is_some() {
+                if redraw || self.moving.is_some() {
                     Outcome::Redraw
                 } else {
                     Outcome::Ignored
@@ -572,17 +562,10 @@ impl Screens for Greet {
         let base_size = self.ctx.config.appearance.font_size;
         let bounds = canvas.bounds();
 
-        // The boot splash painted the ensō while the machine started: it is
-        // whole here from the first frame, and the name and field come in.
+        // The boot leaves the terraces on the screen: here from the first
+        // frame as they were, and the name and field come in over them.
         if !self.revealed {
             self.revealed = true;
-            self.mark.show(&self.ctx.motion, now);
-            self.reveal_at = Some(now);
-        }
-        if let Some(at) = self.reveal_at
-            && now >= at
-        {
-            self.reveal_at = None;
             self.presence
                 .set(1.0, self.ctx.motion.apply(Transition::REVEAL), now);
         }
@@ -606,9 +589,6 @@ impl Screens for Greet {
                 canvas.picture(fitted);
             }
         }
-        let (centre, radius) = mark::place(bounds);
-        self.mark.draw(canvas, centre, radius, now);
-
         canvas.set_opacity(presence);
         let drift = (1.0 - presence) * space::MD;
 
@@ -623,8 +603,10 @@ impl Screens for Greet {
             Text::new(&shown_name, base_size * type_scale::HEADING, colors.text).medium();
         let name_height = name_text.line_height();
 
-        // Under the ring, clear of the brush lifting off at its top right.
-        let name_top = centre.1 + radius * 1.25 + space::XXL + drift;
+        // The name, the field, and the line under it, together a little
+        // above the middle, where the eye rests.
+        let column = name_height + space::LG + FIELD_HEIGHT + space::MD + NOTE_HEIGHT;
+        let name_top = (bounds.h * 0.46 - column / 2.0).round() + drift;
         canvas.text_in(
             &name_text,
             Rect::new(0.0, name_top, bounds.w, name_height),
@@ -648,7 +630,7 @@ impl Screens for Greet {
             ..secret::Style::new(&look, &self.question)
         };
         self.field.draw(canvas, field, &style, now);
-        let line = Rect::new(0.0, field.bottom() + space::MD, bounds.w, 22.0);
+        let line = Rect::new(0.0, field.bottom() + space::MD, bounds.w, NOTE_HEIGHT);
         Note::under(&self.field, said, style.busy).draw(
             canvas,
             line,
@@ -658,12 +640,7 @@ impl Screens for Greet {
         );
         canvas.set_opacity(1.0);
 
-        Paint::when(
-            self.presence.is_animating(now)
-                || self.field.is_animating(now)
-                || self.reveal_at.is_some()
-                || self.mark.pace(now) == Pace::Frames,
-        )
+        Paint::when(self.presence.is_animating(now) || self.field.is_animating(now))
     }
 }
 
@@ -942,12 +919,11 @@ mod tests {
         let (frame, paint) = render(&mut greet, start);
         assert_eq!(paint, Paint::Animating);
         assert_eq!(frame.pixel(5, 5), [base.r, base.g, base.b, 255]);
-        // The first frame is the ensō whole on its stage, as the boot
-        // splash leaves it.
+        // The first frame is the stage alone, as the boot splash leaves it.
         let mut text = TextEngine::new(&greet.ctx.config.appearance);
         let colors = greet.ctx.theme.colors.clone();
         let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
-            mark::frame(canvas, colors.base, colors.rose, None);
+            mark::stage(canvas, colors.base, None);
         });
         assert!(frame.rgba == handed.rgba);
         let (frame, paint) = render(&mut greet, settled);
@@ -991,7 +967,7 @@ mod tests {
         let (first, _) = render(&mut greet, now);
         let mut text = TextEngine::new(&greet.ctx.config.appearance);
         let handed = Offscreen::render(&mut text, (960, 540), 2, |canvas| {
-            mark::frame(canvas, colors.base, colors.rose, Some(&backdrop));
+            mark::stage(canvas, colors.base, Some(&backdrop));
         });
         // Still at first: the splash's last frame, exactly.
         assert!(first.rgba == handed.rgba);

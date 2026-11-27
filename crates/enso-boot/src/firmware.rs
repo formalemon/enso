@@ -100,8 +100,8 @@ fn run() -> Result<(), Status> {
     drop(backdrop);
     match choice {
         Choice::Arch => {
-            // The ensō, on the colour the login screen will start from:
-            // the quiet boot leaves it on screen while Linux starts.
+            // The terraces, quietened, as the login screen will start: the
+            // quiet boot leaves them on screen while Linux starts.
             let frame = menu::open(FRAME).ok_or(Status::LOAD_ERROR)?;
             let colour = frame
                 .bgra
