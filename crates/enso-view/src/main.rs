@@ -1,11 +1,14 @@
-//! `enso-view` — an image viewer. Opens a picture (or a folder) in a
-//! window of its own, and steps through the others beside it: zoom, turn,
-//! copy, make the wallpaper, or throw away, from the keys.
+//! `enso-view` — a viewer for pictures and videos. Opens one (or a
+//! folder) in a window of its own, and steps through the others beside it:
+//! swipe, zoom, turn, play, copy, make the wallpaper, or throw away.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod album;
+mod draw;
+mod item;
 mod photo;
+mod video;
 mod viewer;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -13,27 +16,29 @@ use std::{path::PathBuf, process::ExitCode};
 use enso_core::Context;
 
 const HELP: &str = "\
-enso-view — pictures, one at a time
+enso-view — pictures and videos, one at a time
 
-Usage: enso-view [PICTURE | FOLDER]
+Usage: enso-view [PICTURE | VIDEO | FOLDER]
        enso-view enable | disable
 
-Shows PICTURE, and steps through the others in its folder (or FOLDER's,
-or this one's). PNG, JPEG, WebP, and GIF (its first frame); a photo is
-turned the way the camera was held.
+Shows PICTURE or VIDEO, and steps through the others in its folder (or
+FOLDER's, or this one's). PNG, JPEG, WebP, and GIF (its first frame); a
+photo is turned the way the camera was held. MP4, WebM, Matroska,
+QuickTime, AVI, and Ogg videos play through ffmpeg, when it's installed.
 
-`enable` makes it what opens pictures (those you haven't chosen something
-else for); `disable` gives them back.
+`enable` makes it what opens pictures and videos (those you haven't
+chosen something else for); `disable` gives them back.
 
 Keys:
-  Right, Space, l   next                 + / -, wheel   zoom
-  Left, Backspace   previous             0              fit the window
-  Home / End        first / last         1, double-click every pixel
-  r / R             turn right / left    drag           move about
-  Ctrl+C            copy the picture     w              make it the wallpaper
-  Delete            move to the trash    Ctrl+Z         put it back
-  e                 show it in Files     f              maximise
-  Esc, q            close
+  Right, Left       next, previous       two fingers sideways  the same
+  Home / End        first / last         Space, k   play or pause a video
+  Shift+arrows      back, on 5 seconds   m          sound on or off
+  + / -, wheel      zoom                 0, 1       fit, every pixel
+  r / R             turn right / left    i          details
+  Ctrl+C            copy it              w          make it the wallpaper
+  Delete            move to the trash    Ctrl+Z     put it back
+  e                 show it in Files     f, F11     full screen
+  ?                 the keys             Esc, q     close
 
 Options:
   -h, --help        Print this help
@@ -41,21 +46,36 @@ Options:
 ";
 
 /// What it opens, as a desktop entry: no line in the launcher (there is
-/// nothing to view without a picture), only the opening of pictures.
+/// nothing to view without a picture), only the opening of pictures and
+/// videos.
 const ENTRY: &str = "enso-view.desktop";
-const MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const MIMES: [&str; 13] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/gif",
+    "video/mp4",
+    "video/x-m4v",
+    "video/webm",
+    "video/x-matroska",
+    "video/quicktime",
+    "video/x-msvideo",
+    "video/ogg",
+    "video/3gpp",
+    "video/mpeg",
+];
 
 fn entry(exe: &std::path::Path) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Image Viewer\n\
-         Comment=Step through the pictures in a folder\n\
+         Name=Viewer\n\
+         Comment=Step through the pictures and videos in a folder\n\
          Exec={} %f\n\
          Icon=image-viewer\n\
          Terminal=false\n\
          NoDisplay=true\n\
-         Categories=Graphics;Viewer;\n\
+         Categories=Graphics;AudioVideo;Viewer;\n\
          MimeType={};\n\
          StartupWMClass=enso-view\n",
         exe.display(),
@@ -112,11 +132,11 @@ fn enable() -> ExitCode {
     let exe = enso_core::exe::installed();
     match enso_fs::open::adopt(ENTRY, &entry(&exe), &MIMES) {
         Ok(taken) if taken.is_empty() => {
-            println!("enso-view is set up; every kind of picture already had a viewer chosen.");
+            println!("enso-view is set up; every kind it opens already had something chosen.");
             ExitCode::SUCCESS
         }
         Ok(taken) => {
-            println!("Pictures open in enso-view now: {}.", taken.join(", "));
+            println!("These open in enso-view now: {}.", taken.join(", "));
             ExitCode::SUCCESS
         }
         Err(err) => {
@@ -129,7 +149,7 @@ fn enable() -> ExitCode {
 fn disable() -> ExitCode {
     match enso_fs::open::abandon(ENTRY) {
         Ok(()) => {
-            println!("Pictures open as they did before enso-view.");
+            println!("Pictures and videos open as they did before enso-view.");
             ExitCode::SUCCESS
         }
         Err(err) => {

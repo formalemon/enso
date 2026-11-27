@@ -1,0 +1,24 @@
+[package]
+name = "enso-media"
+description = "Sound and moving pictures for the enso desktop suite: what a file holds, and playing it in time, decoded by ffmpeg and heard through PipeWire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# What a file holds, as ffprobe says it.
+serde_json.workspace = true
+# The sound, to PipeWire through its PulseAudio socket; pure Rust.
+pulseaudio.workspace = true
+zbus = { workspace = true, optional = true }
+
+[features]
+# Telling the desktop what's playing, and taking its buttons, through MPRIS:
+# the now-playing card, the media keys.
+mpris = ["dep:zbus"]
+
+[lints]
+workspace = true

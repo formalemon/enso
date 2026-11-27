@@ -128,9 +128,12 @@ crates/
                  PipeWire, udisks2, accounts
   enso-fs/       listing, file operations, trash, pictures, thumbnails,
                  archives, git, search
+  enso-media/    sound and video: what a file holds, played in time
+                 (ffmpeg decodes, PipeWire plays), and MPRIS for players
   enso-bar/  enso-ctl/  enso-launch/  enso-notify/  enso-wall/
   enso-power/  enso-lock/  enso-auth/  enso-keyring/  enso-files/
-  enso-play/  enso-greet/  enso-boot/  enso-clip/  enso-dusk/   the binaries
+  enso-play/  enso-greet/  enso-boot/  enso-clip/  enso-dusk/
+  enso-view/  enso-listen/                                      the binaries
   enso-scene/    the pictures, computed: the pagoda island (boot menu), the terraces (login)
 config.example.toml   every config key with its default
 contrib/              udev rules: the power profile, and udisks for wheel
@@ -190,6 +193,18 @@ Each takes a complete snapshot of its service (`state()`), blocks while
 acting, and has a `watch()` that reports when a new snapshot is worth taking.
 An interface keeps them on worker threads; `enso-ctl`'s `system` module is
 the pattern.
+
+**`enso-media`** plays sound and video files. Decoding is ffmpeg's, run
+as a program (the way the file manager runs `git`): today's video codecs
+(H.264, HEVC, VP9, AV1) have no decoder in pure Rust, and ffmpeg is there
+wherever Firefox is, which depends on it. One ffmpeg decodes the pictures,
+from a point in the file on and at the size the window shows them; another
+decodes the sound, which goes to PipeWire as a stream of its own, in pure
+Rust, and keeps the clock the pictures follow — set by how far the server
+has actually played, so they stay together. Seeking starts both again from
+the new point. With its `mpris` feature it also stands on the session bus
+as a player, so the now-playing card and the media keys reach the suite's
+own players as they reach Firefox.
 
 Sound goes through the PulseAudio protocol that PipeWire serves
 (`pipewire-pulse`), spoken in pure Rust. It has exactly a mixer's model — an
@@ -352,13 +367,22 @@ what. Under them the timeline: what has played is a wave that rolls slowly
 onwards while it plays and lies down flat when paused, what's left a quiet
 straight line, a small upright thumb between them to drag. Then the times,
 and previous, play or pause, and next — the ones the player can't do are
-faint. With two players or more, dots at the foot choose between them;
-otherwise the card follows whichever is playing.
+faint. With two players or more, dots at the foot choose between them —
+click one, or swipe two fingers sideways across the card: the player shown
+follows the fingers, the next coming in beside it, the cover's warmth
+changing with it; otherwise the card follows whichever is playing.
+
+Firefox is one player however many of its tabs play: it tells the desktop
+only of the tab that started last (it has no way yet to give each its
+own), so Spotify and YouTube in one Firefox are one dot, whichever played
+last. The suite's own players — a video in `enso-view`, `enso-listen` —
+and apps like Spotify's or mpv each have their own.
 
 Opened from the bar it never takes the keyboard and goes when the pointer
 does. `enso-play` alone opens it on purpose, and again closes it; then
 `Space` plays or pauses, `h`/`l` (or arrows) move five seconds, `n`/`p`
-skip, `Tab` turns to the next player, `Esc` closes. For the media keys,
+skip, `Tab` and `Shift+Tab` turn to the next player and back, `Esc`
+closes. For the media keys,
 `enso-play play-pause`, `next`, and `previous` act on whichever player is
 playing, and `enso-play status` says what that is.
 
@@ -856,8 +880,12 @@ and dotfiles once you change them, and Settings (`Ctrl+,`) sets the rest.
 `?` shows the keys; `Ctrl+P` (or `:`) finds every command by name, with
 its key, and the folders you go to most.
 
+- **Right-click** a file for what can be done with it, or empty space for
+  the folder: new things, paste, the terminal, *Sort ›*, *Git ›*.
 - **Moving**: arrows or `hjkl`, `Enter` to open, `Backspace` up, `Alt+←/→`
-  back and forward, `Ctrl+L` to type a path, `g h`/`g d`/… to jump.
+  back and forward — or two fingers sideways on the touchpad, an arrow
+  drawn in from the edge filling with the accent once letting go would go
+  — `Ctrl+L` to type a path, `g h`/`g d`/… to jump.
 - **Choosing**: `Space`, `Shift`+arrows, a box dragged over empty space,
   `Ctrl+A`; what's chosen stays chosen across folders, and the status line
   says where.
@@ -885,7 +913,11 @@ its key, and the folders you go to most.
   out, or make a new one.
 - **Version control**, opt-in (Settings): the branch and its state in the
   status line, a branch menu with remote branches, fetch, pull, push,
-  clone, the identity to commit as. Signed in to **GitHub** or **GitLab**
+  clone, the identity to commit as. *Git ›* in the right-click menu on
+  empty space has *New repository…*, a folder of its own to name, and
+  *Make this folder a repository* (asking first for the home folder);
+  either starts on `main` (or git's `init.defaultBranch`), and `Ctrl+Z`
+  takes it back. Signed in to **GitHub** or **GitLab**
   (gitlab.com or your own) with your own OAuth app's device flow, the
   token goes in the keyring; clone lists your repositories, publish makes
   one, and git can ask enso-files for the way in.
@@ -894,7 +926,11 @@ its key, and the folders you go to most.
 
 As the file picker, behind the desktop portal, it answers every "Open…"
 and "Save as…" — Firefox, Chromium, Electron, Flatpaks — in the window of
-the program that asked, and remembers each program's folder.
+the program that asked, and remembers each program's folder. A click on
+a file chooses it (`Space` and `Ctrl`-click choose more, where more are
+wanted); its button stays quiet, without colour, until something is
+chosen, and warms to the accent once something is. `Enter` or a
+double-click takes the file under the cursor straight away.
 
 **Sharing the screen** goes through the same portal, to
 [xdg-desktop-portal-gnome](https://gitlab.gnome.org/GNOME/xdg-desktop-portal-gnome):
@@ -924,7 +960,8 @@ the disk. Everything else — labels, attributes, secrets — is sealed by the
 master key (XChaCha20-Poly1305) in `~/.local/share/enso/keyring.toml`,
 readable by you alone. Attributes are also kept hashed, as gnome-keyring
 keeps them, so a program can find its secret while the keyring is locked
-and ask for it to be opened. The card says which program is asking.
+and ask for it to be opened. The card says which program is asking, and
+grows out of the bar's clock like the launcher.
 
 So changing your password — even resetting it as root, having forgotten it
 — strands nothing: the next unlock takes the new one. The other side of
@@ -980,24 +1017,61 @@ alone.
 spawn-at-startup "enso-dusk"
 ```
 
-**`enso-view`** — pictures, one at a time, in a window of their own: as
-large as fits (never enlarged to fit), on the theme's base colour, with a
-quiet line under it — the name, which of how many, its size, the zoom — that
-is there while you move and gone when you look. Opened on a picture it steps
-through the others in its folder, in the order a file manager lists them,
-reading the next ahead. A photo is turned the way the camera was held
-(EXIF), here and everywhere enso shows pictures.
+**`enso-view`** — pictures and videos, one at a time, in a window made the
+way the file manager's is. The title row has back and forward, the name and
+which of how many it is, and its buttons (turn, details, show in Files, to
+the trash); under it the picture, as large as fits (never enlarged to fit);
+along the foot a strip of the folder's others, the one shown ringed in the
+accent, to see where you are and jump; and a status line with its size,
+how much it weighs, what it is, and the zoom. `i` opens the details beside
+it, as the file manager's preview pane lays them out: for a photo, when it
+was taken and with what camera, from its EXIF. Full screen (`f`, `F11`, a
+double-click on a video), the chrome goes and the ground darkens.
 
-`Right`/`Space` and `Left`/`Backspace` step, `Home`/`End` go to the ends;
-`+`/`-` or the wheel zoom about the pointer, `0` fits, `1` or a
-double-click shows every pixel, and a drag moves about; `r`/`R` turn it;
-`Ctrl+C` copies the picture itself; `w` makes it the wallpaper
-(`enso-wall set`); `Delete` moves it to the trash and `Ctrl+Z` puts it
-back; `e` shows it in Files.
+Opened on one, it steps through the others in its folder, in the order a
+file manager lists them, reading the next ahead. **Two fingers sideways**
+step too, the way a phone's gallery does: the picture follows the fingers,
+the next coming in beside it, and the strip slides along. A photo is turned
+the way the camera was held (EXIF), here and everywhere enso shows
+pictures.
 
-`enso-view enable` makes it what PNG, JPEG, WebP, and GIF open in (those
+**Videos** play where they are (MP4, WebM, Matroska, QuickTime, AVI, Ogg —
+through `enso-media`, so with ffmpeg installed). The one opened starts
+playing; one stepped to waits under a big play button. While it plays, its
+controls float over its foot as the pointer moves: play and pause, the
+times, the timeline (the wave of what has played, as on the now-playing
+card), and the sound. It's a player to the desktop while it plays, so the
+now-playing card shows it and the media keys reach it.
+
+`Right`/`Space` and `Left`/`Backspace` step (on a video, `Space` plays
+and pauses), `Home`/`End` go to the ends; `+`/`-` or the wheel zoom about
+the pointer, `0` fits, `1` or a double-click shows every pixel, and a drag
+(or two fingers, zoomed in) moves about; `r`/`R` turn it; `Shift+←/→`
+move five seconds in a video, `m` turns its sound off and on; `Ctrl+C`
+copies the picture itself; `w` makes it the wallpaper (`enso-wall set`);
+`Delete` moves it to the trash and `Ctrl+Z` puts it back; `e` shows it in
+Files; `?` shows the keys.
+
+`enso-view enable` makes it what pictures and videos open in (those
 nothing else was chosen for), with a desktop entry that stays out of the
 launcher; `enso-view disable` gives them back.
+
+**`enso-listen`** — sound files, one after another. Opened on one, it
+plays the folder through from there: the cover large (the one the file
+carries, or a `cover.jpg` beside it), its colour warming the window a
+touch; the title, and who it's by and on what; the timeline and the
+buttons, as the now-playing card has them; and the folder's tracks below,
+the one playing marked by three small bars that move while it plays. Two
+fingers sideways across the cover go to the next or the one before. It's a
+player to the desktop — the card under the bar's clock shows it, with its
+cover, and the media keys reach it — and one copy at a time: opening
+another file hands it to the one playing.
+
+`Space` (or `k`) plays and pauses, `←`/`→` (`h`/`l`) move five seconds,
+`n`/`p` or `↓`/`↑` go to the next and the one before (a few seconds in,
+`p` starts this one again), `m` turns the sound off and on, `e` shows it
+in Files. `enso-listen enable` makes it what sound files open in (those
+nothing else was chosen for); `enso-listen disable` gives them back.
 
 ## Theming
 
@@ -1200,6 +1274,16 @@ All of it lives in `enso-core` as tokens, so tools never hard-code a look:
 - `input` (in `enso-ui`) — the shared navigation keys: arrows,
   `Ctrl+n`/`Ctrl+p`, and `j`/`k` where no text field has focus. Overlays
   focus on open and dismiss on `Esc` or a click outside.
+- `swipe` (in `enso-ui`) — two fingers sideways on a touchpad, told apart
+  from a scroll, in the direction the touchpad's own natural-scrolling
+  setting gives. Shown two ways only: a `Pull` for back and forward
+  between places (an arrow drawn in from the edge, its ring filling, lit
+  in the accent once letting go would go; where there's nowhere to go it
+  comes part way and stays hollow), and a `Slide` for things side by side
+  (what's shown follows the fingers, the next comes in beside it).
+- `wave` and `toast` (in `enso-ui`) — a player's timeline, the same on the
+  now-playing card, over a video, and in the listener; and the word about
+  what was just done, the same in the file manager and the viewer.
 
 How things are drawn, everywhere:
 
@@ -1216,9 +1300,12 @@ How things are drawn, everywhere:
   place — the clock, levels, times, the calendar's days — are tabular, all
   one width, so nothing twitches as they count.
 - **The accent means on, now, or here**: a switch that is on, the wave of
-  what has played, today, the focused window. Levels (sliders, volume) and
-  page dots are quiet; the one big button is the lightest thing on its
-  card.
+  what has played, today, the focused window, the picture shown in the
+  strip, the track playing. Levels (sliders, volume) and page dots are
+  quiet; the one big button is the lightest thing on its card.
+- **A button with nothing to do yet has no colour**: the main button of a
+  dialog or a picker is quiet until it's ready — something chosen, a
+  password typed — and warms to its colour when it is.
 - **Small motions, only while they mean something**: steam rises off the
   cup while the machine is kept awake, the sun's rays reach as far as the
   screen is bright, a lock's shackle lifts as you land on it, a switch's
@@ -1232,14 +1319,18 @@ How things arrive, everywhere:
   clipboard history, the power menu — dims nothing, and grows out of the
   bar's clock when there is a bar along the top of the screen (`emerge` in
   `enso-ui`); without one it settles a fifth of the way down.
+- **The keyring's password card** grows out of the clock the same way,
+  dimming nothing: it comes when a program you just used wants its token,
+  so it arrives as if summoned. Without a bar it sits in the middle, as
+  below.
 - **What belongs to an island at the right** — the control center to the
   status island, the notification history to the bell — grows out of it
   the same way, however it was asked for (resting, a click, `Mod+C`,
   `Mod+N`), and hangs under the island's end.
 - **What hangs from the clock** — the month, what's playing — drops from
   it, away from the bar's edge.
-- **What asks and waits for an answer** — a password for the system, the
-  keyring, a program's own dialog — dims what is behind and sits in the
+- **What asks and waits for an answer** — a password for the system, a
+  program's own dialog — dims what is behind and sits in the
   middle: it has interrupted you, and says so.
 - Every card settles *down* into place, a few pixels, as it fades in.
 
@@ -1274,7 +1365,10 @@ one.
 - **enso-notify** — keeping pictures in the saved history; styled (bold,
   italic) body text.
 - **enso-wall** — a picture per output.
-- **enso-view** — animated GIFs; a slideshow.
+- **enso-view** — animated GIFs; a slideshow; subtitles.
+- **enso-listen** — shuffle and repeat; a queue across folders.
+- **enso-play** — each Firefox tab as a player of its own, once Firefox
+  can say more than the last one started.
 - **enso-lock** — authentication beyond the password (fingerprint), which
   means PAM.
 - **enso-boot** — a picture for other screen sizes than 16:9 at 1080p

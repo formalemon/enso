@@ -1,12 +1,14 @@
 //! The timeline: what has played is a wave, what's left a quiet straight
 //! line, and between them a small upright thumb. While something plays the
 //! wave rolls gently onwards; paused, it lies down flat — so the line itself
-//! says whether it's playing.
+//! says whether it's playing. The now-playing card has it, and so has every
+//! player in the suite: a video in the viewer, a song in the listener.
 
 use std::f32::consts::TAU;
 
 use enso_core::Rgba;
-use enso_ui::{Canvas, Rect, Shape};
+
+use crate::{Canvas, Rect, Shape};
 
 /// How thick the line is.
 pub const PEN: f32 = 4.0;

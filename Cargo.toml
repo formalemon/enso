@@ -21,6 +21,7 @@ enso-fs = { path = "crates/enso-fs", version = "0.6.0" }
 # second copy in target/. Release builds of the workspace had both anyway.
 enso-ui = { path = "crates/enso-ui", version = "0.6.0", features = ["png", "picture"] }
 enso-scene = { path = "crates/enso-scene", version = "0.6.0", default-features = false }
+enso-media = { path = "crates/enso-media", version = "0.6.0" }
 
 # Data & config.
 serde = { version = "1", features = ["derive"] }

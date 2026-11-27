@@ -11,7 +11,6 @@
 mod art;
 mod card;
 mod player;
-mod wave;
 
 use std::{
     io::{self, Write},
@@ -34,7 +33,9 @@ Usage: enso-play [COMMAND]
 
 With no command, opens the card, or closes it if it's open: one key
 binding toggles it. Keys: Space play/pause, h/l or arrows move 5 s,
-n/p next and previous, Tab the next player, Esc or q close.
+n/p next and previous, Tab (Shift+Tab) the next (previous) player, Esc
+or q close. Two fingers sideways on the touchpad go from player to
+player too.
 
 Commands, for the media keys:
   play-pause    play if paused, pause if playing

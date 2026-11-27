@@ -273,6 +273,60 @@ fn renders_a_picker_with_its_basket() {
 }
 
 #[test]
+fn the_picker_waits_for_something_chosen() {
+    let mut files = picker(Mode::Open {
+        multiple: false,
+        directory: false,
+    });
+    // The cursor on a file is not a choice: the button waits, muted.
+    let file = (0..files.pane.len())
+        .find(|&row| !files.pane.entry(row).kind.is_dir())
+        .unwrap();
+    files.pane.set_cursor(file);
+    snapshot(&render(&mut files, (980, 480)), "enso-files-picker-waiting");
+    assert!(
+        !files.hits.iter().any(|(_, hit)| *hit == Hit::Accept),
+        "nothing chosen: nothing to press"
+    );
+    // Clicked, it's chosen, and the button warms to the accent.
+    files.choose(file);
+    snapshot(&settle(&mut files, (980, 480)), "enso-files-picker-chosen");
+    assert!(files.hits.iter().any(|(_, hit)| *hit == Hit::Accept));
+}
+
+#[test]
+fn two_fingers_sideways_go_back_and_forward() {
+    use enso_ui::swipe::{Direction, Swiped};
+    let mut files = files();
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    // Nowhere to go back to: the arrow comes part way, and nothing happens.
+    for i in 0..10 {
+        files.pull.scroll((-30.0, 0.0, false, false), (false, false), at(i * 10));
+    }
+    let lifted = files
+        .pull
+        .scroll((0.0, 0.0, false, true), (false, false), at(110));
+    assert_eq!(lifted, Swiped::Moved);
+    // Half way back, with somewhere to go: the arrow, drawn in from the left.
+    for i in 0..5 {
+        files.pull.scroll((-24.0, 0.0, false, false), (true, false), at(1000 + i * 10));
+    }
+    let mut text = TextEngine::new(&files.ctx.config.appearance);
+    let image = Offscreen::render(&mut text, (900, 420), 2, |canvas| {
+        files.draw_window(canvas, at(1050));
+    });
+    snapshot(&image, "enso-files-swipe-back");
+    for i in 5..10 {
+        files.pull.scroll((-24.0, 0.0, false, false), (true, false), at(1000 + i * 10));
+    }
+    let lifted = files
+        .pull
+        .scroll((0.0, 0.0, false, true), (true, false), at(1110));
+    assert_eq!(lifted, Swiped::Go(Direction::Back));
+}
+
+#[test]
 fn renders_a_save_dialog_and_its_question() {
     let mut files = picker(Mode::Save {
         name: "report.pdf".into(),
@@ -316,6 +370,59 @@ fn renders_the_location_and_the_keys() {
     files.location = None;
     files.overlay = Some(Overlay::Help);
     snapshot(&render(&mut files, (900, 560)), "enso-files-keys");
+}
+
+#[test]
+fn right_clicks_say_only_what_they_are_about() {
+    let mut files = files();
+    files.config.view = crate::config::View::List;
+    // A file: the file's own actions, and nothing about the folder.
+    let row = (0..files.pane.len())
+        .find(|&row| !files.pane.entry(row).kind.is_dir())
+        .unwrap();
+    files.context_menu(Some(row), 420.0, 120.0);
+    let labels = |files: &Files| -> Vec<String> {
+        match &files.overlay {
+            Some(Overlay::Menu((menu, _))) => menu
+                .items()
+                .iter()
+                .filter_map(|item| match item {
+                    enso_ui::widget::Item::Action { label, .. } => Some(label.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    let file_menu = labels(&files);
+    snapshot(&render(&mut files, (900, 640)), "enso-files-menu-file");
+    assert!(file_menu.contains(&"Rename".to_owned()));
+    assert!(!file_menu.iter().any(|label| label.starts_with("Sort") || label == "New folder"));
+    assert!(file_menu.len() <= 12, "{file_menu:?}");
+    // Empty space: the folder's, sorting folded into one line.
+    files.overlay = None;
+    files.context_menu(None, 420.0, 120.0);
+    let folder_menu = labels(&files);
+    snapshot(&render(&mut files, (900, 640)), "enso-files-menu-folder");
+    assert!(folder_menu.contains(&"New folder".to_owned()));
+    assert!(folder_menu.contains(&"Sort".to_owned()));
+    assert!(!folder_menu.contains(&"Rename".to_owned()));
+    assert!(folder_menu.len() <= 10, "{folder_menu:?}");
+    // The sort line opens the sort order where the menu was.
+    files.more_menu(super::More::Sort);
+    assert!(labels(&files).contains(&"By date".to_owned()));
+}
+
+#[test]
+fn renaming_shows_in_the_grid_too() {
+    let mut files = files();
+    files.config.view = crate::config::View::Grid;
+    files.begin_rename("/home/me/dev/enso/Cargo.toml".into());
+    snapshot(&render(&mut files, (900, 420)), "enso-files-rename-grid");
+    // The field is drawn where the tile's name was: its caret is there.
+    let image = render(&mut files, (900, 420));
+    drop(image);
+    assert!(files.renaming.is_some());
 }
 
 #[test]

@@ -133,6 +133,117 @@ fn exif(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
+/// What a photo says of itself: when it was taken, and with what.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Details {
+    /// `2026:11:02 10:00:00`, as the camera wrote it.
+    pub taken: Option<String>,
+    /// The make and model, as the camera names itself: `Google Pixel 8`.
+    pub camera: Option<String>,
+}
+
+/// The details `bytes` (a JPEG, PNG, or WebP file) carry in their EXIF.
+pub fn details(bytes: &[u8]) -> Details {
+    let Some(tiff) = exif(bytes) else {
+        return Details::default();
+    };
+    let make = ascii(tiff, 0, 0x010f);
+    let model = ascii(tiff, 0, 0x0110);
+    let camera = match (make, model) {
+        // Models often lead with the make already: "Canon EOS R6".
+        (Some(make), Some(model)) if model.to_lowercase().starts_with(&make.to_lowercase()) => {
+            Some(model)
+        }
+        (Some(make), Some(model)) => Some(format!("{make} {model}")),
+        (make, model) => make.or(model),
+    };
+    // When the shutter went, from the EXIF block's own; else when it was
+    // last written.
+    let taken = entry_u32(tiff, 0, 0x8769)
+        .and_then(|exif| ascii(tiff, exif as usize, 0x9003))
+        .or_else(|| ascii(tiff, 0, 0x0132));
+    Details { taken, camera }
+}
+
+/// A TIFF block's byte order, and its first directory.
+fn tiff_start(tiff: &[u8]) -> Option<(bool, usize)> {
+    let big = match tiff.get(..2)? {
+        b"MM" => true,
+        b"II" => false,
+        _ => return None,
+    };
+    let read = |at: usize, len: usize| tiff.get(at..at + len);
+    let magic = read(2, 2)?;
+    let magic = if big {
+        u16::from_be_bytes([magic[0], magic[1]])
+    } else {
+        u16::from_le_bytes([magic[0], magic[1]])
+    };
+    if magic != 42 {
+        return None;
+    }
+    let first = read(4, 4)?;
+    let first = if big {
+        u32::from_be_bytes([first[0], first[1], first[2], first[3]])
+    } else {
+        u32::from_le_bytes([first[0], first[1], first[2], first[3]])
+    };
+    Some((big, first as usize))
+}
+
+/// The 12-byte entry for `tag` in the directory at `dir` (`0`: the first).
+fn entry(tiff: &[u8], dir: usize, tag: u16) -> Option<(bool, usize)> {
+    let (big, first) = tiff_start(tiff)?;
+    let dir = if dir == 0 { first } else { dir };
+    let u16_at = |at: usize| -> Option<u16> {
+        let pair: [u8; 2] = tiff.get(at..at + 2)?.try_into().ok()?;
+        Some(if big {
+            u16::from_be_bytes(pair)
+        } else {
+            u16::from_le_bytes(pair)
+        })
+    };
+    let count = usize::from(u16_at(dir)?).min(512);
+    (0..count)
+        .map(|index| dir + 2 + index * 12)
+        .find(|&at| u16_at(at) == Some(tag))
+        .map(|at| (big, at))
+}
+
+fn entry_u32(tiff: &[u8], dir: usize, tag: u16) -> Option<u32> {
+    let (big, at) = entry(tiff, dir, tag)?;
+    let four: [u8; 4] = tiff.get(at + 8..at + 12)?.try_into().ok()?;
+    Some(if big {
+        u32::from_be_bytes(four)
+    } else {
+        u32::from_le_bytes(four)
+    })
+}
+
+/// A text entry: inside the entry when four bytes or fewer, else where it
+/// points.
+fn ascii(tiff: &[u8], dir: usize, tag: u16) -> Option<String> {
+    let (big, at) = entry(tiff, dir, tag)?;
+    let four: [u8; 4] = tiff.get(at + 4..at + 8)?.try_into().ok()?;
+    let count = if big {
+        u32::from_be_bytes(four)
+    } else {
+        u32::from_le_bytes(four)
+    } as usize;
+    let count = count.min(256);
+    let bytes = if count <= 4 {
+        tiff.get(at + 8..at + 8 + count)?
+    } else {
+        let offset = entry_u32(tiff, dir, tag)? as usize;
+        tiff.get(offset..offset + count)?
+    };
+    let text: String = String::from_utf8_lossy(bytes)
+        .trim_end_matches('\0')
+        .trim()
+        .to_owned();
+    (!text.is_empty()).then_some(text)
+}
+
 /// The orientation an EXIF block gives (1 to 8; 1 is as stored).
 fn orientation(tiff: &[u8]) -> Option<u16> {
     let big = match tiff.get(..2)? {

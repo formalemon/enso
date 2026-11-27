@@ -56,7 +56,31 @@ impl Image {
                 rgba.extend([mul(pixel[0]), mul(pixel[1]), mul(pixel[2]), alpha]);
             }
         }
-        Some(Self::from_premultiplied(width, height, rgba))
+        Some(Self::from_premultiplied(width, height, rgba, MAX_SIDE))
+    }
+
+    /// [`Image::from_raw`] for a picture shown large — an album's cover
+    /// filling a window — kept up to `max_side` pixels on its longer side
+    /// rather than the usual small size.
+    pub fn from_raw_up_to(
+        width: u32,
+        height: u32,
+        has_alpha: bool,
+        data: &[u8],
+        max_side: u32,
+    ) -> Option<Self> {
+        let channels = if has_alpha { 4 } else { 3 };
+        let (w, h) = (width as usize, height as usize);
+        if w == 0 || h == 0 || w > 16_384 || h > 16_384 || data.len() < w * h * channels {
+            return None;
+        }
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for pixel in data.chunks_exact(channels).take(w * h) {
+            let alpha = if has_alpha { pixel[3] } else { 255 };
+            let mul = |c: u8| ((u32::from(c) * u32::from(alpha) + 127) / 255) as u8;
+            rgba.extend([mul(pixel[0]), mul(pixel[1]), mul(pixel[2]), alpha]);
+        }
+        Some(Self::from_premultiplied(width, height, rgba, max_side.max(1)))
     }
 
     /// Image size in its own pixels.
@@ -64,8 +88,8 @@ impl Image {
         (self.width, self.height)
     }
 
-    fn from_premultiplied(width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        let (width, height, rgba) = shrink(width, height, rgba);
+    fn from_premultiplied(width: u32, height: u32, rgba: Vec<u8>, max_side: u32) -> Self {
+        let (width, height, rgba) = shrink(width, height, rgba, max_side);
         let mut bgra = rgba.clone();
         for pixel in bgra.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
@@ -80,8 +104,8 @@ impl Image {
 }
 
 /// Average whole blocks of pixels until the longest side fits [`MAX_SIDE`].
-fn shrink(width: u32, height: u32, rgba: Vec<u8>) -> (u32, u32, Vec<u8>) {
-    let factor = width.max(height).div_ceil(MAX_SIDE) as usize;
+fn shrink(width: u32, height: u32, rgba: Vec<u8>, max_side: u32) -> (u32, u32, Vec<u8>) {
+    let factor = width.max(height).div_ceil(max_side) as usize;
     if factor <= 1 {
         return (width, height, rgba);
     }

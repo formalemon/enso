@@ -613,6 +613,54 @@ impl<'a> Canvas<'a> {
         true
     }
 
+    /// A video's frame: opaque R, G, B, A pixels, drawn the quickest way
+    /// there is. Placed a picture pixel to an output pixel on whole pixels,
+    /// at full opacity and unclipped, it's copied row by row; otherwise it
+    /// is drawn as [`Canvas::pixels`] draws. Returns `false` if the numbers
+    /// don't describe `rgba`.
+    pub fn frame(&mut self, rgba: &[u8], width: u32, height: u32, dest: Rect) -> bool {
+        if rgba.len() != width as usize * height as usize * 4 {
+            return false;
+        }
+        let s = self.scale;
+        let (x, y) = (dest.x * s, dest.y * s);
+        let exact = (dest.w * s - width as f32).abs() < 0.5
+            && (dest.h * s - height as f32).abs() < 0.5
+            && (x - x.round()).abs() < 0.01
+            && (y - y.round()).abs() < 0.01;
+        if !exact || self.opacity < 0.999 || self.clip.is_some() {
+            return self.pixels(rgba, width, height, dest);
+        }
+        let (x0, y0) = (x.round() as i64, y.round() as i64);
+        let (cw, ch) = (i64::from(self.width), i64::from(self.height));
+        let (w, h) = (i64::from(width), i64::from(height));
+        let (left, right) = (x0.max(0), (x0 + w).min(cw));
+        let (top, bottom) = (y0.max(0), (y0 + h).min(ch));
+        if right <= left || bottom <= top {
+            return true;
+        }
+        let span = ((right - left) * 4) as usize;
+        for row in top..bottom {
+            let from = (((row - y0) * w + (left - x0)) * 4) as usize;
+            let to = ((row * cw + left) * 4) as usize;
+            let source = &rgba[from..from + span];
+            let target = &mut self.pixels[to..to + span];
+            if self.bgra {
+                for (out, pixel) in target
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(source.as_chunks::<4>().0)
+                {
+                    *out = [pixel[2], pixel[1], pixel[0], pixel[3]];
+                }
+            } else {
+                target.copy_from_slice(source);
+            }
+        }
+        true
+    }
+
     /// Copy `picture` onto the canvas pixel for pixel — its pixels are the
     /// output's, not logical ones — centred, and cropped where it is larger.
     /// At full opacity that is a plain copy; below it the picture is mixed

@@ -197,6 +197,10 @@ pub enum Figure {
     Display,
     /// Two sliders, each with its knob: settings.
     Sliders,
+    /// An `i` in a ring: about this, its details.
+    Info,
+    /// A note of music: something to listen to.
+    Note,
 }
 
 /// An icon: the figure drawn, and a few letters standing in for it where
@@ -271,4 +275,8 @@ pub mod icon {
     pub const SCREENCAST: Icon = Icon::new(Figure::Screencast, "rec");
     pub const DISPLAY: Icon = Icon::new(Figure::Display, "scr");
     pub const SLIDERS: Icon = Icon::new(Figure::Sliders, "set");
+    pub const INFO: Icon = Icon::new(Figure::Info, "i");
+    pub const NOTE: Icon = Icon::new(Figure::Note, "♪");
+    /// Turning a picture: the circle that turns back on itself.
+    pub const TURN: Icon = Icon::new(Figure::Restart, "turn");
 }

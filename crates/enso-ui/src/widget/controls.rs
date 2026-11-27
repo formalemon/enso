@@ -138,7 +138,11 @@ impl<'a> Button<'a> {
 
     pub fn draw(&self, canvas: &mut Canvas<'_>, rect: Rect, look: &Look, state: Interaction) {
         let pill = radius::pill(rect.h);
+        // The loud kinds aren't loud until there's something to do: not
+        // yet ready, they're as quiet as can be, with no colour at all.
+        let waiting = state.disabled && matches!(self.kind, Kind::Primary | Kind::Danger);
         let (fill, ink) = match self.kind {
+            _ if waiting => (Some(look.overlay.alpha(0.55)), look.muted),
             Kind::Primary => (Some(look.accent), look.base),
             Kind::Danger => (Some(look.danger), look.base),
             // `overlay` reads on both the window's base and a surface.
@@ -153,7 +157,7 @@ impl<'a> Button<'a> {
             1.0
         };
         canvas.with_opacity(
-            if state.disabled {
+            if state.disabled && !waiting {
                 opacity::DISABLED
             } else {
                 1.0

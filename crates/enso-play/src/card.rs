@@ -9,8 +9,10 @@
 //! Opened on purpose (`enso-play`), it takes the keyboard and stays until
 //! dismissed.
 //!
-//! With more than one player, dots at the foot choose between them (`Tab`
-//! from the keyboard); otherwise it follows whichever is playing.
+//! With more than one player, dots at the foot choose between them: click
+//! one, swipe two fingers sideways across the card (the player shown
+//! following them, the next coming in beside it), or `Tab` from the
+//! keyboard. Otherwise it follows whichever is playing.
 
 use std::{
     collections::HashMap,
@@ -22,19 +24,21 @@ use std::{
 
 use enso_core::{
     Context, Icon, Rgba, Transition, Tween,
-    style::{edge, icon, opacity, radius, space, type_scale},
+    style::{edge, icon, opacity, radius, space, stroke, type_scale},
 };
 use enso_sys::mpris::{Mpris, Player, Status};
 use enso_ui::{
     Align, Anchor, App, Button, Canvas, Cx, Event, Key, KeyEvent, Keyboard, Layer, Paint,
-    PointerEvent, Presence, Proxy, Rect, SurfaceSpec, Text, watch::watch_dir,
+    PointerEvent, Presence, Proxy, Rect, SurfaceSpec, Text,
+    swipe::{self, Direction, Slide, Swiped},
+    watch::watch_dir,
 };
 
 use crate::{
     art::Cover,
     player::{Inbox, Request, Update, Worker},
-    wave::{self, Wave},
 };
+use enso_ui::widget::wave::{self, Wave};
 
 /// The name the card listens under, and holds its one-copy lock by.
 pub const NAME: &str = "enso-play";
@@ -114,6 +118,24 @@ struct Layout {
     dots: Vec<Rect>,
 }
 
+impl Layout {
+    /// The player's part moved `dx` across; the dots stay.
+    fn shifted(&self, dx: f32) -> Self {
+        let by = |rect: Rect| rect.translate(dx, 0.0);
+        Self {
+            cover: by(self.cover),
+            title: by(self.title),
+            byline: by(self.byline),
+            track: by(self.track),
+            times: by(self.times),
+            previous: by(self.previous),
+            play: by(self.play),
+            next: by(self.next),
+            dots: self.dots.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Card {
     ctx: Context,
@@ -136,6 +158,8 @@ pub struct Card {
     /// Where the thumb is held, `0..=1`, while it's being dragged.
     dragging: Option<f32>,
     held: Tween<f32>,
+    /// The players side by side, swiped through.
+    slide: Slide,
     pointer_inside: bool,
     owner_hovering: bool,
     leave_at: Option<Instant>,
@@ -158,6 +182,7 @@ impl Card {
         let playing = players
             .first()
             .is_some_and(|player| player.status == Status::Playing);
+        let slide = Slide::new(&ctx.motion);
         let mut card = Self {
             presence: Presence::new(&ctx.motion),
             ctx,
@@ -172,6 +197,7 @@ impl Card {
             hovered: None,
             dragging: None,
             held: Tween::new(0.0),
+            slide,
             pointer_inside: false,
             // Whoever opened a dropdown is hovering until they say otherwise.
             owner_hovering: matches!(mode, Mode::Dropdown(_)),
@@ -235,16 +261,25 @@ impl Card {
                 Instant::now(),
             );
         }
-        if let Some(url) = art
-            && !self.covers.contains_key(&url)
-        {
-            self.covers.insert(url.clone(), None);
-            self.worker.send(Request::Cover(url));
+        // Every player's cover, so one swiped to comes in with its own.
+        let wanted: Vec<String> = art
+            .into_iter()
+            .chain(self.players.iter().filter_map(|player| player.track.art.clone()))
+            .collect();
+        for url in wanted {
+            if !self.covers.contains_key(&url) {
+                self.covers.insert(url.clone(), None);
+                self.worker.send(Request::Cover(url));
+            }
         }
     }
 
     fn cover(&self) -> Option<&Cover> {
-        let url = self.current()?.track.art.as_ref()?;
+        self.cover_of(self.current()?)
+    }
+
+    fn cover_of(&self, player: &Player) -> Option<&Cover> {
+        let url = player.track.art.as_ref()?;
         self.covers.get(url)?.as_ref()
     }
 
@@ -423,11 +458,46 @@ impl Card {
         self.seek_to(to.as_secs_f32() / length.as_secs_f32().max(f32::EPSILON));
     }
 
+    /// Show the player at `index`, sliding in from its side.
     fn choose(&mut self, index: usize) {
+        let from = self.current_index();
+        if index == from || index >= self.players.len() {
+            return;
+        }
+        self.slide.arrive(
+            if index > from {
+                Direction::Forward
+            } else {
+                Direction::Back
+            },
+            Instant::now(),
+        );
+        self.show(index);
+    }
+
+    fn show(&mut self, index: usize) {
         if let Some(player) = self.players.get(index) {
             self.chosen = Some(player.bus.clone());
             self.follow_current();
         }
+    }
+
+    /// Swiped there: its wave as it stands, since it came in drawn so.
+    fn swiped(&mut self, direction: Direction) {
+        let Some(index) = self.current_index().checked_add_signed(direction.step()) else {
+            return;
+        };
+        self.show(index);
+        let playing = self
+            .current()
+            .is_some_and(|player| player.status == Status::Playing);
+        self.playing.jump(if playing { 1.0 } else { 0.0 });
+    }
+
+    /// Whether there's a player before the one shown, and one after.
+    fn neighbours(&self) -> (bool, bool) {
+        let index = self.current_index();
+        (index > 0, index + 1 < self.players.len())
     }
 
     fn on_key(&mut self, key: KeyEvent) -> bool {
@@ -441,6 +511,10 @@ impl Card {
             Key::Right | Key::Char('l') => self.seek_by(true),
             Key::Char('n') => self.skip(true),
             Key::Char('p') => self.skip(false),
+            Key::Tab if key.mods.shift && !self.players.is_empty() => {
+                let count = self.players.len();
+                self.choose((self.current_index() + count - 1) % count);
+            }
             Key::Tab if !self.players.is_empty() => {
                 self.choose((self.current_index() + 1) % self.players.len());
             }
@@ -515,9 +589,7 @@ impl Card {
     fn paint(&mut self, canvas: &mut Canvas<'_>, now: Instant) -> Paint {
         let presence = self.presence.get(now);
         let colors = self.ctx.theme.colors.clone();
-        let accent = self.ctx.accent();
         let base = self.ctx.config.appearance.font_size;
-        let small = base * type_scale::SMALL;
         self.bounds = canvas.bounds();
 
         // The card eases in from the edge it hangs off.
@@ -528,10 +600,24 @@ impl Card {
         let card = self
             .card_rect(self.bounds)
             .translate(0.0, from * (1.0 - presence) * space::MD);
-        let fill = match self.cover() {
+        let index = self.current_index();
+        let offset = self.slide.offset(card.w, now);
+        // The player coming in beside the one shown, while swiping.
+        let beside = match offset {
+            o if o > 0.0 => self.players.get(index + 1),
+            o if o < 0.0 => index.checked_sub(1).and_then(|i| self.players.get(i)),
+            _ => None,
+        }
+        .cloned();
+        // Warmed by the cover shown, and by the next as it comes in.
+        let warm = |cover: Option<&Cover>| match cover {
             Some(cover) => colors.surface.mix(cover.tint, WARMTH),
             None => colors.surface,
         };
+        let mut fill = warm(self.cover());
+        if let Some(other) = &beside {
+            fill = fill.mix(warm(self.cover_of(other)), offset.abs().min(1.0));
+        }
         canvas.set_opacity(presence);
         canvas.card(card, fill, colors.highlight_med);
 
@@ -558,8 +644,77 @@ impl Card {
         };
         let layout = self.layout(card);
 
+        // The player shown, following the fingers (or arriving, stepped to
+        // by a key or a dot), and the one beside it coming in.
+        let (arrive, faded) = self.slide.arrival(now);
+        let shift = -offset * card.w + arrive;
+        canvas.with_clip(card.inset_xy(stroke::HAIRLINE, 0.0), |canvas| {
+            canvas.with_opacity(faded, |canvas| {
+                self.paint_player(canvas, &layout.shifted(shift), &player, true, now);
+            });
+            if let Some(other) = &beside {
+                let side = shift + offset.signum() * card.w;
+                self.paint_player(canvas, &layout.shifted(side), other, false, now);
+            }
+        });
+
+        // Which player, when there's a choice: the one shown is a longer
+        // dot, gliding along with the fingers.
+        if let (Some(first), Some(last)) = (layout.dots.first(), layout.dots.last()) {
+            let (first, last) = (first.inset(3.0), last.inset(3.0));
+            for rect in &layout.dots {
+                let dot = rect.inset(3.0);
+                canvas.circle(
+                    dot.x + dot.w / 2.0,
+                    dot.y + dot.h / 2.0,
+                    dot.w / 2.0,
+                    colors.highlight_high,
+                );
+            }
+            let pitch = if layout.dots.len() > 1 {
+                (last.x - first.x) / (layout.dots.len() - 1) as f32
+            } else {
+                0.0
+            };
+            let at = (index as f32 + offset).clamp(0.0, (layout.dots.len() - 1) as f32);
+            let x = first.x + at * pitch;
+            let stretch = offset.abs().min(1.0) * pitch.min(first.w * 2.0);
+            canvas.pill(
+                Rect::new(x - stretch / 2.0, first.y, first.w + stretch, first.h),
+                colors.subtle,
+            );
+        }
+        canvas.set_opacity(1.0);
+
+        Paint::when(
+            self.presence.is_animating(now)
+                || self.playing.get(now) > 0.0
+                || beside.as_ref().is_some_and(|other| other.status == Status::Playing)
+                || self.playing.is_animating(now)
+                || self.held.is_animating(now)
+                || self.slide.is_animating(now)
+                || self.glow.iter().any(|glow| glow.is_animating(now)),
+        )
+    }
+
+    /// One player's part of the card: the cover, the words, the timeline,
+    /// the buttons. The one `shown` takes the pointer's glow and the held
+    /// thumb; one sliding in beside it is drawn as it stands.
+    fn paint_player(
+        &self,
+        canvas: &mut Canvas<'_>,
+        layout: &Layout,
+        player: &Player,
+        shown: bool,
+        now: Instant,
+    ) {
+        let colors = &self.ctx.theme.colors;
+        let accent = self.ctx.accent();
+        let base = self.ctx.config.appearance.font_size;
+        let small = base * type_scale::SMALL;
+
         // The cover, or a quiet square where it would be.
-        match self.cover() {
+        match self.cover_of(player) {
             Some(cover) => canvas.image(&cover.image, layout.cover, radius::CONTROL + 2.0),
             None => {
                 canvas.fill(layout.cover, radius::CONTROL + 2.0, colors.highlight_med);
@@ -596,14 +751,21 @@ impl Card {
         );
 
         // The timeline.
+        let dragging = self.dragging.filter(|_| shown);
         let position = player.position_at(now);
-        let fraction = match (self.dragging, player.track.length) {
+        let fraction = match (dragging, player.track.length) {
             (Some(held), _) => held,
             (None, Some(length)) => position.as_secs_f32() / length.as_secs_f32().max(f32::EPSILON),
             // A live stream: all of it is now.
             (None, None) => 1.0,
         };
-        let playing = self.playing.get(now);
+        let playing = if shown {
+            self.playing.get(now)
+        } else if player.status == Status::Playing {
+            1.0
+        } else {
+            0.0
+        };
         let phase = now.saturating_duration_since(self.opened).as_secs_f32() * ROLL * TAU;
         wave::draw(
             canvas,
@@ -614,14 +776,14 @@ impl Card {
                 played: accent,
                 rest: colors.highlight_high,
             },
-            self.held.get(now),
+            if shown { self.held.get(now) } else { 0.0 },
         );
-        let shown = match (self.dragging, player.track.length) {
+        let at = match (dragging, player.track.length) {
             (Some(held), Some(length)) => length.mul_f32(held),
             _ => position,
         };
         canvas.text_in(
-            &Text::new(&clock(shown), small, colors.muted).tabular(),
+            &Text::new(&clock(at), small, colors.muted).tabular(),
             layout.times,
             Align::Start,
         );
@@ -633,6 +795,7 @@ impl Card {
         );
 
         // The buttons.
+        let glow = |i: usize| if shown { self.glow[i].get(now) } else { 0.0 };
         let icon_size = (base * 1.6).round();
         for (i, (rect, figure, enabled)) in [
             (layout.previous, icon::PREVIOUS, player.can_previous),
@@ -641,7 +804,7 @@ impl Card {
         .into_iter()
         .enumerate()
         {
-            let glow = self.glow[if i == 0 { 0 } else { 2 }].get(now);
+            let glow = glow(if i == 0 { 0 } else { 2 });
             if enabled && glow > 0.0 {
                 canvas.circle(
                     rect.x + rect.w / 2.0,
@@ -657,7 +820,7 @@ impl Card {
             };
             canvas.icon(figure, icon_size, color, rect, Align::Center);
         }
-        let glow = self.glow[1].get(now);
+        let glow = glow(1);
         let play = layout.play.inset(-1.5 * glow);
         // The one big button: the lightest thing on the card, its glyph cut
         // in the ground's colour. The accent is the wave's — what has
@@ -669,36 +832,14 @@ impl Card {
             colors.text.mix(colors.subtle, 0.1 * (1.0 - glow)),
         );
         // Play turns into pause as the wave rises, and back.
-        let ink = colors.base;
         crossfade(
             canvas,
             (icon::PLAY, icon::PAUSE),
             playing,
             icon_size,
-            ink,
+            colors.base,
             layout.play,
         );
-
-        // Which player, when there's a choice.
-        let current = self.current_index();
-        for (i, rect) in layout.dots.iter().enumerate() {
-            let dot = rect.inset(3.0);
-            let color = if i == current {
-                colors.subtle
-            } else {
-                colors.highlight_high
-            };
-            canvas.circle(dot.x + dot.w / 2.0, dot.y + dot.h / 2.0, dot.w / 2.0, color);
-        }
-        canvas.set_opacity(1.0);
-
-        Paint::when(
-            self.presence.is_animating(now)
-                || playing > 0.0
-                || self.playing.is_animating(now)
-                || self.held.is_animating(now)
-                || self.glow.iter().any(|glow| glow.is_animating(now)),
-        )
     }
 }
 
@@ -807,6 +948,11 @@ impl App for Card {
             }
             Event::Wake if self.presence.is_closing() => return cx.exit(),
             Event::Wake => {
+                let width = self.card_rect(self.bounds).w;
+                if let Some(direction) = self.slide.expire(width, Instant::now()) {
+                    self.swiped(direction);
+                }
+                cx.redraw();
                 close = self
                     .leave_at
                     .is_some_and(|leave_at| Instant::now() >= leave_at)
@@ -832,6 +978,23 @@ impl App for Card {
                     self.hover(self.hit(x, y));
                     cx.redraw();
                 }
+            }
+            Event::Pointer(PointerEvent::Scroll {
+                dx,
+                dy,
+                wheel,
+                stopped,
+                ..
+            }) if self.players.len() > 1 => {
+                let width = self.card_rect(self.bounds).w;
+                let now = Instant::now();
+                let can = self.neighbours();
+                match self.slide.scroll((dx, dy, wheel, stopped), can, width, now) {
+                    Swiped::Go(direction) => self.swiped(direction),
+                    Swiped::Moved => cx.wake_in(swipe::QUIET),
+                    Swiped::Scroll => {}
+                }
+                cx.redraw();
             }
             Event::Pointer(PointerEvent::Leave) => {
                 self.pointer_inside = false;

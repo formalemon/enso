@@ -8,6 +8,7 @@ use std::{
 
 use enso_core::{
     Rgba,
+    motion::{Transition, Tween},
     style::{icon, opacity, radius, space, stroke, type_scale},
 };
 use enso_fs::format;
@@ -19,7 +20,7 @@ use enso_ui::{
 use super::overlay::{Overlay, Reach};
 use super::{Files, Hit, preview, tabs};
 use crate::pane::Source;
-use crate::{pane::Load, pick::Choice, picker::Under};
+use crate::{pane::Load, pick::Choice};
 
 pub(super) const TITLE_HEIGHT: f32 = 52.0;
 const HEADER_HEIGHT: f32 = 30.0;
@@ -63,9 +64,10 @@ impl Files {
             list
         };
         animating |= self.draw_split(canvas, list, now);
+        animating |= self.pull.draw(canvas, list, &self.look(), now);
         self.draw_drop(canvas);
         if let Some(bar) = bar {
-            self.draw_bar(canvas, bar);
+            animating |= self.draw_bar(canvas, bar, now);
         }
         self.draw_status(canvas, status);
         self.draw_toast(canvas, bar.map_or(status.y, |bar| bar.y));
@@ -680,8 +682,20 @@ impl Files {
     /// The picker's bar: what's chosen (or the name to save as) on the
     /// left; the file types, the application's questions, and the buttons
     /// on the right.
-    fn draw_bar(&mut self, canvas: &mut Canvas<'_>, area: Rect) {
-        let Some(picker) = &self.picker else { return };
+    fn draw_bar(&mut self, canvas: &mut Canvas<'_>, area: Rect, now: Instant) -> bool {
+        // Ready once something is chosen: the button warms to the accent.
+        let ready = self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.ready(self.pane.location(), &self.selection));
+        let warming = self.transition(Transition::SELECT);
+        let target = if ready { 1.0 } else { 0.0 };
+        let tween = self.accept_ready.get_or_insert_with(|| Tween::new(target));
+        tween.set(target, warming, now);
+        let (live, warming) = (tween.get(now), tween.is_animating(now));
+        let Some(picker) = &self.picker else {
+            return false;
+        };
         let look = self.look();
         let colors = self.ctx.theme.colors.clone();
         let small = self.font(type_scale::SMALL);
@@ -698,26 +712,27 @@ impl Files {
         let mut hits = Vec::new();
 
         // Buttons, right to left.
-        let under = match self.under() {
-            Under::Dir(_) => Under::Nothing,
-            under => under,
-        };
-        let ready = picker.ready(self.pane.location(), &self.selection, &under);
         let count = self.selection.len().max(1);
         let accept_label = picker.request.accept(count);
         let accept = Button::new(&accept_label, Kind::Primary);
         let width = accept.width(canvas, &look);
         let rect = Rect::new(right - width, y, width, height);
-        accept.draw(
-            canvas,
-            rect,
-            &look,
-            Interaction {
-                hovered: self.hover == Some(Hit::Accept),
-                disabled: !ready,
-                ..Interaction::default()
-            },
-        );
+        for (amount, disabled) in [(1.0 - live, true), (live, false)] {
+            if amount > 0.0 {
+                canvas.with_opacity(amount, |canvas| {
+                    accept.draw(
+                        canvas,
+                        rect,
+                        &look,
+                        Interaction {
+                            hovered: !disabled && self.hover == Some(Hit::Accept),
+                            disabled,
+                            ..Interaction::default()
+                        },
+                    );
+                });
+            }
+        }
         if ready {
             hits.push((rect, Hit::Accept));
         }
@@ -837,6 +852,7 @@ impl Files {
             self.draw_chips(canvas, left, &mut hits);
         }
         self.hits.extend(hits);
+        warming
     }
 
     /// What's chosen, as removable chips; what doesn't fit is counted.
@@ -851,7 +867,7 @@ impl Files {
                     "Enter goes in · Ctrl+Enter chooses this folder"
                 }
                 Some(picker) if picker.request.multiple() => {
-                    "Space or Ctrl+click to choose · from any folder"
+                    "Click to choose · Ctrl+click or Space for more, from any folder"
                 }
                 _ => "Double-click or Enter to choose",
             };

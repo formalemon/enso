@@ -41,6 +41,7 @@ use smithay_client_toolkit::reexports::protocols::{
     },
 };
 use smithay_client_toolkit::{
+    activation::{ActivationHandler, ActivationState, RequestData},
     compositor::{CompositorHandler, CompositorState, FrameCallbackData, Region},
     data_device_manager::{
         DataDeviceManagerState, WritePipe,
@@ -301,6 +302,9 @@ pub enum Event<M> {
     /// A window was asked to close (its close binding, or the compositor
     /// going away). It stays open unless the app calls [`Cx::exit`].
     Close,
+    /// The token asked for with [`Cx::request_activation`], for the program
+    /// about to be started; `None` where the compositor gives none.
+    Activation(Option<String>),
     /// A window was maximised or made full-screen, or stopped being so.
     /// Apps round corners and draw edges only when it is free.
     WindowState {
@@ -454,6 +458,8 @@ pub const TEXT_TYPES: [&str; 5] = [
 
 /// Work the runtime gets back from its own threads.
 enum Internal {
+    /// No activation token to be had: the app is told so on its next turn.
+    Activation(Option<String>),
     Paste {
         mime: String,
         data: Vec<u8>,
@@ -482,6 +488,8 @@ pub(crate) struct Requests {
     title: Option<String>,
     begin_move: bool,
     toggle_maximized: bool,
+    toggle_fullscreen: bool,
+    activation: bool,
     copy: Option<Clip>,
     paste: Option<Vec<String>>,
     drag: Option<(Clip, Option<DragIcon>)>,
@@ -617,6 +625,21 @@ impl<'a> Cx<'a> {
     /// Maximise a window, or give it back its own size.
     pub fn toggle_maximized(&mut self) {
         self.requests.toggle_maximized = true;
+    }
+
+    /// Fill the screen with a window, or put it back among the others.
+    pub fn toggle_fullscreen(&mut self) {
+        self.requests.toggle_fullscreen = true;
+    }
+
+    /// Ask for a token that lets a program started from here come to the
+    /// front — its window focused, its workspace shown — as this window
+    /// could, having just been clicked. It comes as [`Event::Activation`]:
+    /// start the program then, with the token in its environment
+    /// (`XDG_ACTIVATION_TOKEN`). A browser already open brings forward the
+    /// window the page opened in.
+    pub fn request_activation(&mut self) {
+        self.requests.activation = true;
     }
 }
 
@@ -772,6 +795,9 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
                 channel::Event::Msg(Internal::Paste { mime, data }) => {
                     runtime.deliver(Event::Paste { mime, data });
                 }
+                channel::Event::Msg(Internal::Activation(token)) => {
+                    runtime.deliver(Event::Activation(token));
+                }
                 channel::Event::Msg(Internal::Drop {
                     mime,
                     data,
@@ -810,6 +836,9 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         })
         .map_err(|err| Error::new("event loop", err))?;
 
+    // Tokens for what's started from here to come to the front, where the
+    // compositor gives them.
+    let activation = ActivationState::bind(&globals, &qh).ok();
     let mut runtime = Runtime {
         app,
         registry: RegistryState::new(&globals),
@@ -854,6 +883,8 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         internal,
         cursor: Cursor::Default,
         maximized: false,
+        fullscreen: false,
+        activation,
         _on_output: on_output,
         spec,
     };
@@ -935,6 +966,9 @@ struct Runtime<A: App> {
     internal: Sender<Internal>,
     cursor: Cursor,
     maximized: bool,
+    fullscreen: bool,
+    /// Tokens that let a program started from here come to the front.
+    activation: Option<ActivationState>,
 }
 
 /// The surface's role: what the compositor treats it as.
@@ -1051,6 +1085,23 @@ impl<A: App> Runtime<A> {
         if let Some(mimes) = requests.paste {
             self.paste(&mimes);
         }
+        if requests.activation {
+            match &self.activation {
+                Some(activation) => activation.request_token(
+                    &self.qh,
+                    RequestData {
+                        app_id: self.spec.window.as_ref().map(|spec| spec.app_id.clone()),
+                        seat_and_serial: self.seat.clone().zip(self.input_serial),
+                        surface: Some(self.surface.wl_surface().clone()),
+                        udata: (),
+                    },
+                ),
+                // Nothing to ask: on at once, without one.
+                None => {
+                    let _ = self.internal.send(Internal::Activation(None));
+                }
+            }
+        }
         if let Some(window) = self.surface.window() {
             if let Some(title) = requests.title {
                 window.set_title(title);
@@ -1065,6 +1116,13 @@ impl<A: App> Runtime<A> {
                     window.unset_maximized();
                 } else {
                     window.set_maximized();
+                }
+            }
+            if requests.toggle_fullscreen {
+                if self.fullscreen {
+                    window.unset_fullscreen();
+                } else {
+                    window.set_fullscreen(None);
                 }
             }
         }
@@ -1633,6 +1691,7 @@ impl<A: App> WindowHandler for Runtime<A> {
             });
         }
         self.maximized = configure.is_maximized();
+        self.fullscreen = configure.is_fullscreen();
         self.deliver(Event::WindowState {
             maximized: self.maximized,
             fullscreen: configure.is_fullscreen(),
@@ -1980,6 +2039,7 @@ impl<A: App> PointerHandler for Runtime<A> {
                     wheel: matches!(source, Some(AxisSource::Wheel | AxisSource::WheelTilt))
                         || horizontal.value120 != 0
                         || vertical.value120 != 0,
+                    stopped: horizontal.stop || vertical.stop,
                 },
             };
             self.deliver(Event::Pointer(event));
@@ -2011,6 +2071,14 @@ impl<A: App> ProvidesRegistryState for Runtime<A> {
     }
 
     registry_handlers![OutputState, SeatState];
+}
+
+impl<A: App> ActivationHandler for Runtime<A> {
+    type RequestUdata = ();
+
+    fn new_token(&mut self, token: String, _: &RequestData<()>) {
+        self.deliver(Event::Activation(Some(token)));
+    }
 }
 
 delegate_registry!(@<A: App> Runtime<A>);

@@ -1,11 +1,9 @@
 //! A picture ready to show at any size: its pixels, and halves of them down
 //! to a small one, so a large photo shrinks to the window without shimmer
-//! and zooms in from the full pixels.
+//! and zooms in from the full pixels. A video's still frame is one too.
 
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
-/// Longest side read.
-const MAX_SIDE: u32 = 16_384;
 /// The smallest half kept.
 const SMALLEST: u32 = 256;
 
@@ -24,14 +22,6 @@ pub struct Photo {
 }
 
 impl Photo {
-    /// Read the file: PNG, JPEG, WebP, or GIF, turned as the camera was held.
-    pub fn open(path: &Path) -> Result<Self, String> {
-        let pixels = enso_fs::picture::open(path, MAX_SIDE)
-            .map_err(|err| err.to_string())?
-            .premultiplied();
-        Ok(Self::new(pixels.width, pixels.height, pixels.rgba))
-    }
-
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
         let mut levels = vec![Level {
             width,

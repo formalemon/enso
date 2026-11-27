@@ -47,6 +47,7 @@ use enso_fs::{
 };
 use enso_ui::{
     App, Canvas, Clicks, Cx, Event, Paint, Proxy, Rect, SurfaceSpec, WindowSpec,
+    swipe::{Direction, Pull},
     watch::watch_dir,
     widget::{Look, Scroll, Splitter, TextField},
 };
@@ -65,6 +66,9 @@ use overlay::Overlay;
 /// Something on screen that answers the pointer.
 #[derive(Clone, Debug, PartialEq)]
 enum Hit {
+    /// A dialog's card, between its buttons and fields: a press there is
+    /// nothing, and never closes it.
+    FormCard,
     Row(usize),
     /// The list below its last row.
     Empty,
@@ -145,6 +149,21 @@ enum Hit {
 }
 
 /// What a menu entry does.
+/// The lines of a right-click menu that open a menu of their own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum More {
+    Sort,
+    Git,
+}
+
+/// Something opened once the compositor's token for it is here.
+#[derive(Debug)]
+enum Launch {
+    File(PathBuf),
+    /// A page, in the browser.
+    Uri(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
     Open,
@@ -167,7 +186,12 @@ enum Action {
     Delete,
     Terminal,
     Undo,
+    /// Make the folder shown a repository.
     InitRepo,
+    /// A new folder, a repository from the start, to name.
+    NewRepo,
+    /// A line's own menu: the sort order, Git.
+    More(More),
     Settings,
     Restore,
     EmptyTrash,
@@ -286,6 +310,14 @@ pub struct Files {
     /// right (going in), `-1` from the left (going out), `0` not at all.
     arrival: Tween<f32>,
     sliding: f32,
+    /// Two fingers sideways: back and forward, an arrow showing which.
+    pull: Pull,
+    /// How ready the picker's button is, `0 → 1`: it warms to the accent
+    /// once something is chosen. Unset until it's first drawn, as it is.
+    accept_ready: Option<Tween<f32>>,
+    /// What's to be opened once the compositor hands over a token for it,
+    /// so its window comes to the front (a browser on another workspace).
+    launching: Option<Launch>,
     /// A navigation is on its way: its listing slides in. (A reload
     /// doesn't.)
     slide_pending: bool,
@@ -342,6 +374,7 @@ impl Files {
         let start = location.clone();
         let (pane, request) = Pane::new(location, config.sort(), config.hidden);
         let home = places::home();
+        let pull = Pull::new(&ctx.motion);
         let mut files = Self {
             ctx,
             config,
@@ -391,6 +424,9 @@ impl Files {
             band: None,
             arrival: Tween::new(1.0),
             sliding: 0.0,
+            pull,
+            accept_ready: None,
+            launching: None,
             slide_pending: false,
             side_parent: columns::Side::default(),
             side_child: columns::Side::default(),
@@ -474,6 +510,15 @@ impl Files {
     }
 
     // Moving about.
+
+    /// Back or forward through where the window has been.
+    fn go(&mut self, direction: Direction) {
+        let request = match direction {
+            Direction::Back => self.pane.back(),
+            Direction::Forward => self.pane.forward(),
+        };
+        self.load(request);
+    }
 
     fn load(&mut self, request: Option<Request>) {
         let Some(request) = request else { return };
@@ -579,24 +624,11 @@ impl Files {
             {
                 self.navigate(path);
             }
+            // Opened once there's a token for it: an application already
+            // running elsewhere comes forward with it.
             (Some(Open::File(path)), false) => {
-                let opened =
-                    enso_fs::open::open(&path, &self.ctx.config.appearance.terminal_program());
-                if opened.is_ok() {
-                    used(vec![path.clone()]);
-                }
-                if let Err(err) = opened {
-                    let name = path
-                        .file_name()
-                        .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
-                    // A program is never run by opening it: that's Run's.
-                    let hint = if is_program(&path) {
-                        " · it's a program: Run is in its menu"
-                    } else {
-                        ""
-                    };
-                    self.toast(format!("Can't open “{name}”: {err}{hint}"), cx);
-                }
+                self.launching = Some(Launch::File(path));
+                cx.request_activation();
             }
             (Some(Open::File(path)), true) => {
                 let under = Under::File(path);
@@ -608,6 +640,37 @@ impl Files {
 
     /// Accept in a picker, with `under` the pointer or cursor (or
     /// [`Under::Nothing`] for the button).
+    /// Open what was waiting for a token, with it.
+    fn launch(&mut self, token: Option<String>, cx: &mut Cx<'_>) {
+        let token = token.as_deref();
+        match self.launching.take() {
+            Some(Launch::File(path)) => {
+                let terminal = self.ctx.config.appearance.terminal_program();
+                match enso_fs::open::open_activated(&path, &terminal, token) {
+                    Ok(()) => used(vec![path]),
+                    Err(err) => {
+                        let name = path
+                            .file_name()
+                            .map_or_else(|| path.to_string_lossy(), |name| name.to_string_lossy());
+                        // A program is never run by opening it: that's Run's.
+                        let hint = if is_program(&path) {
+                            " · it's a program: Run is in its menu"
+                        } else {
+                            ""
+                        };
+                        self.toast(format!("Can't open “{name}”: {err}{hint}"), cx);
+                    }
+                }
+            }
+            Some(Launch::Uri(page)) => {
+                if let Err(err) = enso_fs::open::uri_activated(&page, token) {
+                    self.toast(format!("Can't open it ({err}): go to {page}"), cx);
+                }
+            }
+            None => {}
+        }
+    }
+
     fn accept(&mut self, under: Under, cx: &mut Cx<'_>) {
         let Some(picker) = &self.picker else { return };
         // Choosing a file by double-click or Enter adds it to what's
@@ -704,6 +767,21 @@ impl Files {
             }
         }
         self.selection.toggle(path);
+    }
+
+    /// Choose `row`: alongside what's chosen, or alone in a picker that
+    /// takes one thing.
+    fn choose(&mut self, row: usize) {
+        let path = self.pane.path(row);
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| !picker.request.multiple())
+        {
+            self.selection.only(path);
+        } else {
+            self.selection.insert(path);
+        }
     }
 
     /// Choose the rows from the anchor to the cursor, and nothing else in
@@ -1100,6 +1178,7 @@ impl App for Files {
                 cx.redraw();
             }
             Event::Close => self.cancel(cx),
+            Event::Activation(token) => self.launch(token, cx),
             _ => {}
         }
         if self.picker.is_none() && self.pane.location() != location {

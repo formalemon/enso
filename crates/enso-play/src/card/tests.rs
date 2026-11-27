@@ -170,3 +170,52 @@ fn the_card_as_it_looks() {
     });
     image.check(env!("CARGO_MANIFEST_DIR"), "play-card");
 }
+
+#[test]
+fn two_fingers_sideways_go_from_player_to_player() {
+    let mut other = player("b", Status::Paused);
+    other.name = "Spotify".into();
+    other.track.title = "Weightless".into();
+    other.track.artist = "Marconi Union".into();
+    other.track.length = Some(Duration::from_secs(480));
+    other.position = Duration::from_secs(95);
+    let (mut card, _) = card_in(
+        "swipe",
+        Mode::Dropdown(Edge::Top),
+        vec![player("a", Status::Playing), other],
+    );
+    card.bounds = surface(&card);
+    let width = card.card_rect(card.bounds).w;
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    assert_eq!(card.neighbours(), (false, true));
+    // Nothing before the first: it holds its ground.
+    for i in 0..6 {
+        card.slide.scroll((-30.0, 0.0, false, false), card.neighbours(), width, at(i * 10));
+    }
+    assert_eq!(
+        card.slide.scroll((0.0, 0.0, false, true), card.neighbours(), width, at(70)),
+        Swiped::Moved
+    );
+    // Half way across: the next is coming in beside it.
+    for i in 0..8 {
+        card.slide.scroll((20.0, 0.0, false, false), card.neighbours(), width, at(1000 + i * 10));
+    }
+    let spec = card.surface();
+    let appearance = card.ctx.config.appearance.clone();
+    let mut text = TextEngine::new(&appearance);
+    card.presence.get(at(0));
+    let image = Offscreen::render(&mut text, (spec.width, spec.height), 2, |canvas| {
+        canvas.clear(card.ctx.theme.colors.base);
+        card.paint(canvas, at(1080));
+    });
+    image.snapshot(env!("CARGO_MANIFEST_DIR"), "play-swipe");
+    match card.slide.scroll((0.0, 0.0, false, true), card.neighbours(), width, at(1085)) {
+        Swiped::Go(direction) => card.swiped(direction),
+        other => panic!("{other:?}"),
+    }
+    assert!(card.current().unwrap().bus.ends_with(".b"));
+    // It arrived drawn as it stands: paused, its wave already flat.
+    assert_eq!(card.playing.get(at(1085)), 0.0);
+    assert_eq!(card.neighbours(), (true, false));
+}

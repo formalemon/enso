@@ -11,11 +11,12 @@ use enso_fs::sort::{By, Sort};
 use enso_ui::{
     BUTTON_BACK, BUTTON_FORWARD, Button, Clip, Cursor, Cx, Key, KeyEvent, Nav, PointerEvent,
     TEXT_TYPES, Text,
+    swipe::{self, Direction, Swiped},
     widget::{Item, Menu, TextField, field, menu},
 };
 
 use super::overlay::{Overlay, Reach};
-use super::{Action, Files, Hit, MenuFor, tabs};
+use super::{Action, Files, Hit, MenuFor, More, tabs};
 use crate::{location, pane::Open, pick::Choice, picker::Under};
 
 /// Rows a wheel notch scrolls.
@@ -272,6 +273,8 @@ impl Files {
             Action::Terminal => self.terminal_here(cx),
             Action::Undo => self.undo_last(cx),
             Action::InitRepo => self.init_repository(cx),
+            Action::NewRepo => self.new_repository(cx),
+            Action::More(more) => self.more_menu(more),
             Action::Restore => self.restore(cx),
             Action::Run(path) => {
                 let dir = path.parent().map(std::path::Path::to_owned);
@@ -320,132 +323,155 @@ impl Files {
     }
 
     /// Open the menu for a right-click on `row` (or on empty space).
-    fn context_menu(&mut self, row: Option<usize>, x: f32, y: f32) {
+    pub(super) fn context_menu(&mut self, row: Option<usize>, x: f32, y: f32) {
+        // A file's menu is about the file; the folder's (a right-click on
+        // empty space) about the folder. Sorting and Git are a line each,
+        // opening a short menu of their own.
+        let (items, actions) = match row {
+            Some(row) => self.item_menu(row),
+            None => self.folder_menu(),
+        };
+        self.overlay = Some(Overlay::Menu((
+            Menu::new(items, x, y),
+            MenuFor::Context(actions),
+        )));
+    }
+
+    /// What can be done with the thing at `row` (or what's chosen, with it).
+    fn item_menu(&self, row: usize) -> (Vec<Item>, Vec<Option<Action>>) {
         let mut items = Vec::new();
         let mut actions = Vec::new();
         let mut add = |item: Item, action: Option<Action>| {
             items.push(item);
             actions.push(action);
         };
-        if let Some(row) = row {
-            let path = self.pane.path(row);
-            let is_dir = self.pane.entry(row).kind.is_dir();
-            let open = match (&self.picker, is_dir) {
-                (_, true) => "Open",
-                (Some(_), false) => "Choose",
-                (None, false) => "Open",
-            };
-            add(Item::new(open).keys("Enter"), Some(Action::Open));
-            if !is_dir && self.picker.is_none() {
-                add(
-                    Item::new("Open with…"),
-                    Some(Action::OpenWith(path.clone())),
-                );
-                if super::is_program(&path) {
-                    add(Item::new("Run"), Some(Action::Run(path.clone())));
-                }
+        let path = self.pane.path(row);
+        let is_dir = self.pane.entry(row).kind.is_dir();
+        let managing = self.picker.is_none();
+        let open = match (&self.picker, is_dir) {
+            (Some(_), false) => "Choose",
+            _ => "Open",
+        };
+        add(Item::new(open).keys("Enter"), Some(Action::Open));
+        if managing && !is_dir {
+            add(Item::new("Open with…"), Some(Action::OpenWith(path.clone())));
+            if super::is_program(&path) {
+                add(Item::new("Run"), Some(Action::Run(path.clone())));
             }
-            if is_dir && self.picker.is_none() {
-                add(
-                    Item::new("Open in a new tab").keys("Ctrl+Enter"),
-                    Some(Action::NewTab(path.clone())),
-                );
-                let marked = self.bookmarks.iter().any(|mark| mark.path == path);
-                add(
-                    Item::new(if marked {
-                        "Remove the bookmark"
-                    } else {
-                        "Bookmark"
-                    }),
-                    Some(Action::Bookmark(path.clone())),
-                );
-            }
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            let in_archive = matches!(self.pane.source(), crate::pane::Source::Archive { .. });
-            if !is_dir
-                && self.picker.is_none()
-                && !in_archive
-                && enso_fs::archive::Format::of(&name).is_some()
-            {
-                add(
-                    Item::new("Extract here"),
-                    Some(Action::Extract(path.clone())),
-                );
-            }
-            if self.picker.is_none() && !in_archive {
-                add(Item::new("Compress…"), Some(Action::Compress));
-            }
-            // In a gathered list, where it really is.
-            if !self.pane.source().is_folder() && !in_archive {
-                add(
-                    Item::new("Show in its folder"),
-                    Some(Action::Reveal(path.clone())),
-                );
-            }
-            if self.pane.entry(row).kind.is_link() {
-                add(
-                    Item::new("Go to the real one").keys("Ctrl+Shift+Enter"),
-                    Some(Action::RealPath(path.clone())),
-                );
-            }
-            if self.can_choose(row) && !self.picker.as_ref().is_some_and(|p| p.request.is_save()) {
-                let label = if self.selection.contains(&path) {
-                    "Unselect"
-                } else {
-                    "Select"
-                };
-                add(
-                    Item::new(label).keys("Space"),
-                    Some(Action::Toggle(path.clone())),
-                );
-            }
-            let managing = self.picker.is_none();
-            if managing && self.in_trash() {
-                add(Item::new("Put back"), Some(Action::Restore));
-                add(
-                    Item::new("Delete for good…").keys("Delete"),
-                    Some(Action::Delete),
-                );
-            } else {
-                add(Item::new("Rename").keys("F2"), Some(Action::Rename));
-                if managing {
-                    add(Item::new("Copy").keys("Ctrl+C"), Some(Action::Copy));
-                    add(Item::new("Cut").keys("Ctrl+X"), Some(Action::Cut));
-                    add(
-                        Item::new("Duplicate").keys("Ctrl+Shift+D"),
-                        Some(Action::Duplicate),
-                    );
-                }
-                add(
-                    Item::new("Copy path").keys("Ctrl+Shift+C"),
-                    Some(Action::CopyPath(path)),
-                );
-                if managing {
-                    add(
-                        Item::new("Move to the trash").keys("Delete"),
-                        Some(Action::Trash),
-                    );
-                    add(
-                        Item::new("Delete for good…").keys("Shift+Delete"),
-                        Some(Action::Delete),
-                    );
-                }
-            }
-            add(Item::Separator, None);
         }
+        if managing && is_dir {
+            add(
+                Item::new("Open in a new tab").keys("Ctrl+Enter"),
+                Some(Action::NewTab(path.clone())),
+            );
+        }
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let in_archive = matches!(self.pane.source(), crate::pane::Source::Archive { .. });
+        if managing && !is_dir && !in_archive && enso_fs::archive::Format::of(&name).is_some() {
+            add(Item::new("Extract here"), Some(Action::Extract(path.clone())));
+        }
+        // In a gathered list, where it really is.
+        if !self.pane.source().is_folder() && !in_archive {
+            add(
+                Item::new("Show in its folder"),
+                Some(Action::Reveal(path.clone())),
+            );
+        }
+        if self.pane.entry(row).kind.is_link() {
+            add(
+                Item::new("Go to the real one").keys("Ctrl+Shift+Enter"),
+                Some(Action::RealPath(path.clone())),
+            );
+        }
+        // Choosing is the picker's business; the manager chooses with Space
+        // and Ctrl-clicks.
+        if !managing
+            && self.can_choose(row)
+            && !self.picker.as_ref().is_some_and(|p| p.request.is_save())
+        {
+            let label = if self.selection.contains(&path) {
+                "Unselect"
+            } else {
+                "Select"
+            };
+            add(
+                Item::new(label).keys("Space"),
+                Some(Action::Toggle(path.clone())),
+            );
+        }
+        add(Item::Separator, None);
+        if managing && self.in_trash() {
+            add(Item::new("Put back"), Some(Action::Restore));
+            add(
+                Item::new("Delete for good…").keys("Delete"),
+                Some(Action::Delete),
+            );
+            return (items, actions);
+        }
+        if managing {
+            add(Item::new("Cut").keys("Ctrl+X"), Some(Action::Cut));
+            add(Item::new("Copy").keys("Ctrl+C"), Some(Action::Copy));
+            add(
+                Item::new("Duplicate").keys("Ctrl+Shift+D"),
+                Some(Action::Duplicate),
+            );
+        }
+        add(Item::new("Rename").keys("F2"), Some(Action::Rename));
+        if managing && !in_archive {
+            add(Item::new("Compress…"), Some(Action::Compress));
+        }
+        add(
+            Item::new("Copy path").keys("Ctrl+Shift+C"),
+            Some(Action::CopyPath(path.clone())),
+        );
+        if managing && is_dir {
+            let marked = self.bookmarks.iter().any(|mark| mark.path == path);
+            add(
+                Item::new(if marked {
+                    "Remove the bookmark"
+                } else {
+                    "Bookmark"
+                }),
+                Some(Action::Bookmark(path)),
+            );
+        }
+        if managing {
+            add(Item::Separator, None);
+            // Deleting for good is Shift+Delete, and the command palette's.
+            add(
+                Item::new("Move to the trash").keys("Delete"),
+                Some(Action::Trash),
+            );
+        }
+        (items, actions)
+    }
+
+    /// What can be done here, in the folder shown: a right-click on empty
+    /// space.
+    fn folder_menu(&self) -> (Vec<Item>, Vec<Option<Action>>) {
+        let mut items = Vec::new();
+        let mut actions = Vec::new();
+        let mut add = |item: Item, action: Option<Action>| {
+            items.push(item);
+            actions.push(action);
+        };
+        let managing = self.picker.is_none();
         let folder = self.pane.source().is_folder();
-        if let (crate::pane::Source::Archive { .. }, None) = (self.pane.source(), &self.picker) {
+        let in_archive = matches!(self.pane.source(), crate::pane::Source::Archive { .. });
+        // Whether the first group has anything in it.
+        let something = folder || (managing && (self.in_trash() || in_archive));
+        if in_archive && managing {
             let archive = self.pane.location().to_owned();
             add(
                 Item::new("Extract everything, beside it"),
                 Some(Action::Extract(archive)),
             );
         }
-        if self.picker.is_none() && self.in_trash() {
+        if managing && self.in_trash() {
             add(Item::new("Empty the trash…"), Some(Action::EmptyTrash));
         } else if folder {
             add(
@@ -453,16 +479,15 @@ impl Files {
                 Some(Action::NewFolder),
             );
         }
-        if self.git_on() && folder && self.picker.is_none() {
-            if enso_fs::git::root(self.pane.location()).is_none() {
-                add(
-                    Item::new("Start a Git repository here"),
-                    Some(Action::InitRepo),
-                );
+        if managing && folder {
+            add(Item::new("Paste").keys("Ctrl+V"), Some(Action::Paste));
+            if !self.undo.is_empty() {
+                add(Item::new("Undo").keys("Ctrl+Z"), Some(Action::Undo));
             }
-            add(Item::new("Clone a repository here…"), Some(Action::Clone));
-        }
-        if self.picker.is_none() && folder && row.is_none() {
+            add(
+                Item::new("Terminal here").keys("F4"),
+                Some(Action::Terminal),
+            );
             let here = self.pane.location().to_owned();
             let marked = self.bookmarks.iter().any(|mark| mark.path == here);
             add(
@@ -474,21 +499,13 @@ impl Files {
                 .keys("Ctrl+D"),
                 Some(Action::Bookmark(here)),
             );
+            if self.git_on() {
+                add(Item::new("Git").keys("›"), Some(Action::More(More::Git)));
+            }
         }
-        if self.picker.is_none() && folder {
-            add(Item::new("Paste").keys("Ctrl+V"), Some(Action::Paste));
-            add(
-                Item::new("Terminal here").keys("F4"),
-                Some(Action::Terminal),
-            );
-            add(
-                Item::new("Undo")
-                    .keys("Ctrl+Z")
-                    .enabled(!self.undo.is_empty()),
-                Some(Action::Undo),
-            );
+        if something {
+            add(Item::Separator, None);
         }
-        add(Item::Separator, None);
         let multiple = self
             .picker
             .as_ref()
@@ -505,49 +522,74 @@ impl Files {
                 Some(Action::Unselect),
             );
         }
-        if multiple || !self.selection.is_empty() {
-            add(Item::Separator, None);
-        }
-        let sort = self.pane.sort();
-        for (by, label) in [
-            (By::Name, "Sort by name"),
-            (By::Size, "Sort by size"),
-            (By::Modified, "Sort by date"),
-            (By::Extension, "Sort by type"),
-        ] {
-            add(
-                Item::new(label).checked(sort.by == by),
-                Some(Action::Sort(by)),
-            );
-        }
-        add(
-            Item::new("Reversed").checked(sort.descending),
-            Some(Action::Descending),
-        );
-        add(
-            Item::new("Folders first").checked(sort.folders_first),
-            Some(Action::FoldersFirst),
-        );
-        add(Item::Separator, None);
+        add(Item::new("Sort").keys("›"), Some(Action::More(More::Sort)));
         add(
             Item::new("Show hidden files")
                 .checked(self.pane.shows_hidden())
                 .keys("Ctrl+H"),
             Some(Action::Hidden),
         );
-        add(Item::new("Reload").keys("Ctrl+R"), Some(Action::Reload));
-        if self.picker.is_none() {
+        if managing {
+            add(Item::Separator, None);
             add(
                 Item::new("Settings…").keys("Ctrl+,"),
                 Some(Action::Settings),
             );
         }
+        (items, actions)
+    }
+
+    /// A line's own menu, opened where the menu was: the sort order, or Git.
+    pub(super) fn more_menu(&mut self, more: More) {
+        let mut items = Vec::new();
+        let mut actions = Vec::new();
+        let mut add = |item: Item, action: Option<Action>| {
+            items.push(item);
+            actions.push(action);
+        };
+        match more {
+            More::Sort => {
+                let sort = self.pane.sort();
+                for (by, label) in [
+                    (By::Name, "By name"),
+                    (By::Size, "By size"),
+                    (By::Modified, "By date"),
+                    (By::Extension, "By type"),
+                ] {
+                    add(
+                        Item::new(label).checked(sort.by == by),
+                        Some(Action::Sort(by)),
+                    );
+                }
+                add(Item::Separator, None);
+                add(
+                    Item::new("Reversed").checked(sort.descending),
+                    Some(Action::Descending),
+                );
+                add(
+                    Item::new("Folders first").checked(sort.folders_first),
+                    Some(Action::FoldersFirst),
+                );
+            }
+            More::Git => {
+                // Outside a repository: a new one in a folder of its own, or
+                // this folder made one — said plainly, they're easy to mix up.
+                if enso_fs::git::root(self.pane.location()).is_none() {
+                    add(Item::new("New repository…"), Some(Action::NewRepo));
+                    add(
+                        Item::new("Make this folder a repository"),
+                        Some(Action::InitRepo),
+                    );
+                }
+                add(Item::new("Clone a repository here…"), Some(Action::Clone));
+            }
+        }
+        let (x, y) = self.menu_at;
         self.overlay = Some(Overlay::Menu((
             Menu::new(items, x, y),
             MenuFor::Context(actions),
         )));
     }
-
     /// Keys for the filter field, while it is open. Returns whether the
     /// key was used.
     fn filter_key(&mut self, key: KeyEvent, cx: &mut Cx<'_>, now: Instant) -> bool {
@@ -1271,8 +1313,31 @@ impl Files {
                 }
             }
             PointerEvent::Scroll {
-                x, y, dy, wheel, ..
+                x,
+                y,
+                dx,
+                dy,
+                wheel,
+                stopped,
             } => {
+                // Two fingers sideways go back and forward, as in a
+                // browser — unless something is over the window.
+                if self.overlay.is_none() {
+                    let can = (self.pane.can_go_back(), self.pane.can_go_forward());
+                    match self.pull.scroll((dx, dy, wheel, stopped), can, now) {
+                        Swiped::Go(direction) => {
+                            self.go(direction);
+                            cx.redraw();
+                            return;
+                        }
+                        Swiped::Moved => {
+                            cx.wake_in(swipe::QUIET);
+                            cx.redraw();
+                            return;
+                        }
+                        Swiped::Scroll => {}
+                    }
+                }
                 if self.settings_wheel(x, y, dy, wheel, now) {
                     cx.redraw();
                     return;
@@ -1357,12 +1422,10 @@ impl Files {
             self.location = None;
         }
         if button == BUTTON_BACK {
-            let request = self.pane.back();
-            return self.load(request);
+            return self.go(Direction::Back);
         }
         if button == BUTTON_FORWARD {
-            let request = self.pane.forward();
-            return self.load(request);
+            return self.go(Direction::Forward);
         }
         if button == Button::Right {
             match hit {
@@ -1405,7 +1468,8 @@ impl Files {
                 | Hit::Rename(_)
                 | Hit::Pack(_)
                 | Hit::Permission(_)
-                | Hit::PropertiesCard,
+                | Hit::PropertiesCard
+                | Hit::FormCard,
             ) => {}
             Some(Hit::Tabs(tabs::TabHit::Tab(index))) => self.switch_tab(index),
             Some(Hit::Tabs(tabs::TabHit::Close(index))) => {
@@ -1442,9 +1506,19 @@ impl Files {
                         // A plain click starts over in this folder; what was
                         // chosen elsewhere stays chosen.
                         self.selection.clear_in(self.pane.location());
+                        // In a picker, clicking something it takes chooses
+                        // it (and its button comes alive); elsewhere the
+                        // click only moves the cursor.
+                        if self.picker.is_some() && self.can_choose(row) {
+                            self.choose(row);
+                        }
                     }
                     if clicks >= 2 {
                         self.clicks.reset();
+                        // A folder double-clicked is gone into, not chosen.
+                        if is_dir && self.picker.is_some() {
+                            self.selection.remove(&self.pane.path(row));
+                        }
                         self.open(cx);
                     }
                 }
@@ -1461,14 +1535,8 @@ impl Files {
                 }
             }
             Some(Hit::Crumb(path) | Hit::Place(path)) => self.navigate(path),
-            Some(Hit::Back) => {
-                let request = self.pane.back();
-                self.load(request);
-            }
-            Some(Hit::Forward) => {
-                let request = self.pane.forward();
-                self.load(request);
-            }
+            Some(Hit::Back) => self.go(Direction::Back),
+            Some(Hit::Forward) => self.go(Direction::Forward),
             Some(Hit::Filter(text_x)) => {
                 self.open_filter(cx);
                 let size = self.font(type_scale::BODY);

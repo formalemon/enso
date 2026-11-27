@@ -16,6 +16,8 @@
 //!   clipboard history's.
 //! - [`controls`] — buttons, toggles, the dialog card, tooltips, splitters,
 //!   and the [`Look`] they share.
+//! - [`wave`] — a player's timeline: a wave for what has played.
+//! - [`toast`] — a word about what was just done, a moment over a window.
 
 pub mod controls;
 pub mod field;
@@ -24,6 +26,8 @@ pub mod menu;
 pub mod scroll;
 pub mod search;
 pub mod secret;
+pub mod toast;
+pub mod wave;
 
 pub use controls::{Button, Interaction, Kind, Look, Splitter, Toggle, Tooltip};
 pub use field::TextField;

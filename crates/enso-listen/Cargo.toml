@@ -1,0 +1,24 @@
+[package]
+name = "enso-listen"
+description = "A player for sound files: the folder's tracks one after another, the cover large, a wavy timeline, and the desktop's media keys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+enso-core.workspace = true
+enso-ui.workspace = true
+enso-fs.workspace = true
+# Decoding through ffmpeg, heard through PipeWire, and told to the desktop
+# as a player (the now-playing card, the media keys).
+enso-media = { workspace = true, features = ["mpris"] }
+lexopt.workspace = true
+
+[dev-dependencies]
+enso-ui = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

@@ -115,6 +115,9 @@ pub(super) enum Vcs {
     },
     /// "Disconnect from GitHub?"
     Disconnect(Site),
+    /// "Make your home folder a repository?": asked before making one of
+    /// a folder everything else is inside.
+    InitHere(PathBuf),
     Publish(PublishForm),
 }
 
@@ -609,18 +612,36 @@ impl Files {
         cx.redraw();
     }
 
+    /// Make the folder shown a repository — asking first where that would
+    /// take in everything below (the home folder, the root).
     pub(super) fn init_repository(&mut self, cx: &mut Cx<'_>) {
         let dir = self.pane.location().to_owned();
+        if dir == self.home || dir.parent().is_none() {
+            self.overlay = Some(Overlay::Vcs(Vcs::InitHere(dir)));
+            cx.redraw();
+            return;
+        }
+        self.init_here(dir, cx);
+    }
+
+    /// `git init` in `dir`, on `main`; `Ctrl+Z` takes it back (its `.git`
+    /// goes to the trash).
+    fn init_here(&mut self, dir: PathBuf, cx: &mut Cx<'_>) {
+        self.overlay = None;
         match git::init(&dir) {
-            Ok(()) => {
-                self.toast("A Git repository now", cx);
+            Ok(branch) => {
+                self.remember(enso_fs::ops::Done::Created(vec![dir.join(".git")]));
+                self.toast(
+                    format!("A Git repository now, on {branch} · Ctrl+Z undoes it"),
+                    cx,
+                );
                 self.refresh_git(self.pane.generation());
                 // No one to commit as yet: ask.
                 if !git::identity(&Scope::Global).is_set() {
                     self.edit_identity(Scope::Repository(dir));
                 }
             }
-            Err(err) => self.toast(format!("Can't start a repository here: {err}"), cx),
+            Err(err) => self.toast(format!("Can't make this a repository: {err}"), cx),
         }
     }
 
@@ -721,6 +742,14 @@ impl Files {
                 Key::Enter => {
                     let site = *site;
                     self.disconnect(site, cx);
+                }
+                Key::Escape => self.overlay = None,
+                _ => {}
+            },
+            Vcs::InitHere(dir) => match key.key {
+                Key::Enter => {
+                    let dir = dir.clone();
+                    self.init_here(dir, cx);
                 }
                 Key::Escape => self.overlay = None,
                 _ => {}
@@ -875,6 +904,10 @@ impl Files {
                     let site = *site;
                     self.disconnect(site, cx);
                 }
+                Some(Vcs::InitHere(dir)) => {
+                    let dir = dir.clone();
+                    self.init_here(dir, cx);
+                }
                 Some(
                     Vcs::NewBranch(..) | Vcs::Clone(..) | Vcs::ClientId(..) | Vcs::Publish(..),
                 ) => {
@@ -887,12 +920,18 @@ impl Files {
                 }
                 _ => {}
             },
-            Some(Hit::FormCancel) | None => {
+            Some(Hit::FormCard) => {}
+            Some(Hit::FormCancel) => {
                 if matches!(self.overlay.vcs(), Some(Vcs::Device { .. })) {
                     self.cancel_sign_in();
                 } else {
                     self.overlay = None;
                 }
+            }
+            // A press outside: a form is put away, but a sign-in under way
+            // isn't lost to a stray click (Esc and Cancel stop it).
+            None if !matches!(self.overlay.vcs(), Some(Vcs::Device { .. })) => {
+                self.overlay = None;
             }
             _ => {}
         }
@@ -1002,7 +1041,10 @@ impl Files {
                     if code.is_empty() {
                         format!("Asking {name} for a code…")
                     } else {
-                        format!("Type this code at {name} and approve. Open {} copies it and opens the page.", site.name())
+                        format!(
+                            "It's copied: paste it at {name} and approve. Open takes you there — this waits, \
+                             and Esc or Cancel stops it."
+                        )
                     },
                     1,
                     [("Cancel", Kind::Secondary, Hit::FormCancel), ("Open", Kind::Primary, Hit::FormSave)],
@@ -1018,6 +1060,18 @@ impl Files {
                 ),
                 1,
                 [("Cancel", Kind::Secondary, Hit::FormCancel), ("Publish", Kind::Primary, Hit::FormSave)],
+            ),
+            Vcs::InitHere(dir) => (
+                if *dir == self.home {
+                    "Make your home folder a repository?".to_owned()
+                } else {
+                    "Make the whole disk a repository?".to_owned()
+                },
+                "Everything in it would be inside it: every folder below would show as part of \
+                 it. For a project, make a new Git repository instead — a folder of its own."
+                    .to_owned(),
+                0,
+                [("Cancel", Kind::Secondary, Hit::FormCancel), ("Make it one", Kind::Primary, Hit::FormSave)],
             ),
             Vcs::Disconnect(site) => (
                 format!(
@@ -1054,7 +1108,7 @@ impl Files {
             Vcs::Device { error, .. } | Vcs::NewBranch(_, error) | Vcs::Clone(_, error) => {
                 error.clone()
             }
-            Vcs::Ask | Vcs::Disconnect(_) => None,
+            Vcs::Ask | Vcs::Disconnect(_) | Vcs::InitHere(_) => None,
         };
         // Publishing with two forges signed in to: which one.
         let publish_on = match vcs {
@@ -1122,7 +1176,7 @@ impl Files {
         if !shown.is_empty() {
             form = form.part(Part::Space(shown.len() as f32 * REPO_ROW));
         }
-        if !matches!(vcs, Vcs::Ask | Vcs::Disconnect(_)) {
+        if !matches!(vcs, Vcs::Ask | Vcs::Disconnect(_) | Vcs::InitHere(_)) {
             form = form.note(error.as_deref().map_or(Note::Nothing, Note::Complains));
         }
         for (label, kind, hit) in &buttons {
@@ -1137,7 +1191,9 @@ impl Files {
         }
         let placed = form.draw(canvas, bounds, &look, 1.0);
 
-        let mut hits = Vec::new();
+        // The card itself, under its buttons and fields: a press on it is
+        // nothing.
+        let mut hits = vec![(placed.inner.inset(-space::XL), Hit::FormCard)];
         let field = |canvas: &mut Canvas<'_>, place: Rect, field: &mut TextField, focused, hint| {
             let frame = Frame {
                 focused,

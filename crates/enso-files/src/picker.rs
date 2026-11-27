@@ -207,15 +207,13 @@ impl Picker {
         paths
     }
 
-    /// Whether the accept button has anything to do.
-    pub fn ready(&self, location: &Path, selection: &Selection, under: &Under) -> bool {
-        // The button never enters folders: that's Enter's and a double-click's.
-        let under = match under {
-            Under::Dir(_) => &Under::Nothing,
-            other => other,
-        };
+    /// Whether the accept button has anything to do. It takes what is
+    /// chosen, never what the cursor is on: a file isn't offered up for
+    /// sitting first in its folder, and the button never enters folders
+    /// (that's Enter's, and a double-click's).
+    pub fn ready(&self, location: &Path, selection: &Selection) -> bool {
         matches!(
-            self.accept(location, selection, under),
+            self.accept(location, selection, &Under::Nothing),
             Accept::Answer(_) | Accept::Confirm(_)
         )
     }
@@ -277,9 +275,10 @@ mod tests {
         );
         assert_eq!(single.accept(here, &none, &Under::Nothing), Accept::Nothing);
         assert!(
-            !single.ready(here, &none, &dir),
-            "the button doesn't enter folders"
+            !single.ready(here, &none),
+            "nothing chosen: the button waits, wherever the cursor is"
         );
+        assert!(single.ready(here, &chosen(&["/h/a.txt"])));
 
         let many = open(true);
         let basket = chosen(&["/x/1.png", "/y/2.png"]);

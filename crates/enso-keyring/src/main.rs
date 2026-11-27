@@ -94,7 +94,10 @@ fn card(mode: asking::Mode, asker: String, out: Option<Box<dyn io::Write>>) -> R
     let ctx = Context::load();
     let appearance = ctx.config.appearance.clone();
     let preview = out.is_none();
-    let result = enso_ui::run(prompt::Card::new(ctx, mode, asker, out), &appearance)
+    // The screen with the focus, and the bar's clock there to open out of.
+    let (screen, perch) = enso_ui::emerge::Perch::find();
+    let card = prompt::Card::new(ctx, mode, asker, out).on(screen, perch);
+    let result = enso_ui::run(card, &appearance)
         .map_err(|err| err.to_string());
     if result.is_err() && !preview {
         println!("cancel");

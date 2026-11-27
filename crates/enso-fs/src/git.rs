@@ -261,9 +261,21 @@ pub fn forge(page: &str) -> &str {
     }
 }
 
-/// Make `dir` a repository (`git init`, on `init.defaultBranch`).
-pub fn init(dir: &Path) -> io::Result<()> {
-    run(dir, &["init", "--quiet"]).map(drop)
+/// The branch a new repository starts on: `init.defaultBranch` where it's
+/// set, otherwise `main` (git's own default is still `master`).
+pub fn default_branch(dir: &Path) -> String {
+    run(dir, &["config", "--get", "init.defaultBranch"])
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out).trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "main".to_owned())
+}
+
+/// Make `dir` a repository, on [`default_branch`]. Returns the branch.
+pub fn init(dir: &Path) -> io::Result<String> {
+    let branch = default_branch(dir);
+    run(dir, &["init", "--quiet", &format!("--initial-branch={branch}")])?;
+    Ok(branch)
 }
 
 /// Whose commits these are: everywhere, or in one repository.
@@ -498,7 +510,14 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("src")).unwrap();
         assert_eq!(root(&dir.join("src")), None);
-        init(&dir).unwrap();
+        // On `main`, unless git is told otherwise; never git's `master`.
+        let branch = init(&dir).unwrap();
+        assert_eq!(branch, default_branch(&dir));
+        let head = fs::read_to_string(dir.join(".git/HEAD")).unwrap();
+        assert_eq!(head.trim(), format!("ref: refs/heads/{branch}"));
+        if run(&dir, &["config", "--get", "init.defaultBranch"]).is_err() {
+            assert_eq!(branch, "main");
+        }
         assert_eq!(root(&dir.join("src")).as_deref(), Some(dir.as_path()));
         let repo = Scope::Repository(dir.clone());
         set_identity(&repo, "Test Person", "test@example.com").unwrap();

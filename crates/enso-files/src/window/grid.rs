@@ -129,6 +129,8 @@ impl Files {
         let zoom = ZOOMS[self.zoom];
         let mut wanted = Vec::new();
         let mut hits = Vec::new();
+        let renaming = self.renaming.as_ref().map(|renaming| renaming.path.clone());
+        let mut rename_at = None;
 
         canvas.with_clip(list, |canvas| {
             for index in first..last {
@@ -195,11 +197,22 @@ impl Files {
                     cell_w - 8.0,
                     cell_h - zoom - 2.0 * space::SM,
                 );
-                let text = Text::new(&name, small, colors.text)
-                    .max_width(label.w)
-                    .max_lines(2);
-                let size = canvas.measure(&text);
-                canvas.text(&text, label.x + (label.w - size.w) / 2.0, label.y);
+                if renaming.as_ref() == Some(&path) {
+                    // Being renamed: the field takes the name's place, the
+                    // tile's width, drawn over it below.
+                    rename_at = Some(Rect::new(
+                        tile.x + 2.0 * space::SM,
+                        label.y - space::XS,
+                        tile.w - 3.0 * space::SM,
+                        small * 1.4 + 2.0 * space::SM,
+                    ));
+                } else {
+                    let text = Text::new(&name, small, colors.text)
+                        .max_width(label.w)
+                        .max_lines(2);
+                    let size = canvas.measure(&text);
+                    canvas.text(&text, label.x + (label.w - size.w) / 2.0, label.y);
+                }
                 wanted.push((path, kind));
                 hits.push((
                     Rect::new(
@@ -212,6 +225,9 @@ impl Files {
                 ));
             }
         });
+        if let Some(rect) = rename_at.filter(|rect| list.contains(rect.x, rect.center().1)) {
+            self.draw_rename(canvas, rect);
+        }
         // Newest last, so the first tiles come first.
         for (path, kind) in wanted.into_iter().rev() {
             self.want_thumb(path, kind);

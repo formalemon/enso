@@ -226,6 +226,12 @@ impl<'a> Form<'a> {
         height + 2.0 * space::XL
     }
 
+    /// How wide and tall the card is, outside: for a card the owner places
+    /// itself ([`Form::draw_in`]).
+    pub fn size(&self, canvas: &mut Canvas<'_>, look: &Look) -> (f32, f32) {
+        (self.width, self.height(canvas, look))
+    }
+
     /// Dim `bounds` and draw the card in its middle, sliding up a little
     /// as `presence` goes `0 → 1`. The canvas is left at `presence`'s
     /// opacity for the owner's fields; set it back to `1` after.
@@ -239,6 +245,17 @@ impl<'a> Form<'a> {
         let height = self.height(canvas, look);
         let inner = controls::dialog(canvas, bounds, self.width, height, look, presence);
         canvas.set_opacity(presence);
+        self.lay_out(canvas, inner, look)
+    }
+
+    /// Draw what the card holds into `card`, a body the owner has drawn
+    /// already — one grown out of the bar, say ([`crate::emerge`]) — as
+    /// [`Form::size`] measured it, at the canvas's opacity as it stands.
+    pub fn draw_in(&self, canvas: &mut Canvas<'_>, card: Rect, look: &Look) -> Placed {
+        self.lay_out(canvas, card.inset(space::XL), look)
+    }
+
+    fn lay_out(&self, canvas: &mut Canvas<'_>, inner: Rect, look: &Look) -> Placed {
         let (_, small, code_size) = Self::sizes(look);
         let (title, about, aside) = self.texts(look, inner.w);
         let mut placed = Placed {

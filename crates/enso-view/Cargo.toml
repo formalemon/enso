@@ -1,6 +1,6 @@
 [package]
 name = "enso-view"
-description = "An image viewer: the pictures in a folder, one at a time, to step through, zoom, turn, copy, make the wallpaper, or throw away"
+description = "A viewer for the pictures and videos in a folder, one at a time: step through, swipe, zoom, turn, play, copy, make the wallpaper, or throw away"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,12 @@ license.workspace = true
 enso-core.workspace = true
 enso-ui.workspace = true
 enso-fs.workspace = true
+# Videos: played in time through ffmpeg and PipeWire, and told to the
+# desktop as a player (the now-playing card, the media keys).
+enso-media = { workspace = true, features = ["mpris"] }
 lexopt.workspace = true
+# Dates in the details: when a photo was taken, and changed.
+jiff.workspace = true
 
 [dev-dependencies]
 enso-ui = { workspace = true, features = ["png"] }

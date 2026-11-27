@@ -125,6 +125,12 @@ pub fn preview(path: &Path, max_side: u32) -> Preview {
     if let Ok(picture) = enso_fs::picture::open(path, max_side) {
         return Preview::Picture(picture);
     }
+    // A video: a frame of it, as its thumbnail has it.
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    if enso_fs::thumbs::is_video(&name) {
+        let size = enso_fs::thumbs::Size::for_pixels(max_side as f32);
+        return enso_fs::thumbs::thumbnail(path, size).map_or(Preview::Nothing, Preview::Picture);
+    }
     let mut head = vec![0; TEXT_BYTES];
     let Ok(read) = std::fs::File::open(path).and_then(|mut file| file.read(&mut head)) else {
         return Preview::Nothing;

@@ -185,6 +185,9 @@ impl Files {
             ..
         }) = self.overlay.vcs_mut()
         {
+            // On the clipboard at once, to paste on the forge's page however
+            // it's reached.
+            cx.copy(Clip::text(&code));
             *shown = code;
             *at = page;
             cx.redraw();
@@ -230,10 +233,10 @@ impl Files {
             return;
         }
         cx.copy(Clip::text(code));
-        let page = page.clone();
-        if let Err(err) = enso_fs::open::uri(&page) {
-            self.toast(format!("Can't open it ({err}): go to {page}"), cx);
-        }
+        // Opened with a token, so the browser's window comes forward with
+        // the page, on whichever workspace it is.
+        self.launching = Some(super::Launch::Uri(page.clone()));
+        cx.request_activation();
     }
 
     pub(super) fn cancel_sign_in(&mut self) {

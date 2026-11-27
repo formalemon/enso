@@ -790,6 +790,26 @@ fn sketch(p: &mut Pen<'_, '_>, figure: Figure) {
         Figure::Play => p.stroke(true, |s| {
             s.soft(&[(7.8, 5.2), (18.4, 12.0), (7.8, 18.8)], 1.6, true);
         }),
+        Figure::Info => {
+            p.stroke(true, |s| {
+                s.circle((12.0, 12.0), 8.4);
+                s.line((12.0, 11.2), (12.0, 16.4));
+            });
+            p.fill(true, |s| {
+                s.circle((12.0, 7.8), 1.3);
+            });
+        }
+        Figure::Note => {
+            // An eighth note: its head, its stem, the flag lifting off it.
+            p.fill(true, |s| {
+                s.circle((8.6, 16.8), 3.0);
+            });
+            p.stroke(true, |s| {
+                s.line((11.4, 16.8), (11.4, 4.2));
+                s.move_to((11.4, 4.2))
+                    .cubic_to((12.4, 7.6), (18.4, 7.4), (16.8, 12.6));
+            });
+        }
         Figure::Pause => p.stroke(true, |s| {
             s.line((8.6, 5.6), (8.6, 18.4));
             s.line((15.4, 5.6), (15.4, 18.4));

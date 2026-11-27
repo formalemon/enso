@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use enso_core::style::{Shadow, opacity, radius, space, stroke, type_scale};
+use enso_core::style::{opacity, radius, space, stroke, type_scale};
 use enso_fs::{
     format,
     ops::{self, Done, Progress, Resolve},
@@ -29,7 +29,7 @@ use super::{Files, Hit};
 use crate::jobs::{self, Op};
 
 /// How long a toast stays.
-const TOAST: Duration = Duration::from_secs(4);
+const TOAST: Duration = enso_ui::widget::toast::STAYS;
 /// The clipboard type GNOME's Files, Dolphin, and others use for files:
 /// "copy" or "cut", then a URI per line.
 pub(super) const COPIED_FILES: &str = "x-special/gnome-copied-files";
@@ -92,6 +92,13 @@ impl Files {
     /// Drop the toast once its time is up.
     pub(super) fn wake(&mut self, cx: &mut Cx<'_>) {
         if self.search_if_due(Instant::now()) {
+            cx.redraw();
+        }
+        // A swipe whose fingers went quiet: over.
+        if let Some(direction) = self.pull.expire(Instant::now()) {
+            self.go(direction);
+        }
+        if self.pull.is_animating(Instant::now()) || self.pull.is_pulling() {
             cx.redraw();
         }
         if self
@@ -336,6 +343,25 @@ impl Files {
             }
             Err(err) => self.toast(format!("Can't make a folder here: {err}"), cx),
         }
+    }
+
+    /// A new folder that is a repository from the start (on `main`), to
+    /// name as a new folder is. Undone, the folder goes to the trash.
+    pub(super) fn new_repository(&mut self, cx: &mut Cx<'_>) {
+        if !self.in_a_folder(cx) {
+            return;
+        }
+        let path = match ops::new_folder(self.pane.location(), "New repository") {
+            Ok(path) => path,
+            Err(err) => return self.toast(format!("Can't make a folder here: {err}"), cx),
+        };
+        self.remember(Done::Created(vec![path.clone()]));
+        match enso_fs::git::init(&path) {
+            Ok(branch) => self.toast(format!("A new repository, on {branch}: name it"), cx),
+            Err(err) => self.toast(format!("A new folder, but not a repository: {err}"), cx),
+        }
+        self.rename_after = Some(path.clone());
+        self.reveal(&path);
     }
 
     /// The listing arrived: if a new folder is waiting to be named, name it.
@@ -592,17 +618,7 @@ impl Files {
     /// The toast, low in the middle of the list.
     pub(super) fn draw_toast(&mut self, canvas: &mut Canvas<'_>, above: f32) {
         let Some((text, _)) = &self.toast else { return };
-        let colors = &self.ctx.theme.colors;
-        let size = self.font(type_scale::SMALL);
-        let bounds = canvas.bounds();
-        let label =
-            Text::new(text, size, colors.text).max_width((bounds.w - 4.0 * space::XL).max(100.0));
-        let measured = canvas.measure(&label);
-        let (w, h) = (measured.w + 2.0 * space::LG, measured.h + 2.0 * space::MD);
-        let rect = Rect::new((bounds.w - w) / 2.0, above - h - space::LG, w, h);
-        canvas.shadow(rect, radius::pill(h.min(40.0)), Shadow::FLOATING);
-        canvas.fill(rect, radius::CONTROL.max(h.min(40.0) / 2.0), colors.overlay);
-        canvas.text(&label, rect.x + space::LG, rect.y + space::MD);
+        enso_ui::widget::toast::draw(canvas, text, above, &self.look());
     }
 
     /// The operation under way, at the right of the status line. Returns

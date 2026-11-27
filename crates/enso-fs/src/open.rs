@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::apps::{self, spawn_detached};
+use crate::apps::{self, spawn_activated, spawn_detached};
 
 /// An application offered for opening a file.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,15 +33,27 @@ pub struct Plan {
 
 /// Open `path` and return. `terminal` runs handlers that need one.
 pub fn open(path: &Path, terminal: &str) -> io::Result<()> {
+    open_activated(path, terminal, None)
+}
+
+/// [`open`], with an activation token for the application, so its window
+/// comes to the front (see [`crate::apps::spawn_activated`]).
+pub fn open_activated(path: &Path, terminal: &str, token: Option<&str>) -> io::Result<()> {
     let plan = Database::from_env()
         .plan(path, terminal)
         .ok_or_else(|| io::Error::other("no application is set up to open it"))?;
-    spawn_detached(&plan.argv, plan.cwd.as_deref())
+    spawn_activated(&plan.argv, plan.cwd.as_deref(), token)
 }
 
 /// Open a web address (or any URI) with what handles its scheme: the
 /// browser, for `https`.
 pub fn uri(uri: &str) -> io::Result<()> {
+    uri_activated(uri, None)
+}
+
+/// [`uri`], with an activation token for the browser: the window it opens
+/// the page in comes to the front, on whatever workspace it is.
+pub fn uri_activated(uri: &str, token: Option<&str>) -> io::Result<()> {
     let database = Database::from_env();
     let scheme = uri.split(':').next().unwrap_or_default();
     let argv = database
@@ -53,7 +65,7 @@ pub fn uri(uri: &str) -> io::Result<()> {
                 "no application is set up to open {scheme} addresses"
             ))
         })?;
-    spawn_detached(&argv, None)
+    spawn_activated(&argv, None, token)
 }
 
 /// Put desktop entry `id` (`text`) among the user's applications, and make

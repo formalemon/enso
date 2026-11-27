@@ -602,6 +602,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "enso-listen"
+version = "0.6.0"
+dependencies = [
+ "enso-core",
+ "enso-fs",
+ "enso-media",
+ "enso-ui",
+ "lexopt",
+]
+
+[[package]]
 name = "enso-lock"
 version = "0.6.0"
 dependencies = [
@@ -613,6 +624,15 @@ dependencies = [
  "niri-ipc",
  "serde",
  "zeroize",
+]
+
+[[package]]
+name = "enso-media"
+version = "0.6.0"
+dependencies = [
+ "pulseaudio",
+ "serde_json",
+ "zbus",
 ]
 
 [[package]]
@@ -695,7 +715,9 @@ version = "0.6.0"
 dependencies = [
  "enso-core",
  "enso-fs",
+ "enso-media",
  "enso-ui",
+ "jiff",
  "lexopt",
 ]
 

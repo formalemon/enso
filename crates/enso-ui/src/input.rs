@@ -128,6 +128,9 @@ pub enum PointerEvent {
         /// touchpad, which glides: lists step by rows for the one and
         /// follow the fingers for the other.
         wheel: bool,
+        /// The fingers left the touchpad: a glide is over. Comes with no
+        /// movement of its own; a swipe ends on it.
+        stopped: bool,
     },
 }
 

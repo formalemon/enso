@@ -291,8 +291,18 @@ impl Mpris {
 }
 
 /// A player's own name for itself, from its desktop entry ("firefox" →
-/// "Firefox") or its identity, or else its bus name.
+/// "Firefox") or its identity, or else its bus name. The suite's own
+/// players (`enso-view`, `enso-listen`) go by their identities, the
+/// names their windows have: Viewer, Listen.
 fn player_name(bus: &str, root: &Props) -> String {
+    let own = bus
+        .strip_prefix(PREFIX)
+        .is_some_and(|rest| rest.starts_with("enso_"));
+    if own
+        && let Some(identity) = string(root, "Identity").filter(|identity| !identity.is_empty())
+    {
+        return identity;
+    }
     if let Some(entry) = string(root, "DesktopEntry").filter(|entry| !entry.is_empty()) {
         // `org.mozilla.firefox` → `firefox`.
         let last = entry.rsplit('.').next().unwrap_or(&entry);
@@ -437,6 +447,10 @@ mod tests {
         assert_eq!(
             player_name("org.mpris.MediaPlayer2.spotify", &none),
             "Spotify"
+        );
+        assert_eq!(
+            player_name("org.mpris.MediaPlayer2.enso_listen.instance42", &none),
+            "Enso_listen"
         );
     }
 

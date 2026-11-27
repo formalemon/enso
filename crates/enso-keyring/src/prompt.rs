@@ -1,6 +1,9 @@
-//! The keyring's card: one password field over the dimmed screen, in the
-//! same shape as enso-auth's. It sends what's typed to the keyring and
-//! waits; the keyring closes it, or says why not and lets it try again.
+//! The keyring's card: one password field, in the same shape as
+//! enso-auth's. Where a bar runs along the top of the screen it grows out
+//! of the bar's clock, as the launcher does ([`enso_ui::emerge`]);
+//! elsewhere it sits in the middle of the dimmed screen. It sends what's
+//! typed to the keyring and waits; the keyring closes it, or says why not
+//! and lets it try again.
 
 use std::{
     io::{self, BufRead, Write},
@@ -15,6 +18,7 @@ use enso_core::{
 };
 use enso_ui::{
     App, Canvas, Cx, Event, Key, KeyEvent, Paint, PointerEvent, Presence, Proxy, Rect, SurfaceSpec,
+    emerge::Perch,
     widget::{Form, Interaction, Kind, Look, Note, SecretField, secret},
 };
 use zeroize::Zeroizing;
@@ -52,6 +56,9 @@ pub struct Card {
     asker: String,
     out: Option<Box<dyn Write>>,
     presence: Presence,
+    /// The screen it opens on, and the bar's clock there to grow out of.
+    screen: Option<String>,
+    perch: Perch,
     field: SecretField,
     /// Sent, waiting for the keyring's answer.
     waiting: bool,
@@ -73,6 +80,8 @@ impl Card {
     pub fn new(ctx: Context, mode: Mode, asker: String, out: Option<Box<dyn Write>>) -> Self {
         Self {
             presence: Presence::new(&ctx.motion),
+            screen: None,
+            perch: Perch::default(),
             ctx,
             mode,
             asker,
@@ -84,6 +93,15 @@ impl Card {
             hits: Vec::new(),
             hover: None,
         }
+    }
+
+    /// Open on `screen`, out of the bar's clock there if `perch` has it.
+    #[must_use]
+    pub fn on(mut self, screen: Option<String>, perch: Perch) -> Self {
+        self.screen = screen;
+        self.presence = perch.presence(&self.ctx.motion);
+        self.perch = perch;
+        self
     }
 
     fn font(&self, scale: f32) -> f32 {
@@ -256,7 +274,17 @@ impl Card {
                     ..Interaction::default()
                 },
             );
-        let placed = form.draw(canvas, canvas.bounds(), &look, presence);
+        let placed = if self.perch.island.is_some() {
+            // Nothing dimmed: it hangs under the bar, as what's summoned does.
+            let (width, height) = form.size(canvas, &look);
+            let rest = self.perch.rest(canvas.bounds(), width, height);
+            let card = self
+                .perch
+                .card(canvas, rest, presence, &self.ctx.theme.colors);
+            form.draw_in(canvas, card, &look)
+        } else {
+            form.draw(canvas, canvas.bounds(), &look, presence)
+        };
         let hint = if self.waiting {
             "Checking…"
         } else {
@@ -279,7 +307,7 @@ impl App for Card {
     type Message = Message;
 
     fn surface(&self) -> SurfaceSpec {
-        SurfaceSpec::overlay("enso-keyring")
+        Perch::surface("enso-keyring", self.screen.clone())
     }
 
     fn start(&mut self, proxy: Proxy<Message>, _cx: &mut Cx<'_>) {
@@ -426,6 +454,75 @@ mod tests {
         assert!(card.complaint.is_none());
         render(&mut card, "enso-keyring-lost");
         assert_eq!(card.message(Message::Done, now), Outcome::Close);
+    }
+
+    /// Opened over a bar, it grows out of the clock and hangs under it, in
+    /// the middle: `target/snapshots/enso-keyring-emerge.png`, a frame at a
+    /// time.
+    #[test]
+    fn opens_out_of_the_bars_clock() {
+        use enso_ui::{Align, Text};
+        let (width, height) = (800u32, 320u32);
+        let island = enso_core::island::Island {
+            pid: 1,
+            top: true,
+            bar: 36.0,
+            x: 300.0,
+            y: 4.0,
+            w: 200.0,
+            h: 28.0,
+            opacity: 0.9,
+            ..enso_core::island::Island::default()
+        };
+        let mut card = card(Mode::Unlock).on(
+            None,
+            Perch {
+                island: Some(island),
+                ..Perch::default()
+            },
+        );
+        let colors = card.ctx.theme.colors.clone();
+        let mut text = TextEngine::new(&card.ctx.config.appearance);
+        let desk = Offscreen::render(&mut text, (width, height), 1, |canvas| {
+            canvas.clear(colors.pine.mix(colors.overlay, 0.6));
+            let clock = Rect::new(island.x, island.y, island.w, island.h);
+            canvas.pill(clock, colors.base.alpha(island.opacity));
+            let words = Text::new("Thu 26 Nov  17:40", 13.0, colors.text).medium();
+            canvas.text_in(&words, clock, Align::Center);
+        });
+        let start = Instant::now();
+        let moments = [0u64, 60, 130, 250, 420, 700];
+        let mut sheet = Vec::new();
+        for (n, ms) in moments.into_iter().enumerate() {
+            let at = start + std::time::Duration::from_millis(ms);
+            let frame = Offscreen::render(&mut text, (width, height), 1, |canvas| {
+                card.render(canvas, at);
+            });
+            if n == 0 {
+                // Nothing at all before it has begun: no dimming either.
+                assert!(frame.rgba.iter().all(|&byte| byte == 0));
+            }
+            let mut over = desk.rgba.clone();
+            for (dst, src) in over.chunks_mut(4).zip(frame.rgba.chunks(4)) {
+                let keep = 255 - u32::from(src[3]);
+                for c in 0..4 {
+                    dst[c] = (u32::from(src[c]) + (u32::from(dst[c]) * keep + 127) / 255) as u8;
+                }
+            }
+            sheet.extend(over);
+        }
+        let sheet = Offscreen {
+            width,
+            height: height * moments.len() as u32,
+            rgba: sheet,
+        };
+        sheet.snapshot(env!("CARGO_MANIFEST_DIR"), "enso-keyring-emerge");
+        // At rest, under the bar and in the middle: its buttons are there.
+        let buttons: Vec<Rect> = card.hits.iter().map(|(rect, _)| *rect).collect();
+        assert!(buttons.iter().all(|rect| rect.y > 40.0 && rect.right() < 620.0));
+        // Nothing dimmed beside it.
+        let last = (moments.len() as u32 - 1) * height;
+        assert_eq!(sheet.pixel(40, last + 200), desk.pixel(40, 200));
     }
 
     #[test]

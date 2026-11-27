@@ -13,6 +13,8 @@
 //!   preedit shown in it.
 //! - [`input`] — keyboard and pointer events, including the suite-wide
 //!   navigation keys.
+//! - [`swipe`] — two fingers sideways on a touchpad: back and forward, the
+//!   next one; and the two ways of showing it.
 //! - [`watch`] — inotify-based change notification for live theme switching.
 //! - [`widget`] — controls: text fields, menus, buttons, toggles, dialogs,
 //!   tooltips, scrolling, splitters.
@@ -38,6 +40,7 @@ pub mod picture;
 pub mod presence;
 pub mod screens;
 pub mod shell;
+pub mod swipe;
 pub mod text;
 pub mod watch;
 pub mod widget;

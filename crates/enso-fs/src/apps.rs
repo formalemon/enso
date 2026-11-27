@@ -344,6 +344,14 @@ pub fn parse_exec(exec: &str, file: Option<&str>) -> Vec<String> {
 
 /// Start a program detached from the launcher, optionally in a directory.
 pub fn spawn_detached(argv: &[String], cwd: Option<&Path>) -> io::Result<()> {
+    spawn_activated(argv, cwd, None)
+}
+
+/// [`spawn_detached`], handing the program an activation token (from the
+/// compositor, through xdg-activation): its window then comes to the front,
+/// and its workspace with it — or, for a program already running (a
+/// browser given a page), the window it opens the page in.
+pub fn spawn_activated(argv: &[String], cwd: Option<&Path>, token: Option<&str>) -> io::Result<()> {
     let (program, args) = argv
         .split_first()
         .ok_or_else(|| io::Error::other("empty command"))?;
@@ -351,6 +359,15 @@ pub fn spawn_detached(argv: &[String], cwd: Option<&Path>) -> io::Result<()> {
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    // Wayland's name for it, and the older one GTK 3 still reads.
+    match token {
+        Some(token) => command
+            .env("XDG_ACTIVATION_TOKEN", token)
+            .env("DESKTOP_STARTUP_ID", token),
+        None => command
+            .env_remove("XDG_ACTIVATION_TOKEN")
+            .env_remove("DESKTOP_STARTUP_ID"),
+    };
     command
         .args(args)
         .stdin(Stdio::null())

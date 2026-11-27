@@ -7,9 +7,10 @@
 //! What can't be thumbnailed is remembered too (`fail/enso-files/`), so a
 //! broken picture is tried once, not on every scroll past.
 //!
-//! PNG, JPEG, WebP, and GIF (its first frame) are decoded in pure Rust;
-//! anything else is only shown if another program has already made its
-//! thumbnail.
+//! PNG, JPEG, WebP, and GIF (its first frame) are decoded in pure Rust. A
+//! video's thumbnail is a frame from a second in, taken by ffmpeg when it's
+//! installed (as it is wherever Firefox is). Anything else is only shown if
+//! another program has already made its thumbnail.
 
 use std::{
     fs,
@@ -71,6 +72,15 @@ pub fn can_make(name: &str) -> bool {
     [".png", ".jpg", ".jpeg", ".jpe", ".webp", ".gif"]
         .iter()
         .any(|ext| lower.ends_with(ext))
+        || is_video(name)
+}
+
+/// Whether a file of this name is a video, by the names videos go by.
+pub fn is_video(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".ogv", ".3gp"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
 }
 
 /// Where thumbnails live.
@@ -107,7 +117,8 @@ fn thumbnail_in(cache: &Path, path: &Path, size: Size) -> Option<Thumb> {
         return Some(thumb);
     }
     let name_str = path.file_name()?.to_string_lossy();
-    if !can_make(&name_str) || meta.len() > MAX_BYTES {
+    let video = is_video(&name_str);
+    if !can_make(&name_str) || (!video && meta.len() > MAX_BYTES) {
         return None;
     }
     let failed = cache.join("fail/enso-files").join(&name);
@@ -116,7 +127,16 @@ fn thumbnail_in(cache: &Path, path: &Path, size: Size) -> Option<Thumb> {
     {
         return None;
     }
-    match picture::open(&path, size.pixels()).ok() {
+    let made = if video {
+        match frame(&path, size.pixels()) {
+            Ok(made) => made,
+            // No ffmpeg to ask: nothing failed, nothing to remember.
+            Err(()) => return None,
+        }
+    } else {
+        picture::open(&path, size.pixels()).ok()
+    };
+    match made {
         Some(thumb) => {
             let _ = write(&cached, &thumb, &uri, mtime, meta.len());
             Some(thumb)
@@ -136,6 +156,37 @@ fn thumbnail_in(cache: &Path, path: &Path, size: Size) -> Option<Thumb> {
             None
         }
     }
+}
+
+/// A frame of the video at `path`, at most `side` pixels on a side: from
+/// a second in (a first frame is often black), or its first for one
+/// shorter. `Err` when there's no ffmpeg to take it.
+fn frame(path: &Path, side: u32) -> Result<Option<Thumb>, ()> {
+    let take = |at: &str| {
+        let mut input = std::ffi::OsString::from("file:");
+        input.push(path.as_os_str());
+        std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-loglevel", "error", "-ss", at, "-i"])
+            .arg(input)
+            .args(["-map", "0:V:0", "-frames:v", "1", "-vf"])
+            .arg(format!(
+                "scale={side}:{side}:force_original_aspect_ratio=decrease"
+            ))
+            .args(["-f", "image2pipe", "-c:v", "png", "-"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+    };
+    let png = match take("1") {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Err(()),
+        Err(_) => return Ok(None),
+        Ok(out) if !out.stdout.is_empty() => out.stdout,
+        Ok(_) => match take("0") {
+            Ok(out) => out.stdout,
+            Err(_) => return Ok(None),
+        },
+    };
+    Ok(picture::decode(&png).ok())
 }
 
 /// What a thumbnail says about its file.
