@@ -633,6 +633,38 @@ fn renders_a_grid_with_thumbnails() {
 }
 
 #[test]
+fn the_grid_scrolls_all_the_way_down() {
+    // Large tiles in a narrow window: the grid stands taller than the list
+    // of the same folder would.
+    let mut files = files();
+    files.config.view = crate::config::View::Grid;
+    files.zoom = super::grid::ZOOMS.len() - 1;
+    let size = (520, 420);
+    render(&mut files, size);
+    assert!(files.content_height() > files.pane.len() as f32 * files.row_height());
+    // Gone to the last tile, it shows whole, the view scrolled to its end.
+    let last = files.pane.len() - 1;
+    files.pane.set_cursor(last);
+    files.follow_cursor(Instant::now() + Duration::from_secs(2));
+    settle(&mut files, size);
+    let (tile, _) = files
+        .hits
+        .iter()
+        .find(|(_, hit)| *hit == Hit::Row(last))
+        .expect("the last tile is on screen");
+    let (_, height) = files.tile();
+    assert!(tile.h >= height - enso_core::style::space::SM - 0.5, "whole: {tile:?}");
+
+    // Scrolled to the very end, it stays there once drawn: the list's
+    // shorter height mustn't hold it back.
+    let end = files.scroll.max();
+    assert!(end > 0.0);
+    files.scroll.to(end, None, Instant::now());
+    settle(&mut files, size);
+    assert_eq!(files.scroll.target(), end);
+}
+
+#[test]
 fn renders_the_preview_and_the_quick_look() {
     let mut files = files();
     files.pane.set_cursor(6);

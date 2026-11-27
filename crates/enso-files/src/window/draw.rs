@@ -462,8 +462,7 @@ impl Files {
 
         let list = Rect::new(area.x, header.bottom(), area.w, area.h - header.h);
         self.list = list;
-        self.scroll
-            .set_extent(self.pane.len() as f32 * row_height, list.h);
+        self.scroll.set_extent(self.content_height(), list.h);
         self.hits.push((list, Hit::Empty));
 
         match self.pane.load().clone() {

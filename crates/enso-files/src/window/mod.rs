@@ -866,8 +866,7 @@ impl Files {
         if let Some(row) = self.pane.cursor() {
             let (top, height) = self.span_of(row);
             self.highlight.jump(top);
-            let (_, last) = self.span_of(self.pane.len().saturating_sub(1));
-            self.scroll.set_extent(last + height, self.list.h);
+            self.scroll.set_extent(self.content_height(), self.list.h);
             self.scroll.reveal(top, height, Transition::INSTANT, now);
         }
         true

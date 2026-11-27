@@ -86,6 +86,18 @@ impl Files {
         }
     }
 
+    /// How tall everything in the view stands: the list's rows, or the
+    /// grid's.
+    pub(super) fn content_height(&self) -> f32 {
+        match self.config.view {
+            View::List | View::Columns => self.pane.len() as f32 * self.row_height(),
+            View::Grid => {
+                let (_, height) = self.tile();
+                self.pane.len().div_ceil(self.columns()) as f32 * height + 2.0 * space::SM
+            }
+        }
+    }
+
     pub(super) fn zoom_by(&mut self, step: isize) {
         self.zoom = self.zoom.saturating_add_signed(step).min(ZOOMS.len() - 1);
     }
@@ -115,9 +127,6 @@ impl Files {
         let small = self.font(type_scale::SMALL);
         let (cell_w, cell_h) = self.tile();
         let columns = self.columns();
-        let rows = self.pane.len().div_ceil(columns);
-        self.scroll
-            .set_extent(rows as f32 * cell_h + 2.0 * space::SM, list.h);
         let scroll = self.scroll.get(now);
         let first = ((scroll / cell_h).floor().max(0.0) as usize) * columns;
         let last =
