@@ -34,6 +34,11 @@ cursor_size = 24
 # (opening a terminal here, terminal applications, editing names in $EDITOR).
 # "" uses $TERMINAL, or else alacritty.
 terminal = ""
+# How solid the terminal's background is, given to Alacritty with the theme:
+# 0.95 lets a hint of the wallpaper through. A light theme gets a little
+# more of it (0.95 becomes 0.93), so as much shows on a pale background as
+# on a dark one. 1.0 leaves the terminal's own setting alone.
+terminal_opacity = 1.0
 
 [motion]
 # false makes every transition instant.

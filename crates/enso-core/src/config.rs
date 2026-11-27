@@ -46,6 +46,10 @@ pub struct Appearance {
     /// Terminal emulator, run as `<terminal> -e <command>` for programs
     /// that need one. Empty: `$TERMINAL`, or else alacritty.
     pub terminal: String,
+    /// How solid the terminal's background is, `0.0..=1.0`, as the theme
+    /// gives it to Alacritty: in a dark theme as it says, in a light one a
+    /// little less, so as much shows through. `1.0` leaves it alone.
+    pub terminal_opacity: f32,
 }
 
 impl Appearance {
@@ -78,6 +82,7 @@ impl Default for Appearance {
             cursor: String::new(),
             cursor_size: 24,
             terminal: String::new(),
+            terminal_opacity: 1.0,
         }
     }
 }

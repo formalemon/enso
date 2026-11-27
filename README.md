@@ -1249,6 +1249,21 @@ Bibata-Modern-Ice, 32 px
 $ enso-ctl cursor size 24
 ```
 
+### The terminal's see-through
+
+How much of the wallpaper shows through the terminal is one setting, and the
+theme keeps it looking the same whichever theme it is:
+
+```toml
+[appearance]
+terminal_opacity = 0.95   # 1.0, the default, leaves the terminal alone
+```
+
+It goes to Alacritty with the colours. A dark theme gets it as it is; a light
+one a little less (0.95 becomes 0.93), because the same few percent of a
+picture that shows plainly through a dark background all but vanishes into a
+pale one. An `opacity` in Alacritty's own config still wins over it.
+
 `cursor set` records the choice in `~/.local/state/enso/cursor`, which wins
 over `config.toml` as `theme set` does over `theme`. enso installs no
 cursors: put the theme's directory in `~/.local/share/icons` first. One

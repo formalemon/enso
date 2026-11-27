@@ -10,7 +10,8 @@
 //! ```
 //!
 //! Alacritty's own config wins over what it imports, so colours a person
-//! sets there stay theirs. An import that did not exist when a terminal
+//! sets there stay theirs. With `terminal_opacity` under `[appearance]`
+//! the file carries the window's opacity too, made right for the theme. An import that did not exist when a terminal
 //! started is not watched: terminals opened before the first `theme set`
 //! pick the colours up when next started.
 
@@ -22,6 +23,29 @@ use super::{Job, Outcome, files, mentions};
 
 /// Name of the generated file inside the state directory.
 const FILE: &str = "alacritty.toml";
+
+/// How much more of what's behind a light theme lets through. The same few
+/// percent of a picture that shows plainly through a dark background all
+/// but vanishes into a pale one: measured as the spread of lightness (CIE
+/// L*) through Rosé Pine's Moon and Dawn over a busy wallpaper, Dawn shows
+/// about three quarters as much. Letting 1.4 times as much through evens
+/// it out: 0.95 in a dark theme reads as 0.93 does in a light one.
+const LIGHT_SEE_THROUGH: f32 = 1.4;
+
+/// The window's opacity in `job`'s theme, or `None` to leave it alone.
+fn opacity(job: &Job<'_>) -> Option<f32> {
+    let asked = job.ctx.config.appearance.terminal_opacity.clamp(0.0, 1.0);
+    if asked >= 1.0 {
+        return None;
+    }
+    let through = 1.0 - asked;
+    let through = if job.theme.is_dark() {
+        through
+    } else {
+        (through * LIGHT_SEE_THROUGH).min(1.0)
+    };
+    Some(((1.0 - through) * 100.0).round() / 100.0)
+}
 
 pub fn apply(job: &Job<'_>) -> Result<Outcome, String> {
     let file = job.generate(FILE, &render(job))?;
@@ -102,6 +126,9 @@ pub fn render(job: &Job<'_>) -> String {
              white = \"{text}\"\n"
         )
     };
+    let window = opacity(job)
+        .map(|opacity| format!("\n[window]\nopacity = {opacity:.2}\n"))
+        .unwrap_or_default();
     format!(
         r##"# {banner}
 
@@ -152,7 +179,7 @@ background = "{highlight_med}"
 [colors.bright]
 {bright}
 [colors.dim]
-{dim}"##,
+{dim}{window}"##,
         banner = job.banner(),
         normal = ansi(overlay),
         bright = ansi(muted),
@@ -253,6 +280,23 @@ white = "#e0def4"
              Edits are overwritten."
         );
         assert_eq!(colors, UPSTREAM_MOON);
+    }
+
+    /// Left at 1.0, nothing about the window; asked for, as asked in a dark
+    /// theme and a little more see-through in a light one.
+    #[test]
+    fn the_window_lets_as_much_through_in_every_theme() {
+        let mut sandbox = Sandbox::new("alacritty-opacity");
+        assert!(!render(&sandbox.job("rose-pine-moon")).contains("[window]"));
+        sandbox.ctx.config.appearance.terminal_opacity = 0.95;
+        let moon = render(&sandbox.job("rose-pine-moon"));
+        let dawn = render(&sandbox.job("rose-pine-dawn"));
+        assert!(moon.ends_with("\n[window]\nopacity = 0.95\n"), "{moon}");
+        assert!(dawn.ends_with("\n[window]\nopacity = 0.93\n"), "{dawn}");
+        Config::parse(&dawn, "rose-pine-dawn").unwrap();
+        // Nothing past what a window can do.
+        sandbox.ctx.config.appearance.terminal_opacity = -2.0;
+        assert!(render(&sandbox.job("rose-pine-dawn")).ends_with("opacity = 0.00\n"));
     }
 
     /// Every theme renders to TOML — which is what Alacritty must parse —
