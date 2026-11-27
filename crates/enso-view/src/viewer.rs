@@ -131,6 +131,9 @@ pub struct Viewer {
     pub(crate) read: HashMap<PathBuf, Result<Arc<Item>, String>>,
     reader: Option<mpsc::Sender<PathBuf>>,
     asked: Vec<PathBuf>,
+    /// Quarter turns clockwise given to pictures in reach: given again to
+    /// one whose full pixels are read again.
+    turns: HashMap<PathBuf, u8>,
     /// The one on screen, kept while the next is read.
     pub(crate) shown: Option<(PathBuf, Arc<Item>)>,
     pub(crate) view: View,
@@ -196,6 +199,7 @@ impl Viewer {
             read: HashMap::new(),
             reader: None,
             asked: Vec::new(),
+            turns: HashMap::new(),
             shown: None,
             view: View::FIT,
             stage: Rect::new(0.0, HEADER, 1100.0, 760.0 - HEADER - STATUS - STRIP),
@@ -257,9 +261,30 @@ impl Viewer {
             .collect();
         self.read.retain(|path, _| around.contains(path));
         self.asked.retain(|path| around.contains(path));
+        self.turns.retain(|path, _| around.contains(path));
+        // Only the one on screen is kept in full, to zoom into; either side
+        // of it, a picture is kept at the size it's shown, to step to at
+        // once for a fraction of the memory (a twelve-megapixel photo is
+        // 64 MB in full, with its halves).
+        let current = self.album.current().cloned();
+        let side = self.fitted_side();
+        for (path, read) in &mut self.read {
+            if Some(path) != current.as_ref()
+                && let Ok(item) = read
+                && let Some(small) = item.fitted(side)
+            {
+                *item = Arc::new(small);
+            }
+        }
         if let Some(reader) = &self.reader {
             for path in around {
-                if !self.read.contains_key(&path) && !self.asked.contains(&path) {
+                // Not read yet; or the one on screen, read only small.
+                let wanted = match self.read.get(&path) {
+                    None => true,
+                    Some(Ok(item)) => !item.is_whole() && Some(&path) == current.as_ref(),
+                    Some(Err(_)) => false,
+                };
+                if wanted && !self.asked.contains(&path) {
                     let _ = reader.send(path.clone());
                     self.asked.push(path);
                 }
@@ -290,11 +315,19 @@ impl Viewer {
             self.video = None;
             return;
         };
-        if let Some(Ok(item)) = self.read.get(&path)
-            && self.shown.as_ref().is_none_or(|(shown, _)| *shown != path)
-        {
-            self.shown = Some((path.clone(), Arc::clone(item)));
-            self.view = View::FIT;
+        if let Some(Ok(item)) = self.read.get(&path) {
+            let other = self.shown.as_ref().is_none_or(|(shown, _)| *shown != path);
+            // The same one, its full pixels come: as it was, only sharper.
+            let sharper = self
+                .shown
+                .as_ref()
+                .is_some_and(|(_, was)| !was.is_whole() && item.is_whole());
+            if other || sharper {
+                self.shown = Some((path.clone(), Arc::clone(item)));
+            }
+            if other {
+                self.view = View::FIT;
+            }
         }
         if self.video.as_ref().is_some_and(|video| video.path != path) {
             self.video = None;
@@ -389,6 +422,39 @@ impl Viewer {
     }
 
     // ---- Pictures: fitting, zooming, turning -------------------------------
+
+    /// The most output pixels across a picture is shown fitted: how large
+    /// those either side of the one shown are kept.
+    fn fitted_side(&self) -> u32 {
+        let room = self.room();
+        (room.w.max(room.h) * self.scale).ceil() as u32
+    }
+
+    /// A picture just read, as it's kept: only as large as it's shown if
+    /// it's not the one on screen, and turned as it was.
+    fn settle(&self, path: &Path, item: Arc<Item>) -> Arc<Item> {
+        let mut item = item;
+        if self.album.current().map(PathBuf::as_path) != Some(path)
+            && let Some(small) = item.fitted(self.fitted_side())
+        {
+            item = Arc::new(small);
+        }
+        if let Some(&turns) = self.turns.get(path)
+            && turns > 0
+            && let Item::Picture { photo, details } = item.as_ref()
+        {
+            let photo = match turns {
+                1 => photo.turned(true),
+                2 => photo.turned(true).turned(true),
+                _ => photo.turned(false),
+            };
+            item = Arc::new(Item::Picture {
+                photo: Arc::new(photo),
+                details: details.clone(),
+            });
+        }
+        item
+    }
 
     /// What a picture is fitted into: the stage, less a margin that keeps
     /// it off the window's edges and the chrome (none, full screen).
@@ -530,6 +596,8 @@ impl Viewer {
             details: details.clone(),
         });
         self.read.insert(path.clone(), Ok(Arc::clone(&turned)));
+        let turns = self.turns.entry(path.clone()).or_default();
+        *turns = (*turns + if clockwise { 1 } else { 3 }) % 4;
         self.shown = Some((path, turned));
         self.view = View::FIT;
     }
@@ -1037,6 +1105,7 @@ impl App for Viewer {
         match event {
             Event::Message(Message::Read(path, item)) => {
                 self.asked.retain(|asked| *asked != path);
+                let item = item.map(|item| self.settle(&path, item));
                 self.read.insert(path, item);
                 self.show_current();
                 cx.redraw();

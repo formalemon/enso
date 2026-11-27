@@ -282,7 +282,11 @@ impl<'a> Canvas<'a> {
     /// dialogs: lifted off what is behind it, filled, grained, and edged.
     pub fn card(&mut self, rect: Rect, fill: Rgba, edge: Rgba) {
         use enso_core::style::radius;
-        self.lift(rect, radius::CARD, 1.0);
+        if fill.a == u8::MAX {
+            self.lift_opaque(rect, radius::CARD, 1.0);
+        } else {
+            self.lift(rect, radius::CARD, 1.0);
+        }
         self.fill(rect, radius::CARD, fill);
         self.grain(rect, radius::CARD);
         self.rim(rect, radius::CARD, edge);
@@ -293,6 +297,22 @@ impl<'a> Canvas<'a> {
     /// wide one under it — as light falls, rather than one soft haze.
     /// Draw it before the shape.
     pub fn lift(&mut self, rect: Rect, radius: f32, amount: f32) {
+        self.lift_over(rect, radius, amount, None);
+    }
+
+    /// [`Canvas::lift`] for something opaque drawn next over the whole of
+    /// `rect`: the shadow is laid down round it and under its edge, not
+    /// across the middle it will cover. The same picture for a fraction of
+    /// the cost: a soft shadow is the costliest thing a card draws, and a
+    /// card draws it on every frame it moves. Drawing see-through (fading)
+    /// or clipped, the whole shadow is drawn, as some of it may show.
+    pub fn lift_opaque(&mut self, rect: Rect, radius: f32, amount: f32) {
+        let covered =
+            (self.opacity >= 1.0 && self.clip.is_none()).then(|| rect.inset(radius.max(1.0)));
+        self.lift_over(rect, radius, amount, covered);
+    }
+
+    fn lift_over(&mut self, rect: Rect, radius: f32, amount: f32, covered: Option<Rect>) {
         if amount <= 0.0 {
             return;
         }
@@ -301,7 +321,7 @@ impl<'a> Canvas<'a> {
                 opacity: shadow.opacity * amount.min(1.0),
                 ..shadow
             };
-            self.shadow(rect, radius, shadow);
+            self.shadow_over(rect, radius, shadow, covered);
         }
     }
 
@@ -373,19 +393,50 @@ impl<'a> Canvas<'a> {
 
     /// Soft drop shadow for a rounded rectangle. Draw it before the shape.
     pub fn shadow(&mut self, rect: Rect, radius: f32, shadow: Shadow) {
+        self.shadow_over(rect, radius, shadow, None);
+    }
+
+    /// [`Canvas::shadow`], left out of `covered` where every layer of it
+    /// reaches.
+    fn shadow_over(&mut self, rect: Rect, radius: f32, shadow: Shadow, covered: Option<Rect>) {
         let color = shadow.color;
         // Stacked, progressively larger translucent shapes approximate a blur
         // closely enough at these sizes and cost far less than a real one.
         const LAYERS: usize = 8;
         let rect = rect.translate(0.0, shadow.offset_y);
         let layer = color.alpha(shadow.opacity / LAYERS as f32 * 1.6);
+        // Every layer is the shape grown, so all of them reach over its
+        // straight middle (the shape inset by its radius).
+        let hole = covered.and_then(|covered| overlap(covered, rect.inset(radius)));
         for i in 0..LAYERS {
             let grow = shadow.blur * (i as f32 + 1.0) / LAYERS as f32;
-            self.fill(
-                rect.inset(-grow * 0.6),
-                radius + grow * 0.6,
-                layer.alpha(1.0 - i as f32 / LAYERS as f32),
-            );
+            let (rect, radius) = (rect.inset(-grow * 0.6), radius + grow * 0.6);
+            let color = layer.alpha(1.0 - i as f32 / LAYERS as f32);
+            match hole {
+                Some(hole) => self.fill_around(rect, radius, hole, color),
+                None => self.fill(rect, radius, color),
+            }
+        }
+    }
+
+    /// [`Canvas::fill`], all but `hole` (which lies inside it).
+    fn fill_around(&mut self, rect: Rect, radius: f32, hole: Rect, color: Rgba) {
+        let Some(outer) = rounded_rect(rect, radius) else {
+            return;
+        };
+        let mut builder = PathBuilder::new();
+        builder.push_path(&outer);
+        if let Some(hole) = tiny_skia::Rect::from_xywh(hole.x, hole.y, hole.w, hole.h) {
+            builder.push_rect(hole);
+        }
+        let Some(path) = builder.finish() else {
+            return;
+        };
+        let paint = self.paint(color);
+        let transform = self.transform();
+        let (pixmap, mask) = self.target();
+        if let Some(mut pixmap) = pixmap {
+            pixmap.fill_path(&path, &paint, FillRule::EvenOdd, transform, mask);
         }
     }
 
@@ -1038,6 +1089,13 @@ impl Shape {
     fn path(&self) -> Option<Path> {
         self.builder.clone().finish()
     }
+}
+
+/// Where `a` and `b` overlap, if they do.
+fn overlap(a: Rect, b: Rect) -> Option<Rect> {
+    let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+    let (right, bottom) = ((a.x + a.w).min(b.x + b.w), (a.y + a.h).min(b.y + b.h));
+    (right > x && bottom > y).then(|| Rect::new(x, y, right - x, bottom - y))
 }
 
 fn rounded_rect(rect: Rect, radius: f32) -> Option<Path> {

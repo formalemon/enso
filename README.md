@@ -150,7 +150,11 @@ any other, and can belong to another program's window, as a file chooser
 belongs to the browser that asked for it. The runtime owns the surface,
 buffers, scale, keyboard layouts and key repeat, pointer, clipboard, drag
 and drop, and frame pacing; it redraws only when asked and paces
-animations with frame callbacks, so an idle surface costs nothing.
+animations with frame callbacks, so an idle surface costs nothing. A
+motion that only goes on — the wave while something plays, the steam over
+a cup kept awake — asks for a frame now and then (`Paint::After`), not
+every one, and a card's shadow is laid down only where it shows, round
+the card rather than under it.
 
 - **Exact pixels at any scale.** On a screen scaled by 1.25 or 1.5, buffers
   are drawn in its real pixels (`wp_fractional_scale` and `wp_viewporter`),
@@ -198,7 +202,10 @@ the pattern.
 as a program (the way the file manager runs `git`): today's video codecs
 (H.264, HEVC, VP9, AV1) have no decoder in pure Rust, and ffmpeg is there
 wherever Firefox is, which depends on it. One ffmpeg decodes the pictures,
-from a point in the file on and at the size the window shows them; another
+from a point in the file on and at the size the window shows them — on the
+graphics chip's video engine where VA-API reaches one (Intel's, AMD's),
+which decodes, scales, and colours them, so a 1080p video at 60 frames
+takes a tenth of a core; another
 decodes the sound, which goes to PipeWire as a stream of its own, in pure
 Rust, and keeps the clock the pictures follow — set by how far the server
 has actually played, so they stay together. Seeking starts both again from
@@ -1029,7 +1036,9 @@ was taken and with what camera, from its EXIF. Full screen (`f`, `F11`, a
 double-click on a video), the chrome goes and the ground darkens.
 
 Opened on one, it steps through the others in its folder, in the order a
-file manager lists them, reading the next ahead. **Two fingers sideways**
+file manager lists them, reading the next ahead — kept at the size it
+would be shown, only the one on screen in full, to zoom into, so a folder
+of large photos costs little more than the one. **Two fingers sideways**
 step too, the way a phone's gallery does: the picture follows the fingers,
 the next coming in beside it, and the strip slides along. A photo is turned
 the way the camera was held (EXIF), here and everywhere enso shows

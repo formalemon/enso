@@ -286,6 +286,8 @@ struct Surface {
     dirty: bool,
     /// Where frames are drawn. A wallpaper lets go of it once it is still.
     pool: Option<SlotPool>,
+    /// The next frame of a slow motion ([`Paint::After`]), while one is due.
+    redraw_at: Option<RegistrationToken>,
 }
 
 impl Surface {
@@ -448,6 +450,7 @@ impl<A: Screens> Runtime<A> {
             frame_pending: false,
             dirty: false,
             pool: None,
+            redraw_at: None,
         });
     }
 
@@ -482,6 +485,9 @@ impl<A: Screens> Runtime<A> {
     fn draw(&mut self, index: usize) -> Result<(), Error> {
         let surface = &mut self.surfaces[index];
         surface.dirty = false;
+        if let Some(token) = surface.redraw_at.take() {
+            self.handle.remove(token);
+        }
         // Without a viewport the compositor only takes whole-number scales.
         let ((width, height), scale120) =
             fractional::buffer(surface.size, surface.scale120, surface.viewport.is_some());
@@ -537,8 +543,24 @@ impl<A: Screens> Runtime<A> {
         // A wallpaper at rest is drawn once and then only looked at. The
         // compositor has its copy; ours — tens of megabytes on a large
         // screen — goes back to the system until something changes.
-        let keep = paint == Paint::Animating || self.role.takes_input();
+        let keep = paint != Paint::Idle || self.role.takes_input();
         surface.pool = keep.then_some(pool);
+        if let Paint::After(delay) = paint {
+            let wl_surface = surface.wl_surface().clone();
+            surface.redraw_at = self
+                .handle
+                .insert_source(
+                    Timer::from_duration(delay),
+                    move |_, (), runtime: &mut Self| {
+                        if let Some(surface) = runtime.surface_mut(&wl_surface) {
+                            surface.redraw_at = None;
+                            surface.dirty = true;
+                        }
+                        TimeoutAction::Drop
+                    },
+                )
+                .ok();
+        }
         Ok(())
     }
 

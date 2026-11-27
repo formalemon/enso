@@ -4,9 +4,13 @@
 //! where it started plus its count over the rate.
 
 use std::{
+    ffi::OsString,
     io::Read,
-    path::Path,
-    sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
+    path::{Path, PathBuf},
+    sync::{
+        OnceLock,
+        mpsc::{self, Receiver, Sender, SyncSender, TryRecvError},
+    },
     thread,
     time::Duration,
 };
@@ -49,32 +53,65 @@ impl Frames {
     /// second.
     pub fn start(path: &Path, from: Duration, size: (u32, u32), rate: f32) -> Result<Self, Error> {
         let (width, height) = (size.0.max(2), size.1.max(2));
-        let mut ffmpeg = ffmpeg::spawn(
-            "ffmpeg",
-            Vec::<std::ffi::OsString>::from([
-                "-ss".into(),
-                ffmpeg::seconds(from).into(),
-                "-i".into(),
-                ffmpeg::input(path),
-                // Pictures that move: not a cover riding along.
-                "-map".into(),
-                "0:V:0".into(),
-                "-an".into(),
-                "-sn".into(),
-                "-dn".into(),
-                "-vf".into(),
-                format!("scale={width}:{height}:flags=bicubic").into(),
-                "-pix_fmt".into(),
-                "rgba".into(),
-                "-fps_mode".into(),
-                "cfr".into(),
-                "-r".into(),
-                format!("{rate:.3}").into(),
-                "-f".into(),
-                "rawvideo".into(),
-                "-".into(),
-            ]),
-        )?;
+        let mut args = Vec::<OsString>::from([
+            // A few threads decode, enough for 4K, holding far fewer frames
+            // than one each for every core; and one scales: spread over every
+            // core, keeping them in step cost more than the scaling.
+            "-threads".into(),
+            "4".into(),
+            "-filter_threads".into(),
+            "1".into(),
+        ]);
+        let scale = match video_engine() {
+            Some(engine) => {
+                let mut device = OsString::from("vaapi=enso:");
+                device.push(engine);
+                args.extend([
+                    "-init_hw_device".into(),
+                    device,
+                    "-filter_hw_device".into(),
+                    "enso".into(),
+                    "-hwaccel".into(),
+                    "vaapi".into(),
+                    "-hwaccel_device".into(),
+                    "enso".into(),
+                    "-hwaccel_output_format".into(),
+                    "vaapi".into(),
+                ]);
+                // What the engine can't decode (an older codec, a deeper
+                // colour) the processor does, and the engine still scales it.
+                format!(
+                    "format=nv12|p010|vaapi,hwupload,\
+                     scale_vaapi=w={width}:h={height}:format=rgba:mode=hq,\
+                     hwdownload,format=rgba"
+                )
+            }
+            None => format!("scale={width}:{height}:flags=bicubic"),
+        };
+        args.extend([
+            "-ss".into(),
+            ffmpeg::seconds(from).into(),
+            "-i".into(),
+            ffmpeg::input(path),
+            // Pictures that move: not a cover riding along.
+            "-map".into(),
+            "0:V:0".into(),
+            "-an".into(),
+            "-sn".into(),
+            "-dn".into(),
+            "-vf".into(),
+            scale.into(),
+            "-pix_fmt".into(),
+            "rgba".into(),
+            "-fps_mode".into(),
+            "cfr".into(),
+            "-r".into(),
+            format!("{rate:.3}").into(),
+            "-f".into(),
+            "rawvideo".into(),
+            "-".into(),
+        ]);
+        let mut ffmpeg = ffmpeg::spawn("ffmpeg", args)?;
         let mut out = ffmpeg
             .0
             .stdout
@@ -124,4 +161,59 @@ impl Frames {
     pub fn recycle(&self, frame: Frame) {
         let _ = self.spare.send(frame.rgba);
     }
+}
+
+/// The graphics chip's video engine, when ffmpeg can reach one (VA-API, on
+/// Intel's and AMD's): it decodes, scales, and turns the pictures to RGBA,
+/// so a 1080p video at 60 frames takes a tenth of a core rather than most
+/// of one. Looked for once; without one the processor does it all.
+fn video_engine() -> Option<&'static Path> {
+    static ENGINE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    ENGINE.get_or_init(find_engine).as_deref()
+}
+
+fn find_engine() -> Option<PathBuf> {
+    let mut nodes: Vec<PathBuf> = std::fs::read_dir("/dev/dri")
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("renderD"))
+        })
+        .collect();
+    nodes.sort();
+    nodes.into_iter().find(|node| {
+        let Some(name) = node.file_name() else {
+            return false;
+        };
+        let driver = Path::new("/sys/class/drm").join(name).join("device/driver");
+        let driver = std::fs::read_link(driver).ok();
+        // Not NVIDIA's: VA-API doesn't reach its engine, and asking would
+        // wake a card that may be asleep.
+        let driver = driver.as_deref().and_then(Path::file_name);
+        driver.is_some_and(|driver| {
+            matches!(driver.to_str(), Some("i915" | "xe" | "amdgpu" | "radeon"))
+        }) && opens(node)
+    })
+}
+
+/// Whether ffmpeg can open the video engine at `node` (its driver is there).
+fn opens(node: &Path) -> bool {
+    let mut device = OsString::from("vaapi=enso:");
+    device.push(node);
+    let args: [OsString; 11] = [
+        "-init_hw_device".into(),
+        device,
+        "-f".into(),
+        "lavfi".into(),
+        "-i".into(),
+        "nullsrc=s=16x16:d=0.04".into(),
+        "-frames:v".into(),
+        "1".into(),
+        "-f".into(),
+        "null".into(),
+        "-".into(),
+    ];
+    ffmpeg::output("ffmpeg", args).is_ok()
 }

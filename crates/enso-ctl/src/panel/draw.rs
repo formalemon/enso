@@ -291,9 +291,10 @@ impl Panel {
                 || self
                     .prompt
                     .as_ref()
-                    .is_some_and(|prompt| prompt.field.is_animating(now))
-                || self.steaming,
+                    .is_some_and(|prompt| prompt.field.is_animating(now)),
         )
+        // Kept awake, the steam over the cup drifts on: slowly.
+        .or_after(self.steaming, enso_ui::figure::TICK)
     }
 
     /// The first page. Returns where its content ends.

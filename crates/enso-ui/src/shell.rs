@@ -379,6 +379,10 @@ pub enum Paint {
     Idle,
     /// Still animating; draw again on the next frame.
     Animating,
+    /// Moving on slowly, for as long as something lasts (a wave while it
+    /// plays, steam over a cup kept awake): draw again after this long, not
+    /// on every frame, which would mostly show nothing new.
+    After(Duration),
 }
 
 impl Paint {
@@ -388,6 +392,16 @@ impl Paint {
             Self::Animating
         } else {
             Self::Idle
+        }
+    }
+
+    /// This, or, with nothing else moving, [`Paint::After`] `tick` while
+    /// `slow` goes on: what arrives, slides, or lights up takes every frame,
+    /// and a motion that only goes on takes a frame now and then.
+    pub fn or_after(self, slow: bool, tick: Duration) -> Self {
+        match self {
+            Self::Idle if slow => Self::After(tick),
+            paint => paint,
         }
     }
 }
@@ -863,6 +877,7 @@ pub fn run<A: App>(app: A, appearance: &Appearance) -> Result<(), Error> {
         exit: false,
         failure: None,
         wake: None,
+        redraw_at: None,
         keyboard: None,
         keys: Keys::default(),
         repeating: None,
@@ -935,6 +950,8 @@ struct Runtime<A: App> {
     exit: bool,
     failure: Option<Error>,
     wake: Option<RegistrationToken>,
+    /// The next frame of a slow motion ([`Paint::After`]), while one is due.
+    redraw_at: Option<RegistrationToken>,
     keyboard: Option<WlKeyboard>,
     keys: Keys,
     /// The key currently auto-repeating and its timer.
@@ -1369,6 +1386,10 @@ impl<A: App> Runtime<A> {
 
     fn draw(&mut self) {
         self.dirty = false;
+        // Drawn now: a slow motion's frame waiting for later comes from this one.
+        if let Some(token) = self.redraw_at.take() {
+            self.handle.remove(token);
+        }
         // Without a viewport the compositor only takes whole-number scales.
         let ((width, height), scale120) =
             fractional::buffer(self.size, self.scale120, self.viewport.is_some());
@@ -1415,6 +1436,21 @@ impl<A: App> Runtime<A> {
             return self.fail(Error::new("cannot attach a frame buffer", err));
         }
         self.surface.commit();
+        if let Paint::After(delay) = paint {
+            self.schedule_redraw(delay);
+        }
+    }
+
+    /// Draw again after `delay`: the next frame of a slow motion.
+    fn schedule_redraw(&mut self, delay: Duration) {
+        self.redraw_at = self
+            .handle
+            .insert_source(Timer::from_duration(delay), |_, (), runtime: &mut Self| {
+                runtime.redraw_at = None;
+                runtime.dirty = true;
+                TimeoutAction::Drop
+            })
+            .ok();
     }
 
     fn fail(&mut self, error: Error) {

@@ -811,8 +811,7 @@ impl Listener {
             layout.play,
         );
 
-        let mut animating = playing
-            || self.waving.is_animating(now)
+        let mut animating = self.waving.is_animating(now)
             || self.slide.is_animating(now)
             || self.scroll.is_animating(now)
             || self.glow.iter().any(|glow| glow.is_animating(now));
@@ -825,7 +824,8 @@ impl Listener {
             let look = enso_ui::widget::Look::new(&colors, accent, size);
             toast::draw(canvas, text, bounds.bottom(), &look);
         }
-        Paint::when(animating)
+        // While it plays the wave rolls on: slowly, so a frame now and then.
+        Paint::when(animating).or_after(playing, wave::TICK)
     }
 
     /// A track's cover and its words, moved `shift` across.
@@ -834,8 +834,15 @@ impl Listener {
         let size = self.ctx.config.appearance.font_size;
         let small = size * type_scale::SMALL;
         let cover = layout.cover.translate(shift, 0.0);
-        canvas.lift(cover, radius::CARD, 1.0);
-        match self.cover_of(&track.path) {
+        let found = self.cover_of(&track.path);
+        // A picture without see-through parts, or the plain face, covers
+        // its square: the shadow need only go round it.
+        if found.map_or(colors.surface.a == u8::MAX, |found| found.image.is_opaque()) {
+            canvas.lift_opaque(cover, radius::CARD, 1.0);
+        } else {
+            canvas.lift(cover, radius::CARD, 1.0);
+        }
+        match found {
             Some(found) => canvas.image(&found.image, cover, radius::CARD),
             None => {
                 canvas.fill(cover, radius::CARD, colors.surface);

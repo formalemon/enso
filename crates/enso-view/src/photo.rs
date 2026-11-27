@@ -17,8 +17,11 @@ pub struct Level {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Photo {
-    /// Full size first, then each half of the one before.
+    /// Full size first, then each half of the one before; kept small
+    /// ([`Photo::fitted`]), from the first half large enough.
     levels: Vec<Level>,
+    /// Its size in its own pixels, whether they're all kept or not.
+    size: (u32, u32),
 }
 
 impl Photo {
@@ -34,12 +37,33 @@ impl Photo {
             let half = halve(last);
             levels.push(half);
         }
-        Self { levels }
+        Self {
+            levels,
+            size: (width, height),
+        }
     }
 
     /// Size in its own pixels.
     pub fn size(&self) -> (u32, u32) {
-        (self.levels[0].width, self.levels[0].height)
+        self.size
+    }
+
+    /// Whether its full pixels are kept, to zoom into.
+    pub fn is_whole(&self) -> bool {
+        (self.levels[0].width, self.levels[0].height) == self.size
+    }
+
+    /// Kept only as large as it's shown `side` pixels across, its larger
+    /// halves let go; `None` if there's nothing to let go of.
+    pub fn fitted(&self, side: u32) -> Option<Self> {
+        let first = self
+            .levels
+            .iter()
+            .rposition(|level| level.width.max(level.height) >= side)?;
+        (first > 0).then(|| Self {
+            levels: self.levels[first..].to_vec(),
+            size: self.size,
+        })
     }
 
     /// The level to draw `width` output pixels wide from: the smallest at
@@ -67,7 +91,10 @@ impl Photo {
                 rgba[to..to + 4].copy_from_slice(&full.rgba[from..from + 4]);
             }
         }
-        Self::new(full.height, full.width, rgba)
+        Self {
+            size: (self.size.1, self.size.0),
+            ..Self::new(full.height, full.width, rgba)
+        }
     }
 }
 
@@ -122,5 +149,23 @@ mod tests {
         let left = photo.turned(false);
         assert_eq!((left.levels[0].rgba[0], left.levels[0].rgba[4]), (2, 1));
         assert_eq!(right.turned(false), photo);
+    }
+
+    #[test]
+    fn kept_small_it_lets_go_of_the_larger_halves_but_not_its_size() {
+        let photo = Photo::new(1200, 600, vec![255; 1200 * 600 * 4]);
+        assert!(photo.is_whole());
+        let small = photo.fitted(500).unwrap();
+        let widths: Vec<u32> = small.levels.iter().map(|level| level.width).collect();
+        assert_eq!(widths, [600, 300]);
+        assert_eq!(small.size(), (1200, 600));
+        assert!(!small.is_whole());
+        // Shown as before up to the size it was kept for.
+        assert_eq!(small.level_for(500.0).width, 600);
+        // Nothing more to let go of, or smaller than asked for: as it is.
+        assert_eq!(small.fitted(500), None);
+        assert_eq!(photo.fitted(1500), None);
+        // Turned, it keeps its own size, turned too.
+        assert_eq!(small.turned(true).size(), (600, 1200));
     }
 }

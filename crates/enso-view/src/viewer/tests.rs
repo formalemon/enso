@@ -181,3 +181,41 @@ fn a_video_waits_with_its_big_button_and_its_details() {
     assert!(hits.contains(&Hit::Start), "{hits:?}");
     assert!(!hits.contains(&Hit::Turn), "videos aren't turned");
 }
+
+#[test]
+fn keeps_in_full_only_the_one_on_screen() {
+    let path = |name: &str| PathBuf::from("/pictures").join(name);
+    let whole = |viewer: &Viewer, name: &str| {
+        viewer.read[&path(name)]
+            .as_ref()
+            .is_ok_and(|item| item.is_whole())
+    };
+    let mut viewer = viewer(&["a.png", "b.png", "c.png"], 1, picture());
+    // A small window: those either side need only their half.
+    viewer.stage = Rect::new(0.0, 0.0, 300.0, 200.0);
+    let read = viewer.settle(&path("a.png"), Arc::new(picture()));
+    assert!(!read.is_whole());
+    assert_eq!(read.size(), Some((800, 400)));
+    viewer.read.insert(path("a.png"), Ok(read));
+    viewer.read.insert(path("c.png"), Ok(Arc::new(picture())));
+    viewer.want();
+    assert!(whole(&viewer, "b.png"));
+    assert!(!whole(&viewer, "a.png") && !whole(&viewer, "c.png"));
+
+    // Stepped on, it shows at once, small, and the one left is let go of.
+    viewer.album.at = 2;
+    viewer.want();
+    assert!(!whole(&viewer, "b.png"));
+    assert!(!viewer.item().unwrap().is_whole());
+    // Its full pixels come: the same one, sharper.
+    let full = viewer.settle(&path("c.png"), Arc::new(picture()));
+    viewer.read.insert(path("c.png"), Ok(full));
+    viewer.show_current();
+    assert!(viewer.item().unwrap().is_whole());
+
+    // Turned, and read again in full: it comes turned as it was.
+    viewer.turn(true);
+    let again = viewer.settle(&path("c.png"), Arc::new(picture()));
+    assert_eq!(again.size(), Some((400, 800)));
+    assert!(again.is_whole());
+}

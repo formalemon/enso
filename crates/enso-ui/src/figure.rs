@@ -15,7 +15,7 @@
 //! Strength — Wi-Fi's signal, a speaker's waves — is told by lighting parts
 //! and leaving the rest faint ([`Look::off`]), so the shape stays whole.
 
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Duration};
 
 use enso_core::{Figure, Rgba};
 
@@ -64,6 +64,9 @@ pub struct Live {
 
 /// Seconds for a wisp of steam to rise off a cup and go.
 const STEAM: f32 = 2.8;
+/// How often a figure that keeps moving moves on: the steam over the cup
+/// drifts slowly enough that twenty steps a second look smooth.
+pub const TICK: Duration = Duration::from_millis(50);
 
 /// Draw `figure` on its grid, filling the square box of side `size` with its
 /// top-left corner at `(x, y)`.

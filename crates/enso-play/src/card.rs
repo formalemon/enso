@@ -686,15 +686,20 @@ impl Card {
         }
         canvas.set_opacity(1.0);
 
+        // While something plays its wave rolls on: slowly, so a frame now
+        // and then; arriving, sliding, and lighting up take every frame.
+        let rolling = self.playing.get(now) > 0.0
+            || beside
+                .as_ref()
+                .is_some_and(|other| other.status == Status::Playing);
         Paint::when(
             self.presence.is_animating(now)
-                || self.playing.get(now) > 0.0
-                || beside.as_ref().is_some_and(|other| other.status == Status::Playing)
                 || self.playing.is_animating(now)
                 || self.held.is_animating(now)
                 || self.slide.is_animating(now)
                 || self.glow.iter().any(|glow| glow.is_animating(now)),
         )
+        .or_after(rolling, wave::TICK)
     }
 
     /// One player's part of the card: the cover, the words, the timeline,

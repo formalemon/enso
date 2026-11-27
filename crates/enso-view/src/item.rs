@@ -42,6 +42,26 @@ impl Item {
         matches!(self, Self::Video { .. })
     }
 
+    /// Whether all of it is kept: a picture's full pixels, to zoom into.
+    pub fn is_whole(&self) -> bool {
+        match self {
+            Self::Picture { photo, .. } => photo.is_whole(),
+            Self::Video { .. } => true,
+        }
+    }
+
+    /// A picture kept only as large as it's shown `side` pixels across
+    /// ([`Photo::fitted`]); `None` for a video, or nothing to let go of.
+    pub fn fitted(&self, side: u32) -> Option<Self> {
+        match self {
+            Self::Picture { photo, details } => Some(Self::Picture {
+                photo: Arc::new(photo.fitted(side)?),
+                details: details.clone(),
+            }),
+            Self::Video { .. } => None,
+        }
+    }
+
     /// Its size in its own pixels, as shown.
     pub fn size(&self) -> Option<(u32, u32)> {
         match self {

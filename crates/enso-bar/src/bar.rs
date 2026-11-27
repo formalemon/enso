@@ -99,10 +99,6 @@ const POUR: Transition = Transition::new(900, Easing::InOutCubic);
 /// The widest a window's name gets in the clock island.
 const MAX_TITLE: f32 = 420.0;
 
-/// How often the steam over the cup moves on while the machine is kept
-/// awake: slow wisps need no more.
-const STEAM_TICK: Duration = Duration::from_millis(50);
-
 /// How long the bell rings when something new arrives.
 const RING: Duration = Duration::from_millis(900);
 
@@ -568,7 +564,7 @@ impl Bar {
     /// the machine is kept awake. Nothing, when nothing moves.
     fn ambient_next(&self, now: Instant) -> Option<Instant> {
         (self.ctx.motion.is_enabled() && self.status_items().contains(&Item::Awake))
-            .then(|| now + STEAM_TICK)
+            .then(|| now + enso_ui::figure::TICK)
     }
 
     /// Whether the water is moving: filling, draining, or rippling while it

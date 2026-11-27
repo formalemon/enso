@@ -302,7 +302,12 @@ pub fn emerge(
     canvas.with_opacity(stage.solid, |canvas| {
         // Its depth comes as it leaves the bar: the shadow, the grain, and
         // the light along its rim, as every card has them.
-        canvas.lift(now, corner, stage.tint);
+        // Out and solid, it covers its middle: the shadow need only go round.
+        if fill.a == u8::MAX {
+            canvas.lift_opaque(now, corner, stage.tint);
+        } else {
+            canvas.lift(now, corner, stage.tint);
+        }
         canvas.fill(now, corner, fill);
         canvas.with_opacity(stage.tint, |canvas| {
             canvas.grain(now, corner);

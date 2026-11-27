@@ -4,7 +4,7 @@
 //! says whether it's playing. The now-playing card has it, and so has every
 //! player in the suite: a video in the viewer, a song in the listener.
 
-use std::f32::consts::TAU;
+use std::{f32::consts::TAU, time::Duration};
 
 use enso_core::Rgba;
 
@@ -18,6 +18,11 @@ const THUMB: (f32, f32) = (4.0, 18.0);
 const GAP: f32 = 5.0;
 /// How far the drawn wave steps along, in pixels.
 const STEP: f32 = 1.0;
+/// How often a rolling wave moves on ([`Paint::After`](crate::Paint::After)):
+/// rolling at half a crest a second it goes under half a pixel a step, as
+/// smooth as every frame for a fraction of them (the bar's sea keeps the
+/// same pace).
+pub const TICK: Duration = Duration::from_millis(33);
 
 /// The shape of the wave.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -17,6 +17,8 @@ pub struct Image {
     pub(crate) rgba: Arc<[u8]>,
     /// The same pixels in B, G, R, A order, for Wayland buffers.
     pub(crate) bgra: Arc<[u8]>,
+    /// Whether every pixel is opaque: a photo, not a cut-out.
+    opaque: bool,
 }
 
 impl std::fmt::Debug for Image {
@@ -88,8 +90,19 @@ impl Image {
         (self.width, self.height)
     }
 
+    /// Whether it has no see-through pixels, so drawn over a rectangle it
+    /// covers all of it.
+    pub fn is_opaque(&self) -> bool {
+        self.opaque
+    }
+
     fn from_premultiplied(width: u32, height: u32, rgba: Vec<u8>, max_side: u32) -> Self {
         let (width, height, rgba) = shrink(width, height, rgba, max_side);
+        let opaque = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == u8::MAX);
         let mut bgra = rgba.clone();
         for pixel in bgra.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
@@ -99,6 +112,7 @@ impl Image {
             height,
             rgba: rgba.into(),
             bgra: bgra.into(),
+            opaque,
         }
     }
 }
